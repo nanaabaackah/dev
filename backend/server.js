@@ -463,6 +463,36 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
     }
   }
 
+  const [roleBreakdown, userStatusBreakdown, organizationStatusBreakdown] =
+    await Promise.all([
+      prisma.role.findMany({
+        where: { organizationId: req.user.organizationId },
+        select: {
+          name: true,
+          _count: {
+            select: {
+              users: true,
+            },
+          },
+        },
+        orderBy: { name: "asc" },
+      }),
+      prisma.user.groupBy({
+        by: ["status"],
+        where: { organizationId: req.user.organizationId },
+        _count: { _all: true },
+        orderBy: { status: "asc" },
+      }),
+      prisma.organization.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+        orderBy: { status: "asc" },
+      }),
+    ]);
+
+  const averageUsersPerOrg = portfolioOrgs > 0 ? Number((portfolioUsers / portfolioOrgs).toFixed(1)) : 0;
+  const inventoryPerReebsUser = reebsUsers > 0 ? Number((reebsInventory / reebsUsers).toFixed(1)) : 0;
+
   let siteStatusPayload = null;
   let siteStatusCheckedAt = null;
   try {
@@ -503,6 +533,22 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
     siteStatus: {
       checkedAt: siteStatusCheckedAt,
       sites: siteStatusPayload,
+    },
+    roleBreakdown: roleBreakdown.map((role) => ({
+      name: role.name,
+      users: role._count?.users ?? 0,
+    })),
+    userStatusBreakdown: userStatusBreakdown.map((group) => ({
+      status: group.status,
+      count: group._count._all,
+    })),
+    organizationStatusBreakdown: organizationStatusBreakdown.map((group) => ({
+      status: group.status,
+      count: group._count._all,
+    })),
+    insights: {
+      averageUsersPerOrg,
+      inventoryPerReebsUser,
     },
   });
 });

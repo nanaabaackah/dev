@@ -1,189 +1,313 @@
-import React, { useState, useEffect } from 'react';
-import { Container, Row, Col, Card, Spinner, Alert, Button } from 'react-bootstrap';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Spinner, Alert, Button } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import { buildApiUrl } from '../api-url';
+import './Dashboard.css';
+
+const STATUS_LABELS = {
+  ok: "Healthy",
+  online: "Online",
+  degraded: "Degraded",
+  offline: "Offline",
+  error: "Error",
+  unknown: "Unknown",
+  not_configured: "Not configured",
+};
+
+const formatStatusLabel = (status) => {
+  if (!status) return "Unknown";
+  return STATUS_LABELS[status] || status.replace(/_/g, " ");
+};
+
+const formatDateTime = (value) => {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString();
+};
 
 const Dashboard = () => {
   const [kpiData, setKpiData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState("");
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const fetchKpiData = async () => {
-      const token = localStorage.getItem('token');
+  const loadDashboard = useCallback(
+    async ({ silent = false } = {}) => {
+      const token = localStorage.getItem("token");
       if (!token) {
-        navigate('/login');
+        navigate("/login");
         return;
       }
 
+      if (silent) {
+        setIsRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setError("");
+
       try {
-        const response = await fetch(buildApiUrl('/api/dashboard'), {
+        const response = await fetch(buildApiUrl("/api/dashboard"), {
           headers: {
-            'Authorization': `Bearer ${token}`,
+            Authorization: `Bearer ${token}`,
           },
         });
-
-        const data = await response.json();
-
-        if (response.ok) {
-          setKpiData(data);
-        } else {
+        const payload = await response.json();
+        if (!response.ok) {
           if (response.status === 401) {
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-            navigate('/login');
+            localStorage.removeItem("token");
+            localStorage.removeItem("user");
+            navigate("/login");
+            return;
           }
-          setError(data.error || 'Failed to fetch dashboard data');
+          throw new Error(payload?.error || "Unable to load dashboard");
         }
+        setKpiData(payload);
       } catch (err) {
-        setError('Network error or server unavailable');
-        console.error('Dashboard fetch error:', err);
+        if (err.name !== "AbortError") {
+          setError(err.message);
+        }
       } finally {
         setLoading(false);
+        setIsRefreshing(false);
       }
-    };
-
-    fetchKpiData();
-  }, [navigate]);
-
-  if (loading) {
-    return (
-      <Container className="d-flex justify-content-center align-items-center" style={{ minHeight: '100vh' }}>
-        <Spinner animation="border" role="status">
-          <span className="visually-hidden">Loading...</span>
-        </Spinner>
-      </Container>
-    );
-  }
-
-  if (error) {
-    return (
-      <Container className="mt-5">
-        <Alert variant="danger">{error}</Alert>
-        <Button onClick={() => navigate('/login')}>Go to Login</Button>
-      </Container>
-    );
-  }
-
-  if (!kpiData) {
-    return (
-      <Container className="mt-5">
-        <Alert variant="info">No dashboard data available.</Alert>
-      </Container>
-    );
-  }
-
-  const renderStatusBadge = (status) => {
-    let variant = 'secondary';
-    if (status === 'ok') variant = 'success';
-    else if (status === 'error' || status === 'offline') variant = 'danger';
-    else if (status === 'degraded') variant = 'warning';
-    return <span className={`badge bg-${variant}`}>{status}</span>;
-  };
-
-  const renderSiteStatus = (site) => (
-    <div key={site.id} className="mb-3">
-      <h5>{site.title} {renderStatusBadge(site.status)}</h5>
-      <ul className="list-unstyled">
-        {site.pages.map(page => (
-          <li key={page.label}>
-            {page.label}: {renderStatusBadge(page.status)}
-          </li>
-        ))}
-      </ul>
-    </div>
+    },
+    [navigate]
   );
 
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
+
+  const handleRefresh = () => {
+    if (!isRefreshing) {
+      loadDashboard({ silent: true });
+    }
+  };
+
+  const handleSignOut = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    navigate("/login");
+  };
+
+  const renderStatusBadge = (status) => {
+    let variant = "secondary";
+    if (status === "ok") variant = "success";
+    else if (["error", "offline"].includes(status)) variant = "danger";
+    else if (status === "degraded") variant = "warning";
+    return (
+      <span className={`badge bg-${variant} status-pill`} aria-label={formatStatusLabel(status)}>
+        {formatStatusLabel(status)}
+      </span>
+    );
+  };
+
+  const summaryCards = [
+    { label: "Organizations", value: kpiData?.totalOrganizations, accent: "cyan" },
+    { label: "Users", value: kpiData?.totalUsers, accent: "violet" },
+    { label: "Inventory items", value: kpiData?.totalInventoryItems, accent: "amber" },
+  ];
+
+  const roleBreakdown = kpiData?.roleBreakdown ?? [];
+  const userStatusBreakdown = kpiData?.userStatusBreakdown ?? [];
+  const organizationStatusBreakdown = kpiData?.organizationStatusBreakdown ?? [];
+  const insights = kpiData?.insights ?? {};
+
+  const siteStatuses = kpiData?.siteStatus?.sites ?? [];
+  const systemStatus = kpiData?.status ?? {};
+  const lastSyncedLabel = kpiData?.lastSyncedAt ? formatDateTime(kpiData.lastSyncedAt) : "—";
+  const lastCheckedLabel = kpiData?.siteStatus?.checkedAt ? formatDateTime(kpiData.siteStatus.checkedAt) : "—";
+
   return (
-    <Container className="mt-4">
-      <h1 className="mb-4">KPI Dashboard</h1>
+    <div className="dashboard-page">
+      <header className="dashboard-nav">
+        <div>
+          <p className="dashboard-nav__eyebrow">dev.nanaabaackah.com</p>
+          <h1 className="dashboard-nav__title">ERP KPI Command Center</h1>
+        </div>
+        <div className="dashboard-nav__actions">
+          <Button variant="outline-light" onClick={handleRefresh} disabled={isRefreshing || loading} className="me-2">
+            {isRefreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+          <Button variant="light" onClick={handleSignOut}>
+            Sign out
+          </Button>
+        </div>
+      </header>
 
-      <Row className="mb-4">
-        <Col md={4}>
-          <Card>
-            <Card.Body>
-              <Card.Title>Total Organizations</Card.Title>
-              <Card.Text className="h3">{kpiData.totalOrganizations}</Card.Text>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={4}>
-          <Card>
-            <Card.Body>
-              <Card.Title>Total Users</Card.Title>
-              <Card.Text className="h3">{kpiData.totalUsers}</Card.Text>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={4}>
-          <Card>
-            <Card.Body>
-              <Card.Title>Total Inventory Items</Card.Title>
-              <Card.Text className="h3">{kpiData.totalInventoryItems}</Card.Text>
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
+      <main className="dashboard-main">
+        {loading ? (
+          <div className="dashboard-spinner">
+            <Spinner animation="grow" role="status" variant="light" />
+            <span className="visually-hidden">Loading...</span>
+          </div>
+        ) : null}
 
-      <Row className="mb-4">
-        <Col md={6}>
-          <Card>
-            <Card.Header>Portfolio Metrics</Card.Header>
-            <Card.Body>
-              <Card.Text>Organizations: {kpiData.portfolio.organizations}</Card.Text>
-              <Card.Text>Users: {kpiData.portfolio.users}</Card.Text>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={6}>
-          <Card>
-            <Card.Header>Reebs Metrics</Card.Header>
-            <Card.Body>
-              <Card.Text>Organizations: {kpiData.reebs.organizations}</Card.Text>
-              <Card.Text>Users: {kpiData.reebs.users}</Card.Text>
-              <Card.Text>Inventory: {kpiData.reebs.inventoryItems}</Card.Text>
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
+        {error && (
+          <Alert variant="danger" className="dashboard-alert">
+            {error}
+          </Alert>
+        )}
 
-      <Row className="mb-4">
-        <Col md={6}>
-          <Card>
-            <Card.Header>Faako Metrics</Card.Header>
-            <Card.Body>
-              <Card.Text>Organizations: {kpiData.faako.organizations}</Card.Text>
-              <Card.Text>Users: {kpiData.faako.users}</Card.Text>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col md={6}>
-          <Card>
-            <Card.Header>API and DB Status</Card.Header>
-            <Card.Body>
-              <Card.Text>API: {renderStatusBadge(kpiData.status.api)}</Card.Text>
-              <Card.Text>Portfolio DB: {renderStatusBadge(kpiData.status.portfolioDb)}</Card.Text>
-              <Card.Text>Reebs DB: {renderStatusBadge(kpiData.status.reebsDb)}</Card.Text>
-              <Card.Text>Faako DB: {renderStatusBadge(kpiData.status.faakoDb)}</Card.Text>
-              <Card.Text>Last Synced: {new Date(kpiData.lastSyncedAt).toLocaleString()}</Card.Text>
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
+        {kpiData && (
+          <>
+            <section className="dashboard-hero">
+              <div>
+                <p className="dashboard-hero__eyebrow">Live ERP data</p>
+                <h2 className="dashboard-hero__title">Everything in sync</h2>
+                <p className="dashboard-hero__subtitle">
+                  KPI insight collected from the portfolio, Reebs, and Faako databases along with system health checks and uptime data.
+                </p>
+              </div>
+              <div className="dashboard-hero__meta">
+                <div>
+                  <span>Last synced</span>
+                  <strong>{lastSyncedLabel}</strong>
+                </div>
+                <div>
+                  <span>Sites checked</span>
+                  <strong>{siteStatuses.length}</strong>
+                </div>
+                <div>
+                  <span>Last site check</span>
+                  <strong>{lastCheckedLabel}</strong>
+                </div>
+              </div>
+            </section>
 
-      <Row className="mb-4">
-        <Col>
-          <Card>
-            <Card.Header>Site Status</Card.Header>
-            <Card.Body>
-              <p>Last Checked: {kpiData.siteStatus.checkedAt ? new Date(kpiData.siteStatus.checkedAt).toLocaleString() : 'N/A'}</p>
-              {kpiData.siteStatus.sites.map(renderSiteStatus)}
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
-    </Container>
+            <section className="summary-grid">
+              {summaryCards.map((card) => (
+                <article key={card.label} className={`summary-card summary-card--${card.accent}`}>
+                  <p className="summary-card__label">{card.label}</p>
+                  <p className="summary-card__value">{card.value ?? "—"}</p>
+                </article>
+              ))}
+            </section>
+
+            <section className="insight-grid">
+              <div className="insight-card">
+                <p className="insight-card__label">Avg. users per org</p>
+                <p className="insight-card__value">{insights.averageUsersPerOrg ?? "—"}</p>
+                <p className="insight-card__hint">Portfolio database</p>
+              </div>
+              <div className="insight-card">
+                <p className="insight-card__label">Inventory / Reebs user</p>
+                <p className="insight-card__value">{insights.inventoryPerReebsUser ?? "—"}</p>
+                <p className="insight-card__hint">Operational load</p>
+              </div>
+            </section>
+
+            <section className="panel-grid">
+              <article className="panel">
+                <div className="panel__header">
+                  <h3>System status</h3>
+                  <span className="panel__meta">API + databases</span>
+                </div>
+                <div className="panel__content panel__grid">
+                  <div>
+                    <p className="panel__label">API</p>
+                    {renderStatusBadge(systemStatus.api)}
+                  </div>
+                  <div>
+                    <p className="panel__label">Portfolio DB</p>
+                    {renderStatusBadge(systemStatus.portfolioDb)}
+                  </div>
+                  <div>
+                    <p className="panel__label">Reebs DB</p>
+                    {renderStatusBadge(systemStatus.reebsDb)}
+                  </div>
+                  <div>
+                    <p className="panel__label">Faako DB</p>
+                    {renderStatusBadge(systemStatus.faakoDb)}
+                  </div>
+                </div>
+              </article>
+
+              <article className="panel">
+                <div className="panel__header">
+                  <h3>Role distribution</h3>
+                  <span className="panel__meta">Portfolio org users</span>
+                </div>
+                <ul className="panel__list">
+                  {roleBreakdown.map((role) => (
+                    <li key={role.name}>
+                      <span>{role.name}</span>
+                      <strong>{role.users ?? 0}</strong>
+                    </li>
+                  ))}
+                </ul>
+              </article>
+
+              <article className="panel">
+                <div className="panel__header">
+                  <h3>User statuses</h3>
+                  <span className="panel__meta">Active / pending / suspended</span>
+                </div>
+                <div className="panel__status-chips">
+                  {userStatusBreakdown.map((item) => (
+                    <span key={item.status} className="status-chip">
+                      <strong>{item.count}</strong>
+                      <span>{formatStatusLabel(item.status)}</span>
+                    </span>
+                  ))}
+                </div>
+              </article>
+
+              <article className="panel">
+                <div className="panel__header">
+                  <h3>Organization statuses</h3>
+                  <span className="panel__meta">All orgs tracked</span>
+                </div>
+                <ul className="panel__list">
+                  {organizationStatusBreakdown.map((item) => (
+                    <li key={item.status}>
+                      <span>{formatStatusLabel(item.status)}</span>
+                      <strong>{item.count}</strong>
+                    </li>
+                  ))}
+                </ul>
+              </article>
+            </section>
+
+            <section className="site-status">
+              <div className="panel__header">
+                <h3>Website health</h3>
+                <span className="panel__meta">Last refreshed: {lastCheckedLabel}</span>
+              </div>
+              <div className="site-status__grid">
+                {siteStatuses.map((site) => (
+                  <article key={site.id} className="site-card">
+                    <div className="site-card__header">
+                      <strong>{site.title}</strong>
+                      {renderStatusBadge(site.status)}
+                    </div>
+                    <ul>
+                      {site.pages.map((page) => (
+                        <li key={page.url}>
+                          <span>{page.label}</span>
+                          {renderStatusBadge(page.status)}
+                        </li>
+                      ))}
+                    </ul>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </>
+        )}
+      </main>
+
+      <footer className="dashboard-footer">
+        <p>Built for Nana Aba Ackah — SaaS KPI monitoring</p>
+        <p>
+          API: <a href="https://nanaabaackah.com/api/dashboard">nanaabaackah.com/api</a> · contact{" "}
+          <a href="mailto:hello@nanaabaackah.com">hello@nanaabaackah.com</a>
+        </p>
+      </footer>
+    </div>
   );
 };
 
