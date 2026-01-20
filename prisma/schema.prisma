@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Organization {
+  id        Int       @id @default(autoincrement())
+  name      String
+  slug      String    @unique
+  status    OrgStatus @default(ACTIVE)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  roles Role[]
+  users User[]
+}
+
+model Role {
+  id             Int           @id @default(autoincrement())
+  organizationId Int
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  name           String
+  description    String?
+  permissions    Json?
+
+  users User[]
+
+  @@unique([organizationId, name])
+}
+
+model User {
+  id             Int           @id @default(autoincrement())
+  organizationId Int
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  roleId         Int
+  role           Role          @relation(fields: [roleId], references: [id])
+  firstName      String
+  lastName       String
+  fullName       String
+  email          String        @unique
+  password       String
+  status         UserStatus    @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+enum OrgStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+}
