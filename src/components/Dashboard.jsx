@@ -301,10 +301,9 @@ const Dashboard = () => {
       </main>
 
       <footer className="dashboard-footer">
-        <p>Built for Nana Aba Ackah — SaaS KPI monitoring</p>
+        <p>Faako By Nana — SaaS KPI monitoring</p>
         <p>
           API: <a href="https://nanaabaackah.com/api/dashboard">nanaabaackah.com/api</a> · contact{" "}
-          <a href="mailto:hello@nanaabaackah.com">hello@nanaabaackah.com</a>
         </p>
       </footer>
     </div>

@@ -184,9 +184,6 @@ const Login = () => {
               </Button>
             </form>
           )}
-          <div className="login-card__footer">
-            Need help? Reach us at <a href="mailto:hello@nanaabaackah.com">hello@nanaabaackah.com</a>.
-          </div>
         </div>
       </div>
     </div>
