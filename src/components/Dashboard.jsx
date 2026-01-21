@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Spinner, Alert, Button } from 'react-bootstrap';
-import { useNavigate } from 'react-router-dom';
-import { buildApiUrl } from '../api-url';
-import './Dashboard.css';
+import React, { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import { buildApiUrl } from "../api-url";
+import "./Dashboard.css";
 
 const STATUS_LABELS = {
   ok: "Healthy",
@@ -14,15 +13,29 @@ const STATUS_LABELS = {
   not_configured: "Not configured",
 };
 
+const STATUS_TONES = {
+  ok: "success",
+  online: "success",
+  degraded: "warning",
+  offline: "danger",
+  error: "danger",
+  unknown: "info",
+  not_configured: "info",
+  active: "success",
+  pending: "warning",
+  suspended: "danger",
+};
+
 const formatStatusLabel = (status) => {
   if (!status) return "Unknown";
-  return STATUS_LABELS[status] || status.replace(/_/g, " ");
+  const label = STATUS_LABELS[status] || status.replace(/_/g, " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
 };
 
 const formatDateTime = (value) => {
-  if (!value) return "—";
+  if (!value) return "N/A";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
+  if (Number.isNaN(date.getTime())) return "N/A";
   return date.toLocaleString();
 };
 
@@ -87,29 +100,25 @@ const Dashboard = () => {
     }
   };
 
-  const handleSignOut = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    navigate("/login");
+  const getStatusTone = (status) => STATUS_TONES[status] || "info";
+
+  const renderStatusPill = (status) => {
+    const tone = getStatusTone(status);
+    return <span className={`status-pill is-${tone}`}>{formatStatusLabel(status)}</span>;
   };
 
-  const renderStatusBadge = (status) => {
-    let variant = "secondary";
-    if (status === "ok") variant = "success";
-    else if (["error", "offline"].includes(status)) variant = "danger";
-    else if (status === "degraded") variant = "warning";
-    return (
-      <span className={`badge bg-${variant} status-pill`} aria-label={formatStatusLabel(status)}>
-        {formatStatusLabel(status)}
-      </span>
-    );
+  const renderStatusCount = (status, count) => {
+    const tone = getStatusTone(status);
+    return <span className={`status-pill is-${tone}`}>{count}</span>;
   };
 
-  const summaryCards = [
-    { label: "Organizations", value: kpiData?.totalOrganizations, accent: "cyan" },
-    { label: "Users", value: kpiData?.totalUsers, accent: "violet" },
-    { label: "Inventory items", value: kpiData?.totalInventoryItems, accent: "amber" },
-  ];
+  const getAggregateStatus = (pages = []) => {
+    if (!pages.length) return "unknown";
+    if (pages.some((page) => page.status === "offline")) return "offline";
+    if (pages.some((page) => page.status === "degraded")) return "degraded";
+    if (pages.every((page) => page.status === "online")) return "online";
+    return "unknown";
+  };
 
   const roleBreakdown = kpiData?.roleBreakdown ?? [];
   const userStatusBreakdown = kpiData?.userStatusBreakdown ?? [];
@@ -118,195 +127,303 @@ const Dashboard = () => {
 
   const siteStatuses = kpiData?.siteStatus?.sites ?? [];
   const systemStatus = kpiData?.status ?? {};
-  const lastSyncedLabel = kpiData?.lastSyncedAt ? formatDateTime(kpiData.lastSyncedAt) : "—";
-  const lastCheckedLabel = kpiData?.siteStatus?.checkedAt ? formatDateTime(kpiData.siteStatus.checkedAt) : "—";
+  const lastSyncedLabel = kpiData?.lastSyncedAt ? formatDateTime(kpiData.lastSyncedAt) : "N/A";
+  const lastCheckedLabel = kpiData?.siteStatus?.checkedAt
+    ? formatDateTime(kpiData.siteStatus.checkedAt)
+    : "N/A";
 
   return (
-    <div className="dashboard-page">
-      <header className="dashboard-nav">
+    <section className="page dashboard">
+      <div className="panel dashboard-hero">
         <div>
-          <p className="dashboard-nav__eyebrow">dev.nanaabaackah.com</p>
-          <h1 className="dashboard-nav__title">ERP KPI Command Center</h1>
+          <p className="eyebrow">Operations overview</p>
+          <h1>ERP KPI Command Center</h1>
+          <p className="muted">
+            Last synced {lastSyncedLabel} | Sites tracked {siteStatuses.length} | Last check{" "}
+            {lastCheckedLabel}
+          </p>
         </div>
-        <div className="dashboard-nav__actions">
-          <Button variant="outline-light" onClick={handleRefresh} disabled={isRefreshing || loading} className="me-2">
-            {isRefreshing ? "Refreshing…" : "Refresh"}
-          </Button>
-          <Button variant="light" onClick={handleSignOut}>
-            Sign out
-          </Button>
+        <div className="hero-actions">
+          <button
+            className="button button-primary"
+            type="button"
+            onClick={handleRefresh}
+            disabled={isRefreshing || loading}
+          >
+            {isRefreshing ? "Refreshing..." : "Refresh metrics"}
+          </button>
+          <a className="button button-ghost" href="#site-status">
+            Site status
+          </a>
         </div>
-      </header>
+      </div>
 
-      <main className="dashboard-main">
-        {loading ? (
-          <div className="dashboard-spinner">
-            <Spinner animation="grow" role="status" variant="light" />
-            <span className="visually-hidden">Loading...</span>
+      {loading ? (
+        <div className="panel loading-card" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          <span>Loading dashboard data...</span>
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="notice is-error" role="alert">
+          {error}
+        </div>
+      ) : null}
+
+      {kpiData ? (
+        <>
+          <div className="kpi-grid">
+            {[
+              {
+                id: "orgs",
+                label: "Organizations",
+                value: kpiData.totalOrganizations,
+                delta: `Portfolio ${kpiData.portfolio?.organizations ?? 0} | Reebs ${
+                  kpiData.reebs?.organizations ?? 0
+                } | Faako ${kpiData.faako?.organizations ?? 0}`,
+              },
+              {
+                id: "users",
+                label: "Users",
+                value: kpiData.totalUsers,
+                delta: `Portfolio ${kpiData.portfolio?.users ?? 0} | Reebs ${
+                  kpiData.reebs?.users ?? 0
+                } | Faako ${kpiData.faako?.users ?? 0}`,
+              },
+              {
+                id: "inventory",
+                label: "Inventory items",
+                value: kpiData.totalInventoryItems,
+                delta: `Reebs inventory tracked`,
+                tone: "warning",
+              },
+            ].map((card) => (
+              <article className="panel kpi-card" key={card.id}>
+                <span className="kpi-label">{card.label}</span>
+                <div className="kpi-value">{card.value ?? "N/A"}</div>
+                <span className={`kpi-delta ${card.tone ? `is-${card.tone}` : ""}`.trim()}>
+                  {card.delta}
+                </span>
+              </article>
+            ))}
           </div>
-        ) : null}
 
-        {error && (
-          <Alert variant="danger" className="dashboard-alert">
-            {error}
-          </Alert>
-        )}
+          <div className="panel-grid">
+            {[
+              {
+                id: "avg-users",
+                label: "Avg users per org",
+                value: insights.averageUsersPerOrg ?? "N/A",
+                hint: "Portfolio data",
+              },
+              {
+                id: "inventory-per-user",
+                label: "Inventory per Reebs user",
+                value: insights.inventoryPerReebsUser ?? "N/A",
+                hint: "Reebs ops signal",
+              },
+            ].map((insight) => (
+              <article className="panel metric-card" key={insight.id}>
+                <span className="kpi-label">{insight.label}</span>
+                <div className="kpi-value">{insight.value}</div>
+                <span className="muted">{insight.hint}</span>
+              </article>
+            ))}
+          </div>
 
-        {kpiData && (
-          <>
-            <section className="dashboard-hero">
-              <div>
-                <p className="dashboard-hero__eyebrow">Live ERP data</p>
-                <h2 className="dashboard-hero__title">Everything in sync</h2>
-                <p className="dashboard-hero__subtitle">
-                  KPI insight collected from the portfolio, Reebs, and Faako databases along with system health checks and uptime data.
-                </p>
-              </div>
-              <div className="dashboard-hero__meta">
+          <div className="dashboard-grid">
+            <article className="panel panel-span-2">
+              <div className="panel-header">
                 <div>
-                  <span>Last synced</span>
-                  <strong>{lastSyncedLabel}</strong>
-                </div>
-                <div>
-                  <span>Sites checked</span>
-                  <strong>{siteStatuses.length}</strong>
-                </div>
-                <div>
-                  <span>Last site check</span>
-                  <strong>{lastCheckedLabel}</strong>
+                  <h3>Data sources</h3>
+                  <p className="muted">Portfolio, Reebs, and Faako totals.</p>
                 </div>
               </div>
-            </section>
-
-            <section className="summary-grid">
-              {summaryCards.map((card) => (
-                <article key={card.label} className={`summary-card summary-card--${card.accent}`}>
-                  <p className="summary-card__label">{card.label}</p>
-                  <p className="summary-card__value">{card.value ?? "—"}</p>
-                </article>
-              ))}
-            </section>
-
-            <section className="insight-grid">
-              <div className="insight-card">
-                <p className="insight-card__label">Avg. users per org</p>
-                <p className="insight-card__value">{insights.averageUsersPerOrg ?? "—"}</p>
-                <p className="insight-card__hint">Portfolio database</p>
-              </div>
-              <div className="insight-card">
-                <p className="insight-card__label">Inventory / Reebs user</p>
-                <p className="insight-card__value">{insights.inventoryPerReebsUser ?? "—"}</p>
-                <p className="insight-card__hint">Operational load</p>
-              </div>
-            </section>
-
-            <section className="panel-grid">
-              <article className="panel">
-                <div className="panel__header">
-                  <h3>System status</h3>
-                  <span className="panel__meta">API + databases</span>
+              <div className="data-table">
+                <div className="table-row table-head is-4">
+                  <span>Source</span>
+                  <span>Orgs</span>
+                  <span>Users</span>
+                  <span>Inventory</span>
                 </div>
-                <div className="panel__content panel__grid">
-                  <div>
-                    <p className="panel__label">API</p>
-                    {renderStatusBadge(systemStatus.api)}
+                {[
+                  {
+                    id: "portfolio",
+                    label: "Portfolio",
+                    orgs: kpiData.portfolio?.organizations ?? 0,
+                    users: kpiData.portfolio?.users ?? 0,
+                    inventory: "N/A",
+                  },
+                  {
+                    id: "reebs",
+                    label: "Reebs",
+                    orgs: kpiData.reebs?.organizations ?? 0,
+                    users: kpiData.reebs?.users ?? 0,
+                    inventory: kpiData.reebs?.inventoryItems ?? 0,
+                  },
+                  {
+                    id: "faako",
+                    label: "Faako",
+                    orgs: kpiData.faako?.organizations ?? 0,
+                    users: kpiData.faako?.users ?? 0,
+                    inventory: "N/A",
+                  },
+                ].map((row) => (
+                  <div className="table-row is-4" key={row.id}>
+                    <span className="table-strong">{row.label}</span>
+                    <span>{row.orgs}</span>
+                    <span>{row.users}</span>
+                    <span>{row.inventory}</span>
                   </div>
-                  <div>
-                    <p className="panel__label">Portfolio DB</p>
-                    {renderStatusBadge(systemStatus.portfolioDb)}
-                  </div>
-                  <div>
-                    <p className="panel__label">Reebs DB</p>
-                    {renderStatusBadge(systemStatus.reebsDb)}
-                  </div>
-                  <div>
-                    <p className="panel__label">Faako DB</p>
-                    {renderStatusBadge(systemStatus.faakoDb)}
-                  </div>
-                </div>
-              </article>
-
-              <article className="panel">
-                <div className="panel__header">
-                  <h3>Role distribution</h3>
-                  <span className="panel__meta">Portfolio org users</span>
-                </div>
-                <ul className="panel__list">
-                  {roleBreakdown.map((role) => (
-                    <li key={role.name}>
-                      <span>{role.name}</span>
-                      <strong>{role.users ?? 0}</strong>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-
-              <article className="panel">
-                <div className="panel__header">
-                  <h3>User statuses</h3>
-                  <span className="panel__meta">Active / pending / suspended</span>
-                </div>
-                <div className="panel__status-chips">
-                  {userStatusBreakdown.map((item) => (
-                    <span key={item.status} className="status-chip">
-                      <strong>{item.count}</strong>
-                      <span>{formatStatusLabel(item.status)}</span>
-                    </span>
-                  ))}
-                </div>
-              </article>
-
-              <article className="panel">
-                <div className="panel__header">
-                  <h3>Organization statuses</h3>
-                  <span className="panel__meta">All orgs tracked</span>
-                </div>
-                <ul className="panel__list">
-                  {organizationStatusBreakdown.map((item) => (
-                    <li key={item.status}>
-                      <span>{formatStatusLabel(item.status)}</span>
-                      <strong>{item.count}</strong>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            </section>
-
-            <section className="site-status">
-              <div className="panel__header">
-                <h3>Website health</h3>
-                <span className="panel__meta">Last refreshed: {lastCheckedLabel}</span>
-              </div>
-              <div className="site-status__grid">
-                {siteStatuses.map((site) => (
-                  <article key={site.id} className="site-card">
-                    <div className="site-card__header">
-                      <strong>{site.title}</strong>
-                      {renderStatusBadge(site.status)}
-                    </div>
-                    <ul>
-                      {site.pages.map((page) => (
-                        <li key={page.url}>
-                          <span>{page.label}</span>
-                          {renderStatusBadge(page.status)}
-                        </li>
-                      ))}
-                    </ul>
-                  </article>
                 ))}
               </div>
-            </section>
-          </>
-        )}
-      </main>
+            </article>
 
-      <footer className="dashboard-footer">
-        <p>Faako By Nana — SaaS KPI monitoring</p>
-        <p>
-          API: <a href="https://nanaabaackah.com/api/dashboard">nanaabaackah.com/api</a> · contact{" "}
-        </p>
-      </footer>
-    </div>
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <h3>System status</h3>
+                  <p className="muted">API and database checks.</p>
+                </div>
+              </div>
+              <div className="data-table">
+                <div className="table-row table-head is-3">
+                  <span>Service</span>
+                  <span>Status</span>
+                  <span>Notes</span>
+                </div>
+                {[
+                  { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
+                  {
+                    id: "portfolio",
+                    label: "Portfolio DB",
+                    status: systemStatus.portfolioDb,
+                    note: "Primary org data",
+                  },
+                  {
+                    id: "reebs",
+                    label: "Reebs DB",
+                    status: systemStatus.reebsDb,
+                    note: "Products and inventory",
+                  },
+                  {
+                    id: "faako",
+                    label: "Faako DB",
+                    status: systemStatus.faakoDb,
+                    note: "ERP users",
+                  },
+                ].map((row) => (
+                  <div className="table-row is-3" key={row.id}>
+                    <span className="table-strong">{row.label}</span>
+                    {renderStatusPill(row.status)}
+                    <span className="muted">{row.note}</span>
+                  </div>
+                ))}
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <h3>Role distribution</h3>
+                  <p className="muted">Portfolio org users.</p>
+                </div>
+              </div>
+              <div className="list">
+                {roleBreakdown.length ? (
+                  roleBreakdown.map((role) => (
+                    <div className="list-row is-split" key={role.name}>
+                      <span className="table-strong">{role.name}</span>
+                      <span>{role.users ?? 0}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No roles yet.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <h3>User statuses</h3>
+                  <p className="muted">Active, pending, suspended.</p>
+                </div>
+              </div>
+              <div className="list">
+                {userStatusBreakdown.length ? (
+                  userStatusBreakdown.map((item) => (
+                    <div className="list-row is-split" key={item.status}>
+                      <span className="table-strong">{formatStatusLabel(item.status)}</span>
+                      {renderStatusCount(item.status, item.count)}
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No user statuses yet.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <h3>Organization statuses</h3>
+                  <p className="muted">All orgs tracked.</p>
+                </div>
+              </div>
+              <div className="list">
+                {organizationStatusBreakdown.length ? (
+                  organizationStatusBreakdown.map((item) => (
+                    <div className="list-row is-split" key={item.status}>
+                      <span className="table-strong">{formatStatusLabel(item.status)}</span>
+                      {renderStatusCount(item.status, item.count)}
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No org statuses yet.</p>
+                )}
+              </div>
+            </article>
+          </div>
+
+          <section className="panel site-status" id="site-status">
+            <div className="panel-header">
+              <div>
+                <h3>Website health</h3>
+                <p className="muted">Last refreshed {lastCheckedLabel}.</p>
+              </div>
+            </div>
+            <div className="site-grid">
+              {siteStatuses.length ? (
+                siteStatuses.map((site) => {
+                  const pages = site.pages ?? [];
+                  const aggregateStatus = getAggregateStatus(pages);
+                  return (
+                    <article key={site.id} className="site-card">
+                      <div className="site-card__header">
+                        <span className="table-strong">{site.title}</span>
+                        {renderStatusPill(aggregateStatus)}
+                      </div>
+                      <div className="site-card__list">
+                        {pages.map((page) => (
+                          <div className="site-card__row" key={page.url}>
+                            <span>{page.label}</span>
+                            {renderStatusPill(page.status)}
+                          </div>
+                        ))}
+                      </div>
+                    </article>
+                  );
+                })
+              ) : (
+                <p className="muted">No site checks yet.</p>
+              )}
+            </div>
+          </section>
+        </>
+      ) : null}
+    </section>
   );
 };
 

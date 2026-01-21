@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Form, Button, Alert, InputGroup } from 'react-bootstrap';
-import { buildApiUrl } from '../api-url';
-import './Login.css';
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { buildApiUrl } from "../api-url";
+import ThemeToggle from "./ThemeToggle";
+import "./Login.css";
 
-const Login = () => {
+const Login = ({ theme, onToggleTheme }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -21,10 +21,10 @@ const Login = () => {
     setError('');
 
     try {
-      const response = await fetch(buildApiUrl('/api/auth/login'), {
-        method: 'POST',
+      const response = await fetch(buildApiUrl("/api/auth/login"), {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({ email, password }),
       });
@@ -32,40 +32,40 @@ const Login = () => {
       const data = await response.json();
 
       if (response.ok) {
-        localStorage.setItem('token', data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
-        navigate('/dashboard');
+        localStorage.setItem("token", data.token);
+        localStorage.setItem("user", JSON.stringify(data.user));
+        navigate("/dashboard");
       } else {
-        setError(data.error || 'Login failed');
+        setError(data.error || "Login failed");
       }
-      } catch (err) {
-        setError('Network error or server unavailable');
-        console.error('Login error:', err);
-      }
-    };
+    } catch (err) {
+      setError("Network error or server unavailable");
+      console.error("Login error:", err);
+    }
+  };
   
   const handleForgotSubmit = async (event) => {
     event.preventDefault();
     const trimmedEmail = forgotEmail.trim();
     if (!trimmedEmail) {
-      setForgotError('Please provide the email you used to register.');
+      setForgotError("Please provide the email you used to register.");
       return;
     }
     setIsSendingReset(true);
-    setForgotError('');
-    setForgotStatus('');
+    setForgotError("");
+    setForgotStatus("");
     try {
-      const response = await fetch(buildApiUrl('/api/auth/forgot-password'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch(buildApiUrl("/api/auth/forgot-password"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: trimmedEmail }),
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.error || 'Unable to request password help');
+        throw new Error(payload?.error || "Unable to request password help");
       }
-      setForgotStatus(payload.message || 'If that email exists we sent instructions.');
-      setForgotError('');
+      setForgotStatus(payload.message || "If that email exists we sent instructions.");
+      setForgotError("");
     } catch (err) {
       setForgotError(err.message);
     } finally {
@@ -74,116 +74,131 @@ const Login = () => {
   };
 
   return (
-    <div className="login-page">
-      <div className="login-layout">
-        <div className="login-hero">
-          <p className="login-hero__eyebrow">Dev KPI Portal</p>
+    <div className="auth-page">
+      <div className="auth-topbar">
+        <span className="brand">Dev KPI</span>
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+      </div>
+      <div className="auth-layout">
+        <div className="panel auth-hero">
+          <p className="eyebrow">Dev KPI Portal</p>
           <h1>Monitor every ERP signal in one place</h1>
-          <p className="login-hero__subtitle">
-            dev.nanaabaackah.com surfaces live metrics from all databases along with system health insights.
+          <p className="muted">
+            dev.nanaabaackah.com surfaces live metrics from all databases along with system health
+            insights.
           </p>
-          <ul className="login-hero__list">
-            <li>
+          <div className="auth-list">
+            <div className="auth-list-row">
               <span>Live API data</span>
-              <strong>Realtime</strong>
-            </li>
-            <li>
+              <strong>Real time</strong>
+            </div>
+            <div className="auth-list-row">
               <span>Secure access</span>
               <strong>JWT protected</strong>
-            </li>
-            <li>
+            </div>
+            <div className="auth-list-row">
               <span>System visibility</span>
               <strong>Status checks</strong>
-            </li>
-          </ul>
-        </div>
-        <div className="login-card">
-          <div className="login-card__header">
-            <h2 className="login-card__title">Sign in</h2>
-            <p className="login-card__subtitle">Use the seeded admin credentials to unlock the KPI dashboard.</p>
+            </div>
           </div>
-          {error && (
-            <Alert variant="danger" className="login-alert">
+        </div>
+        <div className="panel auth-card">
+          <div className="auth-card__header">
+            <h2>Sign in</h2>
+            <p className="muted">
+              Use the seeded admin credentials to unlock the KPI dashboard.
+            </p>
+          </div>
+          {error ? (
+            <div className="notice is-error" role="alert">
               {error}
-            </Alert>
-          )}
-          <Form onSubmit={handleSubmit} className="login-form">
-            <Form.Group className="mb-3" controlId="formBasicEmail">
-              <Form.Label>Email address</Form.Label>
-              <Form.Control
+            </div>
+          ) : null}
+          <form onSubmit={handleSubmit} className="auth-form">
+            <label className="form-field" htmlFor="loginEmail">
+              <span>Email address</span>
+              <input
+                id="loginEmail"
+                className="input"
                 type="email"
-                placeholder="Enter email"
+                placeholder="name@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
               />
-            </Form.Group>
+            </label>
 
-            <Form.Group className="mb-3" controlId="formBasicPassword">
-              <Form.Label>Password</Form.Label>
-              <InputGroup>
-                <Form.Control
-                  type={showPassword ? 'text' : 'password'}
+            <label className="form-field" htmlFor="loginPassword">
+              <span>Password</span>
+              <div className="input-group">
+                <input
+                  id="loginPassword"
+                  className="input"
+                  type={showPassword ? "text" : "password"}
                   placeholder="Password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
                 />
-                <Button
-                  variant={showPassword ? 'secondary' : 'outline-secondary'}
+                <button
+                  className="input-button"
                   type="button"
                   onClick={() => setShowPassword((prev) => !prev)}
-                  className="toggle-password"
                 >
-                  {showPassword ? 'Hide' : 'Show'}
-                </Button>
-              </InputGroup>
-            </Form.Group>
+                  {showPassword ? "Hide" : "Show"}
+                </button>
+              </div>
+            </label>
 
-            <Button variant="primary" type="submit" className="w-100 login-button">
+            <button className="button button-primary auth-submit" type="submit">
               Sign in
-            </Button>
-          </Form>
-          <div className="login-card__helper">
+            </button>
+          </form>
+          <div className="auth-helper">
             <button
               type="button"
-              className="login-card__link"
+              className="text-button"
               onClick={() => {
                 setForgotMode((prev) => !prev);
-                setForgotStatus('');
-                setForgotError('');
+                setForgotStatus("");
+                setForgotError("");
               }}
             >
-              {forgotMode ? 'Back to sign in' : 'Forgot password?'}
+              {forgotMode ? "Back to sign in" : "Forgot password?"}
             </button>
           </div>
-          {forgotMode && (
-            <form className="login-card__forgot" onSubmit={handleForgotSubmit}>
-              <p className="login-card__forgot-label">
-                Enter the email you use for this dashboard and we’ll send recovery steps.
+          {forgotMode ? (
+            <form className="auth-forgot" onSubmit={handleForgotSubmit}>
+              <p className="muted">
+                Enter the email you use for this dashboard and we will send recovery steps.
               </p>
-              {forgotStatus && <p className="login-card__forgot-status">{forgotStatus}</p>}
-              {forgotError && <Alert variant="warning">{forgotError}</Alert>}
-              <Form.Group className="mb-3" controlId="forgotEmail">
-                <Form.Label>Email address</Form.Label>
-                <Form.Control
+              {forgotStatus ? <div className="notice is-success">{forgotStatus}</div> : null}
+              {forgotError ? (
+                <div className="notice is-error" role="alert">
+                  {forgotError}
+                </div>
+              ) : null}
+              <label className="form-field" htmlFor="forgotEmail">
+                <span>Email address</span>
+                <input
+                  id="forgotEmail"
+                  className="input"
                   type="email"
                   placeholder="name@example.com"
                   value={forgotEmail}
                   onChange={(e) => setForgotEmail(e.target.value)}
                   required
                 />
-              </Form.Group>
-              <Button
-                variant="outline-light"
+              </label>
+              <button
+                className="button button-ghost auth-submit"
                 type="submit"
-                className="w-100 login-button"
                 disabled={isSendingReset}
               >
-                {isSendingReset ? 'Sending reset link…' : 'Send reset link'}
-              </Button>
+                {isSendingReset ? "Sending reset link..." : "Send reset link"}
+              </button>
             </form>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

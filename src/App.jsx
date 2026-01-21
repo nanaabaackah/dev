@@ -1,47 +1,88 @@
-import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { Navbar, Container, Button } from 'react-bootstrap'; // Import Container and Button
-import Login from './components/Login';
-import Dashboard from './components/Dashboard';
-import 'bootstrap/dist/css/bootstrap.min.css';
+import React, { useEffect, useState } from "react";
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+  NavLink,
+  useNavigate,
+} from "react-router-dom";
+import Login from "./components/Login";
+import Dashboard from "./components/Dashboard";
+import ThemeToggle from "./components/ThemeToggle";
 
 const PrivateRoute = ({ children }) => {
   const token = localStorage.getItem('token');
   return token ? children : <Navigate to="/login" />;
 };
 
-function App() {
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    window.location.href = '/login'; // Redirect to login page
+const getInitialTheme = () => {
+  const stored = localStorage.getItem("theme");
+  if (stored === "light" || stored === "dark") return stored;
+  if (typeof window !== "undefined" && window.matchMedia) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return "light";
+};
+
+const AppShell = ({ children, theme, onToggleTheme }) => {
+  const navigate = useNavigate();
+
+  const handleSignOut = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    navigate("/login");
   };
 
-  const token = localStorage.getItem('token'); // Check for token to conditionally render logout button
+  return (
+    <div className="erp-shell">
+      <aside className="erp-sidebar">
+        <div className="brand">Dev KPI</div>
+        <nav className="erp-nav">
+          <NavLink to="/dashboard" end className={({ isActive }) => (isActive ? "active" : "")}>
+            Dashboard
+          </NavLink>
+        </nav>
+      </aside>
+      <div className="erp-main">
+        <header className="erp-topbar">
+          <span>Workspace overview</span>
+          <div className="topbar-actions">
+            <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+            <button className="button button-ghost" type="button" onClick={handleSignOut}>
+              Sign out
+            </button>
+          </div>
+        </header>
+        <main className="erp-content">{children}</main>
+      </div>
+    </div>
+  );
+};
+
+function App() {
+  const [theme, setTheme] = useState(getInitialTheme);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
+  const handleToggleTheme = () => {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  };
 
   return (
     <Router>
-      <Navbar bg="dark" variant="dark" expand="lg">
-        <Container>
-          <Navbar.Brand href="/">KPI Dashboard</Navbar.Brand>
-          <Navbar.Toggle aria-controls="basic-navbar-nav" />
-          <Navbar.Collapse id="basic-navbar-nav" className="justify-content-end">
-            {token && ( // Only show logout button if token exists
-              <Button variant="outline-light" onClick={handleLogout}>
-                Logout
-              </Button>
-            )}
-          </Navbar.Collapse>
-        </Container>
-      </Navbar>
-
       <Routes>
-        <Route path="/login" element={<Login />} />
+        <Route path="/login" element={<Login theme={theme} onToggleTheme={handleToggleTheme} />} />
         <Route
           path="/dashboard"
           element={
             <PrivateRoute>
-              <Dashboard />
+              <AppShell theme={theme} onToggleTheme={handleToggleTheme}>
+                <Dashboard />
+              </AppShell>
             </PrivateRoute>
           }
         />
