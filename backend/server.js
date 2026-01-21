@@ -91,7 +91,11 @@ const SITE_PAGES = [
     id: "faako",
     title: "faako.nanaabaackah.com",
     baseUrl: "https://faako.nanaabaackah.com",
-    pages: [{ label: "Home", path: "/" }],
+    pages: [
+      { label: "Home", path: "/" },
+      { label: "Pricing", path: "/pricing" },
+      { label: "Signup", path: "/signup" },
+    ],
   },
 ];
 
@@ -207,6 +211,8 @@ const fetchErpMetrics = async (poolInstance, label) => {
 
 const DEFAULT_ORG_NAME = process.env.DEFAULT_ORG_NAME ?? "bynana-portfolio";
 const DEFAULT_ORG_SLUG = process.env.DEFAULT_ORG_SLUG ?? "bynana-portfolio";
+const FAAKO_ORG_NAME = process.env.FAAKO_ORG_NAME ?? "Faako";
+const FAAKO_ORG_SLUG = process.env.FAAKO_ORG_SLUG ?? "faako";
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ?? "dev@nanaabaackah.com";
 const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD ?? "Th@Tr$$1142!";
 
@@ -562,51 +568,69 @@ app.use((err, _req, res, next) => {
 });
 
 const ensureDefaults = async () => {
-  let organization = await prisma.organization.findUnique({ where: { slug: DEFAULT_ORG_SLUG } });
-  if (!organization) {
-    organization = await prisma.organization.create({
-      data: {
-        name: DEFAULT_ORG_NAME,
-        slug: DEFAULT_ORG_SLUG,
-      },
-    });
-  }
-
   const roles = [
     { name: "Admin", description: "Full access to every endpoint" },
     { name: "Editor", description: "Can update dashboard data and content" },
     { name: "Viewer", description: "Read-only access to dashboard" },
   ];
 
-  for (const role of roles) {
-    await prisma.role.upsert({
-      where: { organizationId_name: { organizationId: organization.id, name: role.name } },
-      update: { description: role.description },
-      create: {
-        name: role.name,
-        description: role.description,
-        organizationId: organization.id,
-      },
-    });
+  const organizationDefinitions = [
+    { name: DEFAULT_ORG_NAME, slug: DEFAULT_ORG_SLUG, seedAdmin: true },
+    { name: FAAKO_ORG_NAME, slug: FAAKO_ORG_SLUG, seedAdmin: false },
+  ].filter(
+    (org, index, list) =>
+      Boolean(org.slug) && list.findIndex((entry) => entry.slug === org.slug) === index
+  );
+
+  const seededOrganizations = [];
+
+  for (const orgInfo of organizationDefinitions) {
+    let organization = await prisma.organization.findUnique({ where: { slug: orgInfo.slug } });
+    if (!organization) {
+      organization = await prisma.organization.create({
+        data: {
+          name: orgInfo.name,
+          slug: orgInfo.slug,
+        },
+      });
+    }
+
+    seededOrganizations.push({ organization, seedAdmin: orgInfo.seedAdmin });
+
+    for (const role of roles) {
+      await prisma.role.upsert({
+        where: { organizationId_name: { organizationId: organization.id, name: role.name } },
+        update: { description: role.description },
+        create: {
+          name: role.name,
+          description: role.description,
+          organizationId: organization.id,
+        },
+      });
+    }
   }
 
+  const adminOrganization = seededOrganizations.find((entry) => entry.seedAdmin)?.organization;
+  if (!adminOrganization) return;
+
   const adminRole = await prisma.role.findFirst({
-    where: { organizationId: organization.id, name: "Admin" },
+    where: { organizationId: adminOrganization.id, name: "Admin" },
   });
   if (!adminRole) return;
 
-  const existingAdmin = await prisma.user.findUnique({ where: { email: DEFAULT_ADMIN_EMAIL.toLowerCase() } });
+  const adminEmail = DEFAULT_ADMIN_EMAIL.toLowerCase();
+  const existingAdmin = await prisma.user.findUnique({ where: { email: adminEmail } });
   if (!existingAdmin) {
     const hashed = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);
     await prisma.user.create({
       data: {
-        email: DEFAULT_ADMIN_EMAIL.toLowerCase(),
+        email: adminEmail,
         firstName: "Admin",
         lastName: "Portfolio",
         fullName: "Admin Portfolio",
         password: hashed,
         roleId: adminRole.id,
-        organizationId: organization.id,
+        organizationId: adminOrganization.id,
       },
     });
   }
