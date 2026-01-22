@@ -8,6 +8,7 @@ import jwt from "jsonwebtoken";
 import prismaPkg from "@prisma/client";
 import { Pool } from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { Resend } from "resend";
 
 const app = express();
 const pool = new Pool({
@@ -167,6 +168,14 @@ const buildSiteStatusFallback = (status = "unknown") =>
     })),
   }));
 
+const getAggregateStatus = (pages = []) => {
+  if (!pages.length) return "unknown";
+  if (pages.some((page) => page.status === "offline")) return "offline";
+  if (pages.some((page) => page.status === "degraded")) return "degraded";
+  if (pages.every((page) => page.status === "online")) return "online";
+  return "unknown";
+};
+
 const getSiteStatus = async () => {
   const now = Date.now();
   if (siteStatusCache.data && now - siteStatusCache.checkedAt < SITE_STATUS_CACHE_TTL_MS) {
@@ -215,6 +224,159 @@ const FAAKO_ORG_NAME = process.env.FAAKO_ORG_NAME ?? "Faako";
 const FAAKO_ORG_SLUG = process.env.FAAKO_ORG_SLUG ?? "faako";
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ?? "dev@nanaabaackah.com";
 const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD ?? "Th@Tr$$1142!";
+const ALERT_COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS ?? 15 * 60 * 1000);
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+const coerceBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return fallback;
+  return ["true", "1", "yes", "on"].includes(normalized);
+};
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const parseRecipients = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter((item) => EMAIL_PATTERN.test(item));
+  }
+  const normalized = String(value || "").trim();
+  if (!normalized) return [];
+  return normalized
+    .split(/[,\s;]+/)
+    .map((item) => item.trim())
+    .filter((item) => EMAIL_PATTERN.test(item));
+};
+
+const normalizeAlertPreferences = (input = {}, base = {}) => {
+  const emailRecipients = parseRecipients(
+    input.emailRecipients ?? base.emailRecipients ?? DEFAULT_ADMIN_EMAIL
+  );
+  return {
+    emailEnabled: coerceBoolean(input.emailEnabled, base.emailEnabled ?? false),
+    notifyOffline: coerceBoolean(input.notifyOffline, base.notifyOffline ?? true),
+    notifyDegraded: coerceBoolean(input.notifyDegraded, base.notifyDegraded ?? true),
+    emailRecipients: emailRecipients.length ? emailRecipients : parseRecipients(DEFAULT_ADMIN_EMAIL),
+    fromEmail: String(input.fromEmail ?? base.fromEmail ?? DEFAULT_ADMIN_EMAIL).trim(),
+  };
+};
+
+const serializeAlertPreferences = (prefs) => ({
+  emailEnabled: prefs.emailEnabled,
+  notifyOffline: prefs.notifyOffline,
+  notifyDegraded: prefs.notifyDegraded,
+  emailRecipients: prefs.emailRecipients.join(", "),
+  fromEmail: prefs.fromEmail,
+});
+
+let alertPreferences = normalizeAlertPreferences({
+  emailEnabled: coerceBoolean(process.env.ALERT_EMAIL_ENABLED, false),
+  notifyOffline: coerceBoolean(process.env.ALERT_NOTIFY_OFFLINE, true),
+  notifyDegraded: coerceBoolean(process.env.ALERT_NOTIFY_DEGRADED, true),
+  emailRecipients: process.env.ALERT_EMAIL_RECIPIENTS ?? DEFAULT_ADMIN_EMAIL,
+  fromEmail: process.env.ALERT_FROM_EMAIL ?? DEFAULT_ADMIN_EMAIL,
+});
+
+const alertState = {
+  snapshot: {},
+  lastSentAt: {},
+};
+
+const getAlertLevel = (status) => {
+  if (status === "offline" || status === "error") return "offline";
+  if (status === "degraded") return "degraded";
+  return null;
+};
+
+const shouldNotifyLevel = (level, prefs) => {
+  if (!level) return false;
+  if (level === "offline") return prefs.notifyOffline;
+  if (level === "degraded") return prefs.notifyDegraded;
+  return false;
+};
+
+const buildAlertEntries = (systemEntries, siteOverview) => [
+  ...systemEntries.map((entry) => ({
+    key: `service:${entry.id}`,
+    label: entry.label,
+    status: entry.status,
+    note: entry.note,
+    type: "Service",
+  })),
+  ...siteOverview.map((site) => ({
+    key: `site:${site.id}`,
+    label: site.title,
+    status: site.aggregateStatus,
+    note: `${site.pages.length} pages tracked`,
+    type: "Site",
+  })),
+];
+
+const buildAlertEmailContent = (changes) => {
+  const lines = changes.map(
+    (change) =>
+      `- ${change.type}: ${change.label} -> ${change.status.toUpperCase()} (${change.note})`
+  );
+  const text = `Dev KPI alert\n\n${lines.join("\n")}\n\nGenerated at ${new Date().toISOString()}`;
+  const htmlList = changes
+    .map(
+      (change) =>
+        `<li><strong>${change.type}:</strong> ${change.label} <strong>${change.status.toUpperCase()}</strong> (${change.note})</li>`
+    )
+    .join("");
+  const html = `<p><strong>Dev KPI alert</strong></p><ul>${htmlList}</ul><p>Generated at ${new Date().toISOString()}</p>`;
+  return { text, html };
+};
+
+const sendAlertEmail = async ({ subject, text, html, recipients }) => {
+  if (!resend) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+  return resend.emails.send({
+    from: alertPreferences.fromEmail,
+    to: recipients,
+    subject,
+    text,
+    html,
+  });
+};
+
+const maybeSendStatusAlerts = (systemEntries, siteOverview) => {
+  const entries = buildAlertEntries(systemEntries, siteOverview);
+  const nextSnapshot = {};
+  const changes = [];
+  const now = Date.now();
+
+  entries.forEach((entry) => {
+    nextSnapshot[entry.key] = entry.status;
+    const previous = alertState.snapshot[entry.key];
+    if (!previous || previous === entry.status) return;
+    const level = getAlertLevel(entry.status);
+    if (!shouldNotifyLevel(level, alertPreferences)) return;
+    const lastSentAt = alertState.lastSentAt[entry.key] ?? 0;
+    if (now - lastSentAt < ALERT_COOLDOWN_MS) return;
+    changes.push(entry);
+    alertState.lastSentAt[entry.key] = now;
+  });
+
+  alertState.snapshot = nextSnapshot;
+
+  if (!alertPreferences.emailEnabled || !changes.length) return;
+  if (!alertPreferences.emailRecipients.length) {
+    console.warn("Alert email recipients missing; skipping email.");
+    return;
+  }
+
+  const { text, html } = buildAlertEmailContent(changes);
+  const subject = `Dev KPI alert (${changes.length})`;
+  sendAlertEmail({ subject, text, html, recipients: alertPreferences.emailRecipients }).catch(
+    (error) => {
+      console.error("Alert email failed", error);
+    }
+  );
+};
 
 if (!jwtSecret) {
   throw new Error("Missing JWT_SECRET in environment config.");
@@ -425,6 +587,37 @@ app.get("/api/roles", authMiddleware, async (req, res) => {
   res.json(roles.map((role) => ({ id: role.id, name: role.name, description: role.description })));
 });
 
+app.get("/api/alerts/preferences", authMiddleware, requireAdmin, (req, res) => {
+  res.json(serializeAlertPreferences(alertPreferences));
+});
+
+app.post("/api/alerts/preferences", authMiddleware, requireAdmin, (req, res) => {
+  alertPreferences = normalizeAlertPreferences(req.body, alertPreferences);
+  res.json(serializeAlertPreferences(alertPreferences));
+});
+
+app.post("/api/alerts/test-email", authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const recipients = parseRecipients(
+      req.body?.emailRecipients ?? alertPreferences.emailRecipients
+    );
+    if (!alertPreferences.emailEnabled) {
+      return res.status(400).json({ error: "Email alerts are disabled" });
+    }
+    if (!recipients.length) {
+      return res.status(400).json({ error: "No email recipients configured" });
+    }
+    const subject = "Dev KPI test alert";
+    const text = `This is a test alert from the Dev KPI dashboard (${new Date().toISOString()}).`;
+    const html = `<p><strong>This is a test alert</strong> from the Dev KPI dashboard.</p><p>${new Date().toISOString()}</p>`;
+    await sendAlertEmail({ subject, text, html, recipients });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("Unable to send test email", error);
+    res.status(500).json({ error: error.message || "Unable to send test email" });
+  }
+});
+
 app.get("/api/dashboard", authMiddleware, async (req, res) => {
   const [portfolioUsers, portfolioOrgs] = await Promise.all([
     prisma.user.count({ where: { organizationId: req.user.organizationId } }),
@@ -511,6 +704,22 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
     console.warn("Site status check failed", error);
     siteStatusPayload = buildSiteStatusFallback("unknown");
   }
+
+  const systemEntries = [
+    { id: "api", label: "API", status: "ok", note: "Auth + metrics" },
+    { id: "portfolio", label: "Portfolio DB", status: "ok", note: "Primary org data" },
+    { id: "reebs", label: "Reebs DB", status: reebsStatus, note: "Products and inventory" },
+    { id: "faako", label: "Faako DB", status: faakoStatus, note: "ERP users" },
+  ];
+
+  const siteOverview = (siteStatusPayload ?? []).map((site) => ({
+    id: site.id,
+    title: site.title,
+    pages: site.pages ?? [],
+    aggregateStatus: getAggregateStatus(site.pages ?? []),
+  }));
+
+  maybeSendStatusAlerts(systemEntries, siteOverview);
 
   res.json({
     totalOrganizations: portfolioOrgs + reebsOrgs + faakoOrgs,

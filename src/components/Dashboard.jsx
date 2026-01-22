@@ -1,106 +1,28 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { buildApiUrl } from "../api-url";
+import React, { useState } from "react";
+import useDashboardData from "../hooks/useDashboardData";
+import { formatDateTime, formatPercent, formatRatio } from "../utils/formatters";
+import { formatStatusLabel, getStatusTone, isHealthyStatus } from "../utils/status";
 import "./Dashboard.css";
 
-const STATUS_LABELS = {
-  ok: "Healthy",
-  online: "Online",
-  degraded: "Degraded",
-  offline: "Offline",
-  error: "Error",
-  unknown: "Unknown",
-  not_configured: "Not configured",
-};
-
-const STATUS_TONES = {
-  ok: "success",
-  online: "success",
-  degraded: "warning",
-  offline: "danger",
-  error: "danger",
-  unknown: "info",
-  not_configured: "info",
-  active: "success",
-  pending: "warning",
-  suspended: "danger",
-};
-
-const formatStatusLabel = (status) => {
-  if (!status) return "Unknown";
-  const label = STATUS_LABELS[status] || status.replace(/_/g, " ");
-  return label.charAt(0).toUpperCase() + label.slice(1);
-};
-
-const formatDateTime = (value) => {
-  if (!value) return "N/A";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "N/A";
-  return date.toLocaleString();
-};
+const RANGE_OPTIONS = [
+  { value: "24h", label: "24H", description: "Last 24 hours", hours: 24 },
+  { value: "7d", label: "7D", description: "Last 7 days", hours: 24 * 7 },
+  { value: "30d", label: "30D", description: "Last 30 days", hours: 24 * 30 },
+];
 
 const Dashboard = () => {
-  const [kpiData, setKpiData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [error, setError] = useState("");
-  const navigate = useNavigate();
-
-  const loadDashboard = useCallback(
-    async ({ silent = false } = {}) => {
-      const token = localStorage.getItem("token");
-      if (!token) {
-        navigate("/login");
-        return;
-      }
-
-      if (silent) {
-        setIsRefreshing(true);
-      } else {
-        setLoading(true);
-      }
-      setError("");
-
-      try {
-        const response = await fetch(buildApiUrl("/api/dashboard"), {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          if (response.status === 401) {
-            localStorage.removeItem("token");
-            localStorage.removeItem("user");
-            navigate("/login");
-            return;
-          }
-          throw new Error(payload?.error || "Unable to load dashboard");
-        }
-        setKpiData(payload);
-      } catch (err) {
-        if (err.name !== "AbortError") {
-          setError(err.message);
-        }
-      } finally {
-        setLoading(false);
-        setIsRefreshing(false);
-      }
-    },
-    [navigate]
-  );
-
-  useEffect(() => {
-    loadDashboard();
-  }, [loadDashboard]);
+  const { data: kpiData, loading, isRefreshing, error, reload } = useDashboardData();
+  const [timeRange, setTimeRange] = useState("7d");
 
   const handleRefresh = () => {
     if (!isRefreshing) {
-      loadDashboard({ silent: true });
+      reload({ silent: true });
     }
   };
 
-  const getStatusTone = (status) => STATUS_TONES[status] || "info";
+  const activeRange = RANGE_OPTIONS.find((option) => option.value === timeRange) || RANGE_OPTIONS[1];
+  const rangeDescription = activeRange.description;
+  const rangeWindowMs = activeRange.hours * 60 * 60 * 1000;
 
   const renderStatusPill = (status) => {
     const tone = getStatusTone(status);
@@ -132,6 +54,105 @@ const Dashboard = () => {
     ? formatDateTime(kpiData.siteStatus.checkedAt)
     : "N/A";
 
+  const systemEntries = [
+    { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
+    {
+      id: "portfolio",
+      label: "Portfolio DB",
+      status: systemStatus.portfolioDb,
+      note: "Primary org data",
+    },
+    {
+      id: "reebs",
+      label: "Reebs DB",
+      status: systemStatus.reebsDb,
+      note: "Products and inventory",
+    },
+    {
+      id: "faako",
+      label: "Faako DB",
+      status: systemStatus.faakoDb,
+      note: "ERP users",
+    },
+  ];
+
+  const siteOverview = siteStatuses.map((site) => {
+    const pages = site.pages ?? [];
+    return {
+      id: site.id,
+      title: site.title,
+      pages,
+      aggregateStatus: getAggregateStatus(pages),
+    };
+  });
+
+  const sitePages = siteOverview.flatMap((site) => site.pages);
+  const totalServices = systemEntries.filter((entry) => entry.status).length;
+  const healthyServices = systemEntries.filter(
+    (entry) => entry.status && isHealthyStatus(entry.status)
+  ).length;
+  const totalSites = siteOverview.length;
+  const onlineSites = siteOverview.filter((site) => site.aggregateStatus === "online").length;
+  const totalPages = sitePages.length;
+  const onlinePages = sitePages.filter((page) => page.status === "online").length;
+  const serviceHealthPercent = formatPercent(healthyServices, totalServices);
+  const siteHealthPercent = formatPercent(onlineSites, totalSites);
+  const pageHealthPercent = formatPercent(onlinePages, totalPages);
+
+  const attentionItems = [
+    ...systemEntries
+      .filter((entry) => entry.status && !isHealthyStatus(entry.status))
+      .map((entry) => ({
+        id: `system-${entry.id}`,
+        label: entry.label,
+        status: entry.status,
+        note: entry.note,
+      })),
+    ...siteOverview
+      .filter(
+        (site) => site.aggregateStatus === "offline" || site.aggregateStatus === "degraded"
+      )
+      .map((site) => ({
+        id: `site-${site.id}`,
+        label: site.title,
+        status: site.aggregateStatus,
+        note: `${site.pages.length} pages tracked`,
+      })),
+  ];
+
+  const baseTimelineEvents = [
+    kpiData?.lastSyncedAt
+      ? {
+          id: "sync",
+          timestamp: kpiData.lastSyncedAt,
+          title: "KPI ingestion completed",
+          detail: `Orgs ${kpiData.totalOrganizations ?? 0} | Users ${
+            kpiData.totalUsers ?? 0
+          } | Inventory ${kpiData.totalInventoryItems ?? 0}`,
+          badge: "Sync",
+          priority: "normal",
+        }
+      : null,
+    kpiData?.siteStatus?.checkedAt
+      ? {
+          id: "site-check",
+          timestamp: kpiData.siteStatus.checkedAt,
+          title: "Website health check",
+          detail: `${onlineSites}/${totalSites} sites online | ${onlinePages}/${totalPages} pages online`,
+          badge: attentionItems.length ? "Alert" : "Check",
+          priority: attentionItems.length ? "urgent" : "normal",
+        }
+      : null,
+  ].filter(Boolean);
+
+  const timelineEvents = baseTimelineEvents
+    .filter((event) => {
+      const eventTime = new Date(event.timestamp).getTime();
+      if (Number.isNaN(eventTime)) return false;
+      return Date.now() - eventTime <= rangeWindowMs;
+    })
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
   return (
     <section className="page dashboard">
       <div className="panel dashboard-hero">
@@ -139,11 +160,24 @@ const Dashboard = () => {
           <p className="eyebrow">Operations overview</p>
           <h1>ERP KPI Command Center</h1>
           <p className="muted">
-            Last synced {lastSyncedLabel} | Sites tracked {siteStatuses.length} | Last check{" "}
-            {lastCheckedLabel}
+            Window {rangeDescription} | Last synced {lastSyncedLabel} | Sites tracked{" "}
+            {siteStatuses.length} | Last check {lastCheckedLabel}
           </p>
         </div>
         <div className="hero-actions">
+          <div className="segmented" role="tablist" aria-label="Time range">
+            {RANGE_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                className={`segment ${option.value === timeRange ? "is-active" : ""}`}
+                type="button"
+                aria-pressed={option.value === timeRange}
+                onClick={() => setTimeRange(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <button
             className="button button-primary"
             type="button"
@@ -173,6 +207,7 @@ const Dashboard = () => {
 
       {kpiData ? (
         <>
+          <p className="muted">KPI window: {rangeDescription}.</p>
           <div className="kpi-grid">
             {[
               {
@@ -293,33 +328,100 @@ const Dashboard = () => {
                   <span>Status</span>
                   <span>Notes</span>
                 </div>
-                {[
-                  { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
-                  {
-                    id: "portfolio",
-                    label: "Portfolio DB",
-                    status: systemStatus.portfolioDb,
-                    note: "Primary org data",
-                  },
-                  {
-                    id: "reebs",
-                    label: "Reebs DB",
-                    status: systemStatus.reebsDb,
-                    note: "Products and inventory",
-                  },
-                  {
-                    id: "faako",
-                    label: "Faako DB",
-                    status: systemStatus.faakoDb,
-                    note: "ERP users",
-                  },
-                ].map((row) => (
+                {systemEntries.map((row) => (
                   <div className="table-row is-3" key={row.id}>
                     <span className="table-strong">{row.label}</span>
                     {renderStatusPill(row.status)}
                     <span className="muted">{row.note}</span>
                   </div>
                 ))}
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <h3>Operational snapshot</h3>
+                  <p className="muted">Services, sites, and page uptime.</p>
+                </div>
+              </div>
+              <div className="stack">
+                <div className="health-row">
+                  <div className="health-row__header">
+                    <span className="table-strong">Services healthy</span>
+                    <span>{formatRatio(healthyServices, totalServices)}</span>
+                  </div>
+                  <div className="progress">
+                    <span style={{ width: `${serviceHealthPercent}%` }} />
+                  </div>
+                </div>
+                <div className="health-row">
+                  <div className="health-row__header">
+                    <span className="table-strong">Sites online</span>
+                    <span>{formatRatio(onlineSites, totalSites)}</span>
+                  </div>
+                  <div className="progress">
+                    <span style={{ width: `${siteHealthPercent}%` }} />
+                  </div>
+                </div>
+                <div className="health-row">
+                  <div className="health-row__header">
+                    <span className="table-strong">Pages online</span>
+                    <span>{formatRatio(onlinePages, totalPages)}</span>
+                  </div>
+                  <div className="progress">
+                    <span style={{ width: `${pageHealthPercent}%` }} />
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <h3>Attention required</h3>
+                  <p className="muted">Items needing a quick check.</p>
+                </div>
+              </div>
+              <div className="list">
+                {attentionItems.length ? (
+                  attentionItems.map((item) => (
+                    <div className="list-row is-split" key={item.id}>
+                      <div>
+                        <span className="table-strong">{item.label}</span>
+                        <span className="muted">{item.note}</span>
+                      </div>
+                      {renderStatusPill(item.status)}
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No alerts right now.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="panel panel-span-2">
+              <div className="panel-header">
+                <div>
+                  <h3>Activity timeline</h3>
+                  <p className="muted">Sync and status checks in the {rangeDescription} window.</p>
+                </div>
+              </div>
+              <div className="timeline">
+                {timelineEvents.length ? (
+                  timelineEvents.map((event) => (
+                    <div className="timeline-row" key={event.id}>
+                      <span className="timeline-time">{formatDateTime(event.timestamp)}</span>
+                      <div>
+                        <span className="table-strong">{event.title}</span>
+                        <p className="muted">{event.detail}</p>
+                      </div>
+                      <span className={`priority is-${event.priority}`}>{event.badge}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No activity logged in this window.</p>
+                )}
               </div>
             </article>
 
@@ -391,31 +493,29 @@ const Dashboard = () => {
             <div className="panel-header">
               <div>
                 <h3>Website health</h3>
-                <p className="muted">Last refreshed {lastCheckedLabel}.</p>
+                <p className="muted">
+                  Window {rangeDescription} | Last refreshed {lastCheckedLabel}.
+                </p>
               </div>
             </div>
             <div className="site-grid">
-              {siteStatuses.length ? (
-                siteStatuses.map((site) => {
-                  const pages = site.pages ?? [];
-                  const aggregateStatus = getAggregateStatus(pages);
-                  return (
-                    <article key={site.id} className="site-card">
-                      <div className="site-card__header">
-                        <span className="table-strong">{site.title}</span>
-                        {renderStatusPill(aggregateStatus)}
-                      </div>
-                      <div className="site-card__list">
-                        {pages.map((page) => (
-                          <div className="site-card__row" key={page.url}>
-                            <span>{page.label}</span>
-                            {renderStatusPill(page.status)}
-                          </div>
-                        ))}
-                      </div>
-                    </article>
-                  );
-                })
+              {siteOverview.length ? (
+                siteOverview.map((site) => (
+                  <article key={site.id} className="site-card">
+                    <div className="site-card__header">
+                      <span className="table-strong">{site.title}</span>
+                      {renderStatusPill(site.aggregateStatus)}
+                    </div>
+                    <div className="site-card__list">
+                      {site.pages.map((page) => (
+                        <div className="site-card__row" key={page.url}>
+                          <span>{page.label}</span>
+                          {renderStatusPill(page.status)}
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ))
               ) : (
                 <p className="muted">No site checks yet.</p>
               )}
