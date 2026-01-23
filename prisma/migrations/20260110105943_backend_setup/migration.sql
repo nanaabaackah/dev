@@ -1,0 +1,1 @@
+-- Migration placeholder. The existing schema is captured in the previous baseline migration.

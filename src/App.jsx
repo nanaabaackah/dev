@@ -9,6 +9,7 @@ import {
 } from "react-router-dom";
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
+import Bookings from "./components/Bookings";
 import Organizations from "./components/Organizations";
 import Users from "./components/Users";
 import Inventory from "./components/Inventory";
@@ -48,6 +49,9 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
         <nav className="erp-nav">
           <NavLink to="/dashboard" end className={({ isActive }) => (isActive ? "active" : "")}>
             Dashboard
+          </NavLink>
+          <NavLink to="/bookings" className={({ isActive }) => (isActive ? "active" : "")}>
+            Bookings
           </NavLink>
           <NavLink to="/organizations" className={({ isActive }) => (isActive ? "active" : "")}>
             Organizations
@@ -117,6 +121,14 @@ function App() {
           element={
             <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
               <Dashboard />
+            </ShellPage>
+          }
+        />
+        <Route
+          path="/bookings"
+          element={
+            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
+              <Bookings />
             </ShellPage>
           }
         />

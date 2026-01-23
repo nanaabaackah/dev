@@ -1,0 +1,27 @@
+.bookings-page {
+  gap: 1.5rem;
+}
+
+.booking-panel {
+  gap: 1.2rem;
+}
+
+.booking-grid {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+}
+
+.booking-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.booking-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}

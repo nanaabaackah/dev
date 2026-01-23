@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { buildApiUrl } from "../api-url";
+import { formatDateTime } from "../utils/formatters";
 
 const DEFAULT_PREFS = {
   email: false,
@@ -18,6 +19,7 @@ const Settings = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [lastEmailSentAt, setLastEmailSentAt] = useState(null);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -38,6 +40,7 @@ const Settings = () => {
           notifyDegraded: payload.notifyDegraded ?? prev.notifyDegraded,
           emailRecipients: payload.emailRecipients ?? prev.emailRecipients,
         }));
+        setLastEmailSentAt(payload.lastEmailSentAt ?? null);
         setIsLoaded(true);
       } catch (err) {
         setStatus({ tone: "error", message: err.message });
@@ -84,6 +87,7 @@ const Settings = () => {
         notifyDegraded: payload.notifyDegraded ?? prev.notifyDegraded,
         emailRecipients: payload.emailRecipients ?? prev.emailRecipients,
       }));
+      setLastEmailSentAt(payload.lastEmailSentAt ?? lastEmailSentAt);
       setStatus({ tone: "success", message: "Alert preferences saved." });
       setIsLoaded(true);
     } catch (err) {
@@ -114,6 +118,7 @@ const Settings = () => {
         throw new Error(payload?.error || "Unable to send test email");
       }
       setStatus({ tone: "success", message: "Test email sent." });
+      setLastEmailSentAt(payload?.sentAt ?? new Date().toISOString());
     } catch (err) {
       setStatus({ tone: "error", message: err.message });
     } finally {
@@ -217,6 +222,10 @@ const Settings = () => {
                 {isTesting ? "Sending..." : "Send test email"}
               </button>
             </div>
+            <p className="muted">
+              Last email sent{" "}
+              {lastEmailSentAt ? formatDateTime(lastEmailSentAt) : "not yet available"}.
+            </p>
           </div>
         </article>
 

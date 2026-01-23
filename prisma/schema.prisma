@@ -16,6 +16,9 @@ model Organization {
 
   roles Role[]
   users User[]
+  bookings Booking[]
+  bookingSettings BookingSettings?
+  calendarIntegrations CalendarIntegration[]
 }
 
 model Role {
@@ -47,6 +50,60 @@ model User {
   updatedAt      DateTime      @updatedAt
 }
 
+model Booking {
+  id            Int            @id @default(autoincrement())
+  organizationId Int
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  externalId    String?
+  source        BookingSource  @default(MANUAL)
+  title         String
+  description   String?
+  startAt       DateTime
+  endAt         DateTime
+  location      String?
+  status        BookingStatus  @default(CONFIRMED)
+  attendeeEmail String?
+  attendeeName  String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@unique([organizationId, externalId, source])
+  @@index([organizationId, startAt])
+}
+
+model BookingSettings {
+  id             Int           @id @default(autoincrement())
+  organizationId Int           @unique
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  bookingLink    String?
+  calendarEmail  String?
+  defaultLocation String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model CalendarIntegration {
+  id               Int              @id @default(autoincrement())
+  organizationId   Int
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  provider         CalendarProvider
+  accessToken      String
+  refreshToken     String?
+  tokenExpiry      DateTime?
+  scope            String?
+  email            String?
+  calendarId       String?
+  lastSyncedAt     DateTime?
+  channelId        String?
+  channelToken     String?
+  channelResourceId String?
+  channelExpiration DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([organizationId, provider])
+}
+
 enum OrgStatus {
   ACTIVE
   INACTIVE
@@ -57,4 +114,19 @@ enum UserStatus {
   ACTIVE
   SUSPENDED
   PENDING
+}
+
+enum BookingSource {
+  MANUAL
+  GOOGLE_CALENDAR
+}
+
+enum BookingStatus {
+  CONFIRMED
+  TENTATIVE
+  CANCELED
+}
+
+enum CalendarProvider {
+  GOOGLE_CALENDAR
 }

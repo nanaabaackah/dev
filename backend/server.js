@@ -5,10 +5,12 @@ import express from "express";
 import cors from "cors";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import prismaPkg from "@prisma/client";
 import { Pool } from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Resend } from "resend";
+import { google } from "googleapis";
 
 const app = express();
 const pool = new Pool({
@@ -55,10 +57,17 @@ const faakoPool = faakoDatabaseUrl
   : null;
 const port = Number(process.env.PORT ?? process.env.API_PORT ?? 8080);
 const jwtSecret = process.env.JWT_SECRET;
+const googleClientId = process.env.GOOGLE_CLIENT_ID;
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+const googleRedirectUri = process.env.GOOGLE_REDIRECT_URI;
+const googleWebhookUrl = process.env.GOOGLE_WEBHOOK_URL;
+const appBaseUrl = process.env.APP_BASE_URL;
 const SITE_STATUS_TIMEOUT_MS = Number(process.env.SITE_STATUS_TIMEOUT_MS ?? 6500);
 const SITE_STATUS_CACHE_TTL_MS = Number(process.env.SITE_STATUS_CACHE_TTL_MS ?? 5 * 60 * 1000);
 const SITE_STATUS_USER_AGENT =
   process.env.SITE_STATUS_USER_AGENT ?? "bynana-portfolio-status/1.0 (+https://dev.nanaabaackah.com)";
+
+const GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 
 const SITE_PAGES = [
   {
@@ -186,6 +195,180 @@ const getSiteStatus = async () => {
   return siteStatusCache;
 };
 
+const isGoogleConfigured = () =>
+  Boolean(googleClientId && googleClientSecret && googleRedirectUri);
+
+const createGoogleClient = () =>
+  new google.auth.OAuth2(googleClientId, googleClientSecret, googleRedirectUri);
+
+const signGoogleState = (payload) => jwt.sign(payload, jwtSecret, { expiresIn: "15m" });
+
+const verifyGoogleState = (value) => {
+  try {
+    return jwt.verify(value, jwtSecret);
+  } catch {
+    return null;
+  }
+};
+
+const normalizeEventStatus = (status) => {
+  if (status === "cancelled") return "CANCELED";
+  if (status === "tentative") return "TENTATIVE";
+  return "CONFIRMED";
+};
+
+const buildEventDate = (dateTimeValue, dateValue) => {
+  if (dateTimeValue) return new Date(dateTimeValue);
+  if (dateValue) return new Date(`${dateValue}T00:00:00.000Z`);
+  return null;
+};
+
+const pickAttendee = (event) => {
+  const attendees = event.attendees || [];
+  const attendee = attendees.find((item) => !item.self) || attendees[0];
+  return {
+    attendeeEmail: attendee?.email ?? null,
+    attendeeName: attendee?.displayName ?? null,
+  };
+};
+
+const upsertBookingFromEvent = async ({ organizationId, event }) => {
+  if (!event?.id || !event.start || !event.end) return null;
+  const startAt = buildEventDate(event.start.dateTime, event.start.date);
+  const endAt = buildEventDate(event.end.dateTime, event.end.date);
+  if (!startAt || !endAt) return null;
+
+  const { attendeeEmail, attendeeName } = pickAttendee(event);
+  const data = {
+    organizationId,
+    externalId: event.id,
+    source: "GOOGLE_CALENDAR",
+    title: event.summary || "Untitled event",
+    description: event.description || null,
+    startAt,
+    endAt,
+    location: event.location || null,
+    status: normalizeEventStatus(event.status),
+    attendeeEmail,
+    attendeeName,
+  };
+
+  return prisma.booking.upsert({
+    where: {
+      organizationId_externalId_source: {
+        organizationId,
+        externalId: event.id,
+        source: "GOOGLE_CALENDAR",
+      },
+    },
+    create: data,
+    update: data,
+  });
+};
+
+const syncGoogleCalendar = async (integration) => {
+  const auth = createGoogleClient();
+  auth.setCredentials({
+    access_token: integration.accessToken,
+    refresh_token: integration.refreshToken ?? undefined,
+    expiry_date: integration.tokenExpiry ? new Date(integration.tokenExpiry).getTime() : undefined,
+  });
+
+  auth.on("tokens", async (tokens) => {
+    if (!tokens.access_token && !tokens.refresh_token) return;
+    await prisma.calendarIntegration.update({
+      where: { id: integration.id },
+      data: {
+        accessToken: tokens.access_token ?? integration.accessToken,
+        refreshToken: tokens.refresh_token ?? integration.refreshToken,
+        tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : integration.tokenExpiry,
+      },
+    });
+  });
+
+  const calendar = google.calendar({ version: "v3", auth });
+  const calendarId = integration.calendarId || "primary";
+  const timeMin = integration.lastSyncedAt
+    ? new Date(new Date(integration.lastSyncedAt).getTime() - 24 * 60 * 60 * 1000).toISOString()
+    : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const response = await calendar.events.list({
+    calendarId,
+    timeMin,
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults: 2500,
+  });
+
+  const events = response.data.items ?? [];
+  const eventIds = events.map((event) => event.id).filter(Boolean);
+  const existingBookings = eventIds.length
+    ? await prisma.booking.findMany({
+        where: {
+          organizationId: integration.organizationId,
+          source: "GOOGLE_CALENDAR",
+          externalId: { in: eventIds },
+        },
+        select: { externalId: true },
+      })
+    : [];
+  const existingSet = new Set(existingBookings.map((booking) => booking.externalId));
+  let created = 0;
+  let updated = 0;
+
+  for (const event of events) {
+    await upsertBookingFromEvent({
+      organizationId: integration.organizationId,
+      event,
+    });
+    if (existingSet.has(event.id)) {
+      updated += 1;
+    } else {
+      created += 1;
+    }
+  }
+
+  await prisma.calendarIntegration.update({
+    where: { id: integration.id },
+    data: { lastSyncedAt: new Date() },
+  });
+
+  return { synced: events.length, created, updated };
+};
+
+const ensureGoogleWatch = async (integration) => {
+  if (!googleWebhookUrl) return null;
+  const auth = createGoogleClient();
+  auth.setCredentials({
+    access_token: integration.accessToken,
+    refresh_token: integration.refreshToken ?? undefined,
+    expiry_date: integration.tokenExpiry ? new Date(integration.tokenExpiry).getTime() : undefined,
+  });
+  const calendar = google.calendar({ version: "v3", auth });
+  const channelId = crypto.randomUUID();
+  const channelToken = crypto.randomUUID();
+
+  const response = await calendar.events.watch({
+    calendarId: integration.calendarId || "primary",
+    requestBody: {
+      id: channelId,
+      type: "web_hook",
+      address: googleWebhookUrl,
+      token: channelToken,
+      params: { ttl: "604800" },
+    },
+  });
+
+  const expiration = response.data.expiration ? new Date(Number(response.data.expiration)) : null;
+
+  return {
+    channelId,
+    channelToken,
+    channelResourceId: response.data.resourceId ?? null,
+    channelExpiration: expiration,
+  };
+};
+
 const fetchErpMetrics = async (poolInstance, label) => {
   if (!poolInstance) {
     return {
@@ -216,6 +399,34 @@ const fetchErpMetrics = async (poolInstance, label) => {
       status: "error",
     };
   }
+};
+
+const resolveTableCount = async (poolInstance, tableNames) => {
+  const tableResult = await poolInstance.query(
+    "SELECT table_schema, table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_name = ANY($1) ORDER BY CASE WHEN table_schema = 'public' THEN 0 ELSE 1 END, table_schema",
+    [tableNames]
+  );
+
+  if (!tableResult.rows.length) {
+    return { count: 0, qualifiedName: null };
+  }
+
+  let fallback = null;
+  for (const row of tableResult.rows) {
+    const qualifiedName = `\"${row.table_schema}\".\"${row.table_name}\"`;
+    const countResult = await poolInstance.query(
+      `SELECT COUNT(*)::int AS count FROM ${qualifiedName}`
+    );
+    const count = countResult.rows[0]?.count ?? 0;
+    if (!fallback) {
+      fallback = { count, qualifiedName };
+    }
+    if (count > 0) {
+      return { count, qualifiedName };
+    }
+  }
+
+  return fallback ?? { count: 0, qualifiedName: null };
 };
 
 const DEFAULT_ORG_NAME = process.env.DEFAULT_ORG_NAME ?? "bynana-portfolio";
@@ -263,12 +474,13 @@ const normalizeAlertPreferences = (input = {}, base = {}) => {
   };
 };
 
-const serializeAlertPreferences = (prefs) => ({
+const serializeAlertPreferences = (prefs, lastEmailSentAt = null) => ({
   emailEnabled: prefs.emailEnabled,
   notifyOffline: prefs.notifyOffline,
   notifyDegraded: prefs.notifyDegraded,
   emailRecipients: prefs.emailRecipients.join(", "),
   fromEmail: prefs.fromEmail,
+  lastEmailSentAt,
 });
 
 let alertPreferences = normalizeAlertPreferences({
@@ -282,6 +494,7 @@ let alertPreferences = normalizeAlertPreferences({
 const alertState = {
   snapshot: {},
   lastSentAt: {},
+  lastEmailSentAt: null,
 };
 
 const getAlertLevel = (status) => {
@@ -334,13 +547,15 @@ const sendAlertEmail = async ({ subject, text, html, recipients }) => {
   if (!resend) {
     throw new Error("RESEND_API_KEY is not configured");
   }
-  return resend.emails.send({
+  const result = await resend.emails.send({
     from: alertPreferences.fromEmail,
     to: recipients,
     subject,
     text,
     html,
   });
+  alertState.lastEmailSentAt = new Date().toISOString();
+  return result;
 };
 
 const maybeSendStatusAlerts = (systemEntries, siteOverview) => {
@@ -588,12 +803,12 @@ app.get("/api/roles", authMiddleware, async (req, res) => {
 });
 
 app.get("/api/alerts/preferences", authMiddleware, requireAdmin, (req, res) => {
-  res.json(serializeAlertPreferences(alertPreferences));
+  res.json(serializeAlertPreferences(alertPreferences, alertState.lastEmailSentAt));
 });
 
 app.post("/api/alerts/preferences", authMiddleware, requireAdmin, (req, res) => {
   alertPreferences = normalizeAlertPreferences(req.body, alertPreferences);
-  res.json(serializeAlertPreferences(alertPreferences));
+  res.json(serializeAlertPreferences(alertPreferences, alertState.lastEmailSentAt));
 });
 
 app.post("/api/alerts/test-email", authMiddleware, requireAdmin, async (req, res) => {
@@ -611,7 +826,7 @@ app.post("/api/alerts/test-email", authMiddleware, requireAdmin, async (req, res
     const text = `This is a test alert from the Dev KPI dashboard (${new Date().toISOString()}).`;
     const html = `<p><strong>This is a test alert</strong> from the Dev KPI dashboard.</p><p>${new Date().toISOString()}</p>`;
     await sendAlertEmail({ subject, text, html, recipients });
-    res.json({ ok: true });
+    res.json({ ok: true, sentAt: alertState.lastEmailSentAt });
   } catch (error) {
     console.error("Unable to send test email", error);
     res.status(500).json({ error: error.message || "Unable to send test email" });
@@ -651,11 +866,14 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
   if (faakoPool) {
     try {
       const [orgsResult, usersResult] = await Promise.all([
-        faakoPool.query('SELECT COUNT(*)::int AS count FROM "organization"'),
-        faakoPool.query('SELECT COUNT(*)::int AS count FROM "user"'),
+        resolveTableCount(faakoPool, ["Organization", "organization"]),
+        resolveTableCount(faakoPool, ["User", "user"]),
       ]);
-      faakoOrgs = orgsResult.rows[0]?.count ?? 0;
-      faakoUsers = usersResult.rows[0]?.count ?? 0;
+      faakoOrgs = orgsResult.count ?? 0;
+      faakoUsers = usersResult.count ?? 0;
+      if (!orgsResult.qualifiedName || !usersResult.qualifiedName) {
+        faakoStatus = "error";
+      }
     } catch (error) {
       console.warn("Faako KPI query failed", error);
       faakoStatus = "error";
@@ -765,6 +983,405 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
       averageUsersPerOrg,
       inventoryPerReebsUser,
     },
+  });
+});
+
+const BOOKING_STATUS_VALUES = new Set(["CONFIRMED", "TENTATIVE", "CANCELED"]);
+
+const parseDateValue = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+};
+
+const normalizeBookingStatus = (value) =>
+  BOOKING_STATUS_VALUES.has(value) ? value : null;
+
+const serializeBooking = (booking) => ({
+  id: booking.id,
+  title: booking.title,
+  description: booking.description,
+  startAt: booking.startAt.toISOString(),
+  endAt: booking.endAt.toISOString(),
+  location: booking.location,
+  status: booking.status,
+  source: booking.source,
+  attendeeEmail: booking.attendeeEmail,
+  attendeeName: booking.attendeeName,
+});
+
+app.get("/api/bookings", authMiddleware, async (req, res) => {
+  const { from, to } = req.query;
+  const where = { organizationId: req.user.organizationId };
+  if (from || to) {
+    where.startAt = {};
+    if (from) {
+      where.startAt.gte = new Date(from);
+    }
+    if (to) {
+      where.startAt.lte = new Date(to);
+    }
+  }
+
+  const bookings = await prisma.booking.findMany({
+    where,
+    orderBy: { startAt: "asc" },
+  });
+  res.json(bookings.map(serializeBooking));
+});
+
+app.post("/api/bookings", authMiddleware, requireAdmin, async (req, res) => {
+  const {
+    title,
+    description,
+    startAt,
+    endAt,
+    location,
+    status,
+    attendeeEmail,
+    attendeeName,
+  } = req.body ?? {};
+
+  const normalizedTitle = typeof title === "string" ? title.trim() : "";
+  if (!normalizedTitle) {
+    return res.status(400).json({ error: "Title is required" });
+  }
+
+  const startDate = parseDateValue(startAt);
+  const endDate = parseDateValue(endAt);
+  if (!startDate || !endDate || endDate <= startDate) {
+    return res.status(400).json({ error: "Valid start and end times are required" });
+  }
+
+  const normalizedStatus = normalizeBookingStatus(status) ?? "CONFIRMED";
+
+  const booking = await prisma.booking.create({
+    data: {
+      organizationId: req.user.organizationId,
+      title: normalizedTitle,
+      description: typeof description === "string" ? description.trim() || null : null,
+      startAt: startDate,
+      endAt: endDate,
+      location: typeof location === "string" ? location.trim() || null : null,
+      status: normalizedStatus,
+      source: "MANUAL",
+      attendeeEmail: typeof attendeeEmail === "string" ? attendeeEmail.trim() || null : null,
+      attendeeName: typeof attendeeName === "string" ? attendeeName.trim() || null : null,
+    },
+  });
+
+  res.status(201).json(serializeBooking(booking));
+});
+
+app.patch("/api/bookings/:id", authMiddleware, requireAdmin, async (req, res) => {
+  const bookingId = Number(req.params.id);
+  if (!Number.isInteger(bookingId)) {
+    return res.status(400).json({ error: "Invalid booking id" });
+  }
+
+  const booking = await prisma.booking.findFirst({
+    where: { id: bookingId, organizationId: req.user.organizationId },
+  });
+  if (!booking) {
+    return res.status(404).json({ error: "Booking not found" });
+  }
+  if (booking.source !== "MANUAL") {
+    return res.status(400).json({ error: "Only manual bookings can be edited here" });
+  }
+
+  const {
+    title,
+    description,
+    startAt,
+    endAt,
+    location,
+    status,
+    attendeeEmail,
+    attendeeName,
+  } = req.body ?? {};
+
+  const updates = {};
+  if (title !== undefined) {
+    const normalizedTitle = typeof title === "string" ? title.trim() : "";
+    if (!normalizedTitle) {
+      return res.status(400).json({ error: "Title is required" });
+    }
+    updates.title = normalizedTitle;
+  }
+
+  if (description !== undefined) {
+    updates.description = typeof description === "string" ? description.trim() || null : null;
+  }
+
+  if (location !== undefined) {
+    updates.location = typeof location === "string" ? location.trim() || null : null;
+  }
+
+  if (attendeeEmail !== undefined) {
+    updates.attendeeEmail =
+      typeof attendeeEmail === "string" ? attendeeEmail.trim() || null : null;
+  }
+
+  if (attendeeName !== undefined) {
+    updates.attendeeName =
+      typeof attendeeName === "string" ? attendeeName.trim() || null : null;
+  }
+
+  if (status !== undefined) {
+    const normalizedStatus = normalizeBookingStatus(status);
+    if (!normalizedStatus) {
+      return res.status(400).json({ error: "Invalid booking status" });
+    }
+    updates.status = normalizedStatus;
+  }
+
+  const startDate = startAt !== undefined ? parseDateValue(startAt) : booking.startAt;
+  const endDate = endAt !== undefined ? parseDateValue(endAt) : booking.endAt;
+  if (!startDate || !endDate || endDate <= startDate) {
+    return res.status(400).json({ error: "Valid start and end times are required" });
+  }
+
+  if (startAt !== undefined) {
+    updates.startAt = startDate;
+  }
+  if (endAt !== undefined) {
+    updates.endAt = endDate;
+  }
+
+  const updated = await prisma.booking.update({
+    where: { id: booking.id },
+    data: updates,
+  });
+
+  res.json(serializeBooking(updated));
+});
+
+app.get("/api/debug/faako", authMiddleware, requireAdmin, async (req, res) => {
+  if (!faakoPool) {
+    return res.status(400).json({ error: "FAAKO_DATABASE_URL is not configured." });
+  }
+
+  try {
+    const schemasResult = await faakoPool.query(
+      "SELECT schema_name FROM information_schema.schemata ORDER BY schema_name"
+    );
+    const tablesResult = await faakoPool.query(
+      "SELECT table_schema, table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' ORDER BY table_schema, table_name"
+    );
+    const orgResult = await resolveTableCount(faakoPool, ["Organization", "organization"]);
+    const userResult = await resolveTableCount(faakoPool, ["User", "user"]);
+
+    res.json({
+      schemas: schemasResult.rows,
+      tables: tablesResult.rows,
+      organizationCount: orgResult,
+      userCount: userResult,
+    });
+  } catch (error) {
+    console.error("Faako debug failed", error);
+    res.status(500).json({ error: error.message || "Faako debug failed" });
+  }
+});
+
+app.get("/api/bookings/settings", authMiddleware, requireAdmin, async (req, res) => {
+  const settings = await prisma.bookingSettings.findUnique({
+    where: { organizationId: req.user.organizationId },
+  });
+  const integration = await prisma.calendarIntegration.findFirst({
+    where: { organizationId: req.user.organizationId, provider: "GOOGLE_CALENDAR" },
+  });
+  res.json({
+    bookingLink: settings?.bookingLink ?? "",
+    calendarEmail: settings?.calendarEmail ?? "",
+    defaultLocation: settings?.defaultLocation ?? "",
+    googleConnected: Boolean(integration),
+    lastSyncedAt: integration?.lastSyncedAt ?? null,
+  });
+});
+
+app.post("/api/bookings/settings", authMiddleware, requireAdmin, async (req, res) => {
+  const { bookingLink, calendarEmail, defaultLocation } = req.body ?? {};
+  const settings = await prisma.bookingSettings.upsert({
+    where: { organizationId: req.user.organizationId },
+    update: {
+      bookingLink: bookingLink?.trim() || null,
+      calendarEmail: calendarEmail?.trim() || null,
+      defaultLocation: defaultLocation?.trim() || null,
+    },
+    create: {
+      organizationId: req.user.organizationId,
+      bookingLink: bookingLink?.trim() || null,
+      calendarEmail: calendarEmail?.trim() || null,
+      defaultLocation: defaultLocation?.trim() || null,
+    },
+  });
+  res.json({
+    bookingLink: settings.bookingLink ?? "",
+    calendarEmail: settings.calendarEmail ?? "",
+    defaultLocation: settings.defaultLocation ?? "",
+  });
+});
+
+app.post("/api/bookings/sync/google", authMiddleware, requireAdmin, async (req, res) => {
+  if (!isGoogleConfigured()) {
+    return res.status(500).json({ error: "Google Calendar integration is not configured." });
+  }
+  const integration = await prisma.calendarIntegration.findFirst({
+    where: { organizationId: req.user.organizationId, provider: "GOOGLE_CALENDAR" },
+  });
+  if (!integration) {
+    return res.status(404).json({ error: "Google Calendar is not connected yet." });
+  }
+  try {
+    const result = await syncGoogleCalendar(integration);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error("Google Calendar sync failed", error);
+    res.status(500).json({ error: error.message || "Google Calendar sync failed" });
+  }
+});
+
+app.get("/api/integrations/google/init", authMiddleware, requireAdmin, (req, res) => {
+  if (!isGoogleConfigured()) {
+    return res.status(500).json({ error: "Missing Google Calendar credentials." });
+  }
+  const returnTo = typeof req.query.returnTo === "string" ? req.query.returnTo : "";
+  const state = signGoogleState({
+    organizationId: req.user.organizationId,
+    returnTo,
+  });
+  const authUrl = createGoogleClient().generateAuthUrl({
+    access_type: "offline",
+    prompt: "consent",
+    scope: GOOGLE_SCOPES,
+    state,
+  });
+  res.json({ url: authUrl });
+});
+
+app.get("/api/integrations/google/callback", async (req, res) => {
+  if (!isGoogleConfigured()) {
+    return res.status(500).send("Google Calendar credentials missing.");
+  }
+  const code = typeof req.query.code === "string" ? req.query.code : "";
+  const state = typeof req.query.state === "string" ? req.query.state : "";
+  if (!code || !state) {
+    return res.status(400).send("Missing authorization code.");
+  }
+  const decodedState = verifyGoogleState(state);
+  if (!decodedState?.organizationId) {
+    return res.status(400).send("Invalid state.");
+  }
+
+  try {
+    const auth = createGoogleClient();
+    const { tokens } = await auth.getToken(code);
+    auth.setCredentials(tokens);
+
+    const calendar = google.calendar({ version: "v3", auth });
+    const calendarList = await calendar.calendarList.list({ minAccessRole: "owner" });
+    const primaryCalendar =
+      calendarList.data.items?.find((item) => item.primary) || calendarList.data.items?.[0];
+    const calendarId = primaryCalendar?.id ?? "primary";
+    const calendarEmail = primaryCalendar?.id ?? null;
+
+    const existing = await prisma.calendarIntegration.findFirst({
+      where: {
+        organizationId: decodedState.organizationId,
+        provider: "GOOGLE_CALENDAR",
+      },
+    });
+
+    const integration = await prisma.calendarIntegration.upsert({
+      where: {
+        organizationId_provider: {
+          organizationId: decodedState.organizationId,
+          provider: "GOOGLE_CALENDAR",
+        },
+      },
+      update: {
+        accessToken: tokens.access_token ?? existing?.accessToken ?? "",
+        refreshToken: tokens.refresh_token ?? existing?.refreshToken ?? null,
+        tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : existing?.tokenExpiry ?? null,
+        scope: tokens.scope ?? existing?.scope ?? null,
+        email: calendarEmail ?? existing?.email ?? null,
+        calendarId,
+      },
+      create: {
+        organizationId: decodedState.organizationId,
+        provider: "GOOGLE_CALENDAR",
+        accessToken: tokens.access_token ?? "",
+        refreshToken: tokens.refresh_token ?? null,
+        tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+        scope: tokens.scope ?? null,
+        email: calendarEmail,
+        calendarId,
+      },
+    });
+
+    if (calendarEmail) {
+      await prisma.bookingSettings.upsert({
+        where: { organizationId: decodedState.organizationId },
+        update: { calendarEmail },
+        create: { organizationId: decodedState.organizationId, calendarEmail },
+      });
+    }
+
+    const watch = await ensureGoogleWatch(integration);
+    if (watch) {
+      await prisma.calendarIntegration.update({
+        where: { id: integration.id },
+        data: watch,
+      });
+    }
+
+    await syncGoogleCalendar(integration);
+
+    if (decodedState.returnTo && appBaseUrl && decodedState.returnTo.startsWith("/")) {
+      const redirectUrl = new URL(decodedState.returnTo, appBaseUrl);
+      redirectUrl.searchParams.set("google", "connected");
+      return res.redirect(redirectUrl.toString());
+    }
+
+    res.send("Google Calendar connected. You can close this tab.");
+  } catch (error) {
+    console.error("Google Calendar OAuth failed", error);
+    res.status(500).send("Unable to connect Google Calendar.");
+  }
+});
+
+app.post("/api/webhooks/google-calendar", async (req, res) => {
+  const channelId = req.header("x-goog-channel-id");
+  const resourceId = req.header("x-goog-resource-id");
+  const channelToken = req.header("x-goog-channel-token");
+  if (!channelId || !resourceId) {
+    res.status(202).end();
+    return;
+  }
+
+  const integration = await prisma.calendarIntegration.findFirst({
+    where: {
+      provider: "GOOGLE_CALENDAR",
+      channelId,
+      channelResourceId: resourceId,
+    },
+  });
+
+  if (!integration) {
+    res.status(202).end();
+    return;
+  }
+
+  if (integration.channelToken && channelToken && integration.channelToken !== channelToken) {
+    res.status(403).end();
+    return;
+  }
+
+  res.status(200).end();
+
+  syncGoogleCalendar(integration).catch((error) => {
+    console.error("Google Calendar webhook sync failed", error);
   });
 });
 
