@@ -197,6 +197,7 @@ const Dashboard = () => {
   const [slotForm, setSlotForm] = useState(DEFAULT_SLOT_FORM);
   const [slotStatus, setSlotStatus] = useState({ tone: "", message: "" });
   const [isSlotSaving, setIsSlotSaving] = useState(false);
+  const [expandedSites, setExpandedSites] = useState({});
 
   const days = useMemo(() => buildWeekDays(), []);
   const holidayMap = useMemo(() => buildHolidayMap(days), [days]);
@@ -370,6 +371,10 @@ const Dashboard = () => {
     loadAvailability();
   };
 
+  const toggleSiteExpansion = (siteId) => {
+    setExpandedSites((prev) => ({ ...prev, [siteId]: !prev[siteId] }));
+  };
+
   const activeRange = RANGE_OPTIONS.find((option) => option.value === timeRange) || RANGE_OPTIONS[1];
   const rangeDescription = activeRange.description;
   const rangeWindowMs = activeRange.hours * 60 * 60 * 1000;
@@ -434,6 +439,11 @@ const Dashboard = () => {
       pages,
       aggregateStatus: getAggregateStatus(pages),
     };
+  });
+  const orderedSites = [...siteOverview].sort((left, right) => {
+    if (left.id === "reebs-portal") return 1;
+    if (right.id === "reebs-portal") return -1;
+    return 0;
   });
 
   const sitePages = siteOverview.flatMap((site) => site.pages);
@@ -984,7 +994,7 @@ const Dashboard = () => {
               </div>
             </article>
 
-            <article className="panel">
+            <article className="panel panel-span-2">
               <div className="panel-header">
                 <div>
                   <h3>Attention required</h3>
@@ -1075,7 +1085,7 @@ const Dashboard = () => {
               </div>
             </article>
 
-            <article className="panel">
+            <article className="panel panel-span-2">
               <div className="panel-header">
                 <div>
                   <h3>Organization statuses</h3>
@@ -1105,23 +1115,52 @@ const Dashboard = () => {
               </div>
             </div>
             <div className="site-grid">
-              {siteOverview.length ? (
-                siteOverview.map((site) => (
-                  <article key={site.id} className="site-card">
-                    <div className="site-card__header">
-                      <span className="table-strong">{site.title}</span>
-                      {renderStatusPill(site.aggregateStatus)}
-                    </div>
-                    <div className="site-card__list">
-                      {site.pages.map((page) => (
-                        <div className="site-card__row" key={page.url}>
-                          <span>{page.label}</span>
-                          {renderStatusPill(page.status)}
+              {orderedSites.length ? (
+                orderedSites.map((site) => {
+                  const isExpanded = Boolean(expandedSites[site.id]);
+                  const listId = `site-pages-${site.id}`;
+                  return (
+                    <article
+                      key={site.id}
+                      className={`site-card ${site.id === "reebs-portal" ? "is-portal" : ""}`.trim()}
+                    >
+                      <div className="site-card__header">
+                        <div className="site-card__meta">
+                          <span className="table-strong">{site.title}</span>
+                          <span className="muted">{site.pages.length} pages tracked</span>
                         </div>
-                      ))}
-                    </div>
-                  </article>
-                ))
+                        <div className="site-card__actions">
+                          {renderStatusPill(site.aggregateStatus)}
+                          <button
+                            className="text-button site-card__toggle"
+                            type="button"
+                            onClick={() => toggleSiteExpansion(site.id)}
+                            aria-expanded={isExpanded}
+                            aria-controls={listId}
+                          >
+                            {isExpanded ? "Hide pages" : "View pages"}
+                          </button>
+                        </div>
+                      </div>
+                      {isExpanded ? (
+                        <div className="site-card__list" id={listId}>
+                          {site.pages.length ? (
+                            site.pages.map((page) => (
+                              <div className="site-card__row" key={page.url}>
+                                <span>{page.label}</span>
+                                {renderStatusPill(page.status)}
+                              </div>
+                            ))
+                          ) : (
+                            <p className="muted">No pages tracked.</p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="site-card__collapsed muted">Pages hidden</div>
+                      )}
+                    </article>
+                  );
+                })
               ) : (
                 <p className="muted">No site checks yet.</p>
               )}

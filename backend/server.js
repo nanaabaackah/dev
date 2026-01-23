@@ -67,7 +67,7 @@ const SITE_STATUS_CACHE_TTL_MS = Number(process.env.SITE_STATUS_CACHE_TTL_MS ?? 
 const SITE_STATUS_USER_AGENT =
   process.env.SITE_STATUS_USER_AGENT ?? "bynana-portfolio-status/1.0 (+https://dev.nanaabaackah.com)";
 
-const GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
+const GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"];
 
 const SITE_PAGES = [
   {
@@ -95,6 +95,37 @@ const SITE_PAGES = [
       { label: "FAQ", path: "/faq" },
       { label: "Contact", path: "/contact" },
       { label: "Book", path: "/book" },
+    ],
+  },
+  {
+    id: "reebs-portal",
+    title: "portal.reebspartythemes.com",
+    baseUrl: "https://portal.reebspartythemes.com",
+    pages: [
+      { label: "Admin dashboard", path: "/admin" },
+      { label: "Inventory", path: "/admin/inventory" },
+      { label: "CRM", path: "/admin/crm" },
+      { label: "Customers", path: "/admin/customers" },
+      { label: "Orders", path: "/admin/orders" },
+      { label: "Order builder", path: "/admin/orders/new" },
+      { label: "Bookings", path: "/admin/bookings" },
+      { label: "Scheduler", path: "/admin/schedule" },
+      { label: "Accounting", path: "/admin/accounting" },
+      { label: "Invoicing", path: "/admin/invoicing" },
+      { label: "Directory", path: "/admin/directory" },
+      { label: "Users", path: "/admin/users" },
+      { label: "Employees", path: "/admin/employees" },
+      { label: "Expenses", path: "/admin/expenses" },
+      { label: "HR", path: "/admin/hr" },
+      { label: "Vendors", path: "/admin/vendors" },
+      { label: "Maintenance", path: "/admin/maintenance" },
+      { label: "Delivery", path: "/admin/delivery" },
+      { label: "Documents", path: "/admin/documents" },
+      { label: "Timesheets", path: "/admin/timesheets" },
+      { label: "Roles", path: "/admin/roles" },
+      { label: "Marketing", path: "/admin/marketing" },
+      { label: "Settings", path: "/admin/settings" },
+      { label: "Website template", path: "/admin/website-template" },
     ],
   },
   {
@@ -217,6 +248,12 @@ const normalizeEventStatus = (status) => {
   return "CONFIRMED";
 };
 
+const normalizeBookingStatusForEvent = (status) => {
+  if (status === "CANCELED") return "cancelled";
+  if (status === "TENTATIVE") return "tentative";
+  return "confirmed";
+};
+
 const buildEventDate = (dateTimeValue, dateValue) => {
   if (dateTimeValue) return new Date(dateTimeValue);
   if (dateValue) return new Date(`${dateValue}T00:00:00.000Z`);
@@ -232,41 +269,18 @@ const pickAttendee = (event) => {
   };
 };
 
-const upsertBookingFromEvent = async ({ organizationId, event }) => {
-  if (!event?.id || !event.start || !event.end) return null;
-  const startAt = buildEventDate(event.start.dateTime, event.start.date);
-  const endAt = buildEventDate(event.end.dateTime, event.end.date);
-  if (!startAt || !endAt) return null;
+const extractMeetingLink = (event) =>
+  event?.hangoutLink ||
+  event?.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === "video")?.uri ||
+  null;
 
-  const { attendeeEmail, attendeeName } = pickAttendee(event);
-  const data = {
-    organizationId,
-    externalId: event.id,
-    source: "GOOGLE_CALENDAR",
-    title: event.summary || "Untitled event",
-    description: event.description || null,
-    startAt,
-    endAt,
-    location: event.location || null,
-    status: normalizeEventStatus(event.status),
-    attendeeEmail,
-    attendeeName,
-  };
-
-  return prisma.booking.upsert({
-    where: {
-      organizationId_externalId_source: {
-        organizationId,
-        externalId: event.id,
-        source: "GOOGLE_CALENDAR",
-      },
-    },
-    create: data,
-    update: data,
-  });
+const getPrivateBookingId = (event) => {
+  const raw = event?.extendedProperties?.private?.bookingId;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) ? parsed : null;
 };
 
-const syncGoogleCalendar = async (integration) => {
+const getCalendarClient = (integration) => {
   const auth = createGoogleClient();
   auth.setCredentials({
     access_token: integration.accessToken,
@@ -286,7 +300,145 @@ const syncGoogleCalendar = async (integration) => {
     });
   });
 
-  const calendar = google.calendar({ version: "v3", auth });
+  return { calendar: google.calendar({ version: "v3", auth }), auth };
+};
+
+const upsertBookingFromEvent = async ({ organizationId, event }) => {
+  if (!event?.id || !event.start || !event.end) return null;
+  const startAt = buildEventDate(event.start.dateTime, event.start.date);
+  const endAt = buildEventDate(event.end.dateTime, event.end.date);
+  if (!startAt || !endAt) return null;
+
+  const { attendeeEmail, attendeeName } = pickAttendee(event);
+  const meetingLink = extractMeetingLink(event);
+  const bookingId = getPrivateBookingId(event);
+  if (bookingId) {
+    const existingBooking = await prisma.booking.findFirst({
+      where: { id: bookingId, organizationId },
+    });
+    if (existingBooking) {
+      return prisma.booking.update({
+        where: { id: existingBooking.id },
+        data: {
+          title: event.summary || existingBooking.title,
+          description: event.description || existingBooking.description,
+          startAt,
+          endAt,
+          location: event.location || existingBooking.location,
+          status: normalizeEventStatus(event.status),
+          attendeeEmail,
+          attendeeName,
+          meetingLink,
+          calendarEventId: event.id,
+          calendarProvider: "GOOGLE_CALENDAR",
+        },
+      });
+    }
+  }
+  const data = {
+    organizationId,
+    externalId: event.id,
+    source: "GOOGLE_CALENDAR",
+    title: event.summary || "Untitled event",
+    description: event.description || null,
+    startAt,
+    endAt,
+    location: event.location || null,
+    meetingLink,
+    calendarEventId: event.id,
+    calendarProvider: "GOOGLE_CALENDAR",
+    status: normalizeEventStatus(event.status),
+    attendeeEmail,
+    attendeeName,
+  };
+
+  return prisma.booking.upsert({
+    where: {
+      organizationId_externalId_source: {
+        organizationId,
+        externalId: event.id,
+        source: "GOOGLE_CALENDAR",
+      },
+    },
+    create: data,
+    update: data,
+  });
+};
+
+const buildGoogleEventPayload = (booking, { createConference = false } = {}) => {
+  const requestBody = {
+    summary: booking.title,
+    description: booking.description || undefined,
+    start: { dateTime: new Date(booking.startAt).toISOString() },
+    end: { dateTime: new Date(booking.endAt).toISOString() },
+    location: booking.location || undefined,
+    status: normalizeBookingStatusForEvent(booking.status),
+    extendedProperties: {
+      private: { bookingId: String(booking.id) },
+    },
+  };
+
+  if (booking.attendeeEmail) {
+    requestBody.attendees = [
+      {
+        email: booking.attendeeEmail,
+        displayName: booking.attendeeName || undefined,
+      },
+    ];
+  }
+
+  if (createConference) {
+    requestBody.conferenceData = {
+      createRequest: {
+        requestId: crypto.randomUUID(),
+        conferenceSolutionKey: { type: "hangoutsMeet" },
+      },
+    };
+  }
+
+  return requestBody;
+};
+
+const createGoogleCalendarEvent = async (integration, booking) => {
+  const { calendar } = getCalendarClient(integration);
+  const response = await calendar.events.insert({
+    calendarId: integration.calendarId || "primary",
+    conferenceDataVersion: 1,
+    requestBody: buildGoogleEventPayload(booking, { createConference: true }),
+  });
+  return {
+    eventId: response.data.id ?? null,
+    meetingLink: extractMeetingLink(response.data),
+  };
+};
+
+const updateGoogleCalendarEvent = async (integration, booking, { createConference = false } = {}) => {
+  const { calendar } = getCalendarClient(integration);
+  const response = await calendar.events.patch({
+    calendarId: integration.calendarId || "primary",
+    eventId: booking.calendarEventId,
+    conferenceDataVersion: 1,
+    requestBody: buildGoogleEventPayload(booking, { createConference }),
+  });
+  return {
+    eventId: response.data.id ?? booking.calendarEventId,
+    meetingLink: extractMeetingLink(response.data),
+  };
+};
+
+const stopGoogleWatch = async (integration) => {
+  if (!integration.channelId || !integration.channelResourceId) return;
+  const { calendar } = getCalendarClient(integration);
+  await calendar.channels.stop({
+    requestBody: {
+      id: integration.channelId,
+      resourceId: integration.channelResourceId,
+    },
+  });
+};
+
+const syncGoogleCalendar = async (integration) => {
+  const { calendar } = getCalendarClient(integration);
   const calendarId = integration.calendarId || "primary";
   const timeMin = integration.lastSyncedAt
     ? new Date(new Date(integration.lastSyncedAt).getTime() - 24 * 60 * 60 * 1000).toISOString()
@@ -295,6 +447,7 @@ const syncGoogleCalendar = async (integration) => {
   const response = await calendar.events.list({
     calendarId,
     timeMin,
+    conferenceDataVersion: 1,
     singleEvents: true,
     orderBy: "startTime",
     maxResults: 2500,
@@ -338,13 +491,7 @@ const syncGoogleCalendar = async (integration) => {
 
 const ensureGoogleWatch = async (integration) => {
   if (!googleWebhookUrl) return null;
-  const auth = createGoogleClient();
-  auth.setCredentials({
-    access_token: integration.accessToken,
-    refresh_token: integration.refreshToken ?? undefined,
-    expiry_date: integration.tokenExpiry ? new Date(integration.tokenExpiry).getTime() : undefined,
-  });
-  const calendar = google.calendar({ version: "v3", auth });
+  const { calendar } = getCalendarClient(integration);
   const channelId = crypto.randomUUID();
   const channelToken = crypto.randomUUID();
 
@@ -1005,6 +1152,7 @@ const serializeBooking = (booking) => ({
   startAt: booking.startAt.toISOString(),
   endAt: booking.endAt.toISOString(),
   location: booking.location,
+  meetingLink: booking.meetingLink,
   status: booking.status,
   source: booking.source,
   attendeeEmail: booking.attendeeEmail,
@@ -1071,7 +1219,29 @@ app.post("/api/bookings", authMiddleware, requireAdmin, async (req, res) => {
     },
   });
 
-  res.status(201).json(serializeBooking(booking));
+  let updatedBooking = booking;
+  if (normalizedStatus !== "CANCELED") {
+    const integration = await prisma.calendarIntegration.findFirst({
+      where: { organizationId: req.user.organizationId, provider: "GOOGLE_CALENDAR" },
+    });
+    if (integration) {
+      try {
+        const { meetingLink, eventId } = await createGoogleCalendarEvent(integration, booking);
+        updatedBooking = await prisma.booking.update({
+          where: { id: booking.id },
+          data: {
+            meetingLink,
+            calendarEventId: eventId,
+            calendarProvider: "GOOGLE_CALENDAR",
+          },
+        });
+      } catch (error) {
+        console.warn("Unable to create Google Calendar event for booking", error);
+      }
+    }
+  }
+
+  res.status(201).json(serializeBooking(updatedBooking));
 });
 
 app.patch("/api/bookings/:id", authMiddleware, requireAdmin, async (req, res) => {
@@ -1154,7 +1324,42 @@ app.patch("/api/bookings/:id", authMiddleware, requireAdmin, async (req, res) =>
     data: updates,
   });
 
-  res.json(serializeBooking(updated));
+  let syncedBooking = updated;
+  const integration = await prisma.calendarIntegration.findFirst({
+    where: { organizationId: req.user.organizationId, provider: "GOOGLE_CALENDAR" },
+  });
+  if (integration) {
+    try {
+      if (syncedBooking.calendarEventId) {
+        const shouldCreateConference = !syncedBooking.meetingLink && syncedBooking.status !== "CANCELED";
+        const { meetingLink, eventId } = await updateGoogleCalendarEvent(integration, syncedBooking, {
+          createConference: shouldCreateConference,
+        });
+        syncedBooking = await prisma.booking.update({
+          where: { id: syncedBooking.id },
+          data: {
+            meetingLink,
+            calendarEventId: eventId,
+            calendarProvider: "GOOGLE_CALENDAR",
+          },
+        });
+      } else if (syncedBooking.status !== "CANCELED") {
+        const { meetingLink, eventId } = await createGoogleCalendarEvent(integration, syncedBooking);
+        syncedBooking = await prisma.booking.update({
+          where: { id: syncedBooking.id },
+          data: {
+            meetingLink,
+            calendarEventId: eventId,
+            calendarProvider: "GOOGLE_CALENDAR",
+          },
+        });
+      }
+    } catch (error) {
+      console.warn("Unable to sync Google Calendar event for booking", error);
+    }
+  }
+
+  res.json(serializeBooking(syncedBooking));
 });
 
 app.get("/api/debug/faako", authMiddleware, requireAdmin, async (req, res) => {
@@ -1240,6 +1445,45 @@ app.post("/api/bookings/sync/google", authMiddleware, requireAdmin, async (req, 
     console.error("Google Calendar sync failed", error);
     res.status(500).json({ error: error.message || "Google Calendar sync failed" });
   }
+});
+
+app.post("/api/integrations/google/disconnect", authMiddleware, requireAdmin, async (req, res) => {
+  const integration = await prisma.calendarIntegration.findFirst({
+    where: { organizationId: req.user.organizationId, provider: "GOOGLE_CALENDAR" },
+  });
+
+  if (integration) {
+    if (isGoogleConfigured()) {
+      try {
+        await stopGoogleWatch(integration);
+      } catch (error) {
+        console.warn("Google Calendar disconnect: stop watch failed", error);
+      }
+
+      const revokeToken = integration.refreshToken || integration.accessToken;
+      if (revokeToken) {
+        try {
+          await createGoogleClient().revokeToken(revokeToken);
+        } catch (error) {
+          console.warn("Google Calendar disconnect: revoke failed", error);
+        }
+      }
+    }
+
+    await prisma.calendarIntegration.delete({ where: { id: integration.id } });
+  }
+
+  await prisma.bookingSettings.updateMany({
+    where: { organizationId: req.user.organizationId },
+    data: { calendarEmail: null },
+  });
+
+  res.json({
+    ok: true,
+    disconnected: Boolean(integration),
+    googleConnected: false,
+    calendarEmail: "",
+  });
 });
 
 app.get("/api/integrations/google/init", authMiddleware, requireAdmin, (req, res) => {

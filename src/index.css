@@ -167,7 +167,7 @@ button {
 
 .site-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
   gap: 1rem;
 }
 
@@ -188,6 +188,22 @@ button {
   flex-wrap: wrap;
 }
 
+.site-card__meta {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.site-card__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.site-card__toggle {
+  font-size: 0.8rem;
+}
+
 .site-card__list {
   display: grid;
   gap: 0.6rem;
@@ -203,6 +219,26 @@ button {
 
 .site-card__row span:first-child {
   overflow-wrap: anywhere;
+}
+
+.site-card__collapsed {
+  font-size: 0.85rem;
+}
+
+.site-card.is-portal {
+  grid-column: 1 / -1;
+}
+
+.site-card.is-portal .site-card__list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.site-card.is-portal .site-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .panel {
@@ -727,5 +763,9 @@ textarea.input {
 
   .table-row span {
     display: block;
+  }
+
+  .site-card.is-portal .site-card__list {
+    grid-template-columns: 1fr;
   }
 }

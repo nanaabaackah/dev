@@ -43,6 +43,7 @@ const Bookings = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [googleConnected, setGoogleConnected] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [copyLabel, setCopyLabel] = useState("Copy link");
@@ -249,6 +250,38 @@ const Bookings = () => {
     }
   };
 
+  const handleDisconnectGoogle = async () => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    const confirmed = window.confirm(
+      "Disconnect Google Calendar? This stops automatic sync for new bookings."
+    );
+    if (!confirmed) return;
+    setIsDisconnecting(true);
+    setStatus({ tone: "", message: "" });
+    try {
+      const response = await fetch(buildApiUrl("/api/integrations/google/disconnect"), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error || "Unable to disconnect Google Calendar");
+      }
+      setGoogleConnected(false);
+      setLastSyncedAt(null);
+      setSettings((prev) => ({
+        ...prev,
+        calendarEmail: payload.calendarEmail ?? "",
+      }));
+      setStatus({ tone: "success", message: "Google Calendar disconnected." });
+    } catch (error) {
+      setStatus({ tone: "error", message: error.message });
+    } finally {
+      setIsDisconnecting(false);
+    }
+  };
+
   return (
     <section className="page bookings-page">
       <header className="page-header">
@@ -269,6 +302,16 @@ const Bookings = () => {
           >
             {isSyncing ? "Syncing..." : "Sync now"}
           </button>
+          {googleConnected ? (
+            <button
+              className="button button-ghost button-danger"
+              type="button"
+              onClick={handleDisconnectGoogle}
+              disabled={isDisconnecting}
+            >
+              {isDisconnecting ? "Disconnecting..." : "Disconnect Google"}
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -342,7 +385,15 @@ const Bookings = () => {
                       <span>{booking.title}</span>
                       <span>{formatDateTime(booking.startAt)}</span>
                       <span>{formatDuration(booking.startAt, booking.endAt)}</span>
-                      <span>{booking.location || settings.defaultLocation || "TBD"}</span>
+                      <span>
+                        {booking.meetingLink ? (
+                          <a href={booking.meetingLink} target="_blank" rel="noreferrer">
+                            Meeting link
+                          </a>
+                        ) : (
+                          booking.location || settings.defaultLocation || "TBD"
+                        )}
+                      </span>
                       <span className={`status-pill is-${statusConfig.tone}`}>{statusConfig.label}</span>
                       <span>{SOURCE_LABELS[booking.source] || booking.source}</span>
                     </div>
