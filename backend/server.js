@@ -274,6 +274,41 @@ const extractMeetingLink = (event) =>
   event?.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === "video")?.uri ||
   null;
 
+const canAutoCreateMeetLink = (event) => {
+  if (!event?.id) return false;
+  if (!event?.start?.dateTime || !event?.end?.dateTime) return false;
+  if (event.status === "cancelled") return false;
+  return true;
+};
+
+const ensureGoogleMeetLink = async ({ calendar, calendarId, event }) => {
+  const existing = extractMeetingLink(event);
+  if (existing || !canAutoCreateMeetLink(event)) {
+    return { event, meetingLink: existing };
+  }
+
+  try {
+    const response = await calendar.events.patch({
+      calendarId,
+      eventId: event.id,
+      conferenceDataVersion: 1,
+      requestBody: {
+        conferenceData: {
+          createRequest: {
+            requestId: crypto.randomUUID(),
+            conferenceSolutionKey: { type: "hangoutsMeet" },
+          },
+        },
+      },
+    });
+    const updatedEvent = response.data ?? event;
+    return { event: updatedEvent, meetingLink: extractMeetingLink(updatedEvent) };
+  } catch (error) {
+    console.warn("Unable to auto-create Google Meet link", error);
+    return { event, meetingLink: null };
+  }
+};
+
 const getPrivateBookingId = (event) => {
   const raw = event?.extendedProperties?.private?.bookingId;
   const parsed = Number(raw);
@@ -470,9 +505,18 @@ const syncGoogleCalendar = async (integration) => {
   let updated = 0;
 
   for (const event of events) {
+    let eventToUse = event;
+    if (!extractMeetingLink(event)) {
+      const meetResult = await ensureGoogleMeetLink({
+        calendar,
+        calendarId,
+        event,
+      });
+      eventToUse = meetResult.event || event;
+    }
     await upsertBookingFromEvent({
       organizationId: integration.organizationId,
-      event,
+      event: eventToUse,
     });
     if (existingSet.has(event.id)) {
       updated += 1;
@@ -1331,7 +1375,8 @@ app.patch("/api/bookings/:id", authMiddleware, requireAdmin, async (req, res) =>
   if (integration) {
     try {
       if (syncedBooking.calendarEventId) {
-        const shouldCreateConference = !syncedBooking.meetingLink && syncedBooking.status !== "CANCELED";
+        const shouldCreateConference =
+          !syncedBooking.meetingLink && syncedBooking.status !== "CANCELED";
         const { meetingLink, eventId } = await updateGoogleCalendarEvent(integration, syncedBooking, {
           createConference: shouldCreateConference,
         });
@@ -1473,6 +1518,10 @@ app.post("/api/integrations/google/disconnect", authMiddleware, requireAdmin, as
     await prisma.calendarIntegration.delete({ where: { id: integration.id } });
   }
 
+  const deletedBookings = await prisma.booking.deleteMany({
+    where: { organizationId: req.user.organizationId, source: "GOOGLE_CALENDAR" },
+  });
+
   await prisma.bookingSettings.updateMany({
     where: { organizationId: req.user.organizationId },
     data: { calendarEmail: null },
@@ -1483,6 +1532,7 @@ app.post("/api/integrations/google/disconnect", authMiddleware, requireAdmin, as
     disconnected: Boolean(integration),
     googleConnected: false,
     calendarEmail: "",
+    deletedBookings: deletedBookings.count,
   });
 });
 

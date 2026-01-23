@@ -181,7 +181,6 @@ const Bookings = () => {
         },
         body: JSON.stringify({
           bookingLink: settings.bookingLink,
-          calendarEmail: settings.calendarEmail,
           defaultLocation: settings.defaultLocation,
         }),
       });
@@ -191,7 +190,6 @@ const Bookings = () => {
       }
       setSettings({
         bookingLink: payload.bookingLink ?? "",
-        calendarEmail: payload.calendarEmail ?? "",
         defaultLocation: payload.defaultLocation ?? "",
       });
       setStatus({ tone: "success", message: "Booking settings saved." });
@@ -254,7 +252,7 @@ const Bookings = () => {
     const token = localStorage.getItem("token");
     if (!token) return;
     const confirmed = window.confirm(
-      "Disconnect Google Calendar? This stops automatic sync for new bookings."
+      "Disconnect Google Calendar and remove all synced bookings? This cannot be undone."
     );
     if (!confirmed) return;
     setIsDisconnecting(true);
@@ -268,13 +266,22 @@ const Bookings = () => {
       if (!response.ok) {
         throw new Error(payload?.error || "Unable to disconnect Google Calendar");
       }
+      const deletedCount = Number(payload?.deletedBookings ?? 0);
       setGoogleConnected(false);
       setLastSyncedAt(null);
       setSettings((prev) => ({
         ...prev,
         calendarEmail: payload.calendarEmail ?? "",
       }));
-      setStatus({ tone: "success", message: "Google Calendar disconnected." });
+      setBookings((prev) => prev.filter((booking) => booking.source !== "GOOGLE_CALENDAR"));
+      setStatus({
+        tone: "success",
+        message: deletedCount
+          ? `Google Calendar disconnected. Removed ${deletedCount} synced booking${
+              deletedCount === 1 ? "" : "s"
+            }.`
+          : "Google Calendar disconnected.",
+      });
     } catch (error) {
       setStatus({ tone: "error", message: error.message });
     } finally {
