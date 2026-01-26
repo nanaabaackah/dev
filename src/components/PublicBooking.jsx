@@ -415,7 +415,7 @@ const PublicBooking = () => {
                               key={`${day.key}-${slot.label}`}
                               className={`public-availability-cell public-availability-slot is-${status}`}
                             >
-                              {status === "booked" ? "Booked" : "Past"}
+                              {status === "booked" ? "Booked" : "Unavailable"}
                             </div>
                           );
                         })}
