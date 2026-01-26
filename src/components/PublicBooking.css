@@ -1,0 +1,167 @@
+.public-booking {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 3rem;
+  gap: 1.5rem;
+}
+
+.public-booking__hero {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.public-booking__form {
+  display: grid;
+  gap: 1rem;
+}
+
+.public-booking__availability {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.public-booking__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.public-booking__legend-item {
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.public-booking__legend-item.is-available {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #166534;
+}
+
+.public-booking__legend-item.is-booked {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.3);
+  color: #b91c1c;
+}
+
+.public-booking__legend-item.is-blocked {
+  background: #eef2f7;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+
+.public-availability-scroll {
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.public-availability-grid {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: 110px repeat(7, minmax(120px, 1fr));
+  min-width: 860px;
+}
+
+.public-availability-cell {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.5rem;
+  background: var(--card);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.public-availability-corner {
+  background: transparent;
+  border: none;
+}
+
+.public-availability-day {
+  display: grid;
+  gap: 0.2rem;
+  font-weight: 600;
+}
+
+.public-availability-day__label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.public-availability-day__date {
+  font-size: 0.9rem;
+}
+
+.public-availability-time {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.public-availability-slot {
+  cursor: default;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.public-availability-slot.is-available {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #166534;
+  cursor: pointer;
+}
+
+.public-availability-slot.is-available:hover {
+  box-shadow: 0 10px 20px rgba(16, 185, 129, 0.18);
+  transform: translateY(-1px);
+}
+
+.public-availability-slot.is-booked {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.3);
+  color: #b91c1c;
+}
+
+.public-availability-slot.is-blocked {
+  background: #eef2f7;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+
+.public-availability-slot.is-selected {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.public-booking__grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.public-booking__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.public-booking__confirmation {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.public-booking__honeypot {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}

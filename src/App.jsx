@@ -10,6 +10,7 @@ import {
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
 import Bookings from "./components/Bookings";
+import PublicBooking from "./components/PublicBooking";
 import Organizations from "./components/Organizations";
 import Users from "./components/Users";
 import Inventory from "./components/Inventory";
@@ -116,6 +117,7 @@ function App() {
     <Router>
       <Routes>
         <Route path="/login" element={<Login theme={theme} onToggleTheme={handleToggleTheme} />} />
+        <Route path="/book/:orgSlug?" element={<PublicBooking />} />
         <Route
           path="/dashboard"
           element={

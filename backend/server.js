@@ -62,6 +62,11 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const googleRedirectUri = process.env.GOOGLE_REDIRECT_URI;
 const googleWebhookUrl = process.env.GOOGLE_WEBHOOK_URL;
 const appBaseUrl = process.env.APP_BASE_URL;
+const googleNightlySyncEnabled = ["true", "1", "yes", "on"].includes(
+  String(process.env.GOOGLE_NIGHTLY_SYNC_ENABLED ?? "").trim().toLowerCase()
+);
+const googleNightlySyncHour = Number(process.env.GOOGLE_NIGHTLY_SYNC_HOUR ?? 2);
+const googleNightlySyncMinute = Number(process.env.GOOGLE_NIGHTLY_SYNC_MINUTE ?? 0);
 const SITE_STATUS_TIMEOUT_MS = Number(process.env.SITE_STATUS_TIMEOUT_MS ?? 6500);
 const SITE_STATUS_CACHE_TTL_MS = Number(process.env.SITE_STATUS_CACHE_TTL_MS ?? 5 * 60 * 1000);
 const SITE_STATUS_USER_AGENT =
@@ -226,6 +231,16 @@ const getSiteStatus = async () => {
   return siteStatusCache;
 };
 
+const getRequestBaseUrl = (req) => {
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const forwardedHost = req.headers["x-forwarded-host"];
+  const protocol =
+    (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) || req.protocol;
+  const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) || req.get("host");
+  if (!host) return null;
+  return `${protocol}://${host}`;
+};
+
 const isGoogleConfigured = () =>
   Boolean(googleClientId && googleClientSecret && googleRedirectUri);
 
@@ -252,6 +267,75 @@ const normalizeBookingStatusForEvent = (status) => {
   if (status === "CANCELED") return "cancelled";
   if (status === "TENTATIVE") return "tentative";
   return "confirmed";
+};
+
+const getEasterDate = (year) => {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+};
+
+const getNthWeekday = (year, monthIndex, weekday, occurrence) => {
+  const date = new Date(year, monthIndex, 1);
+  const offset = (weekday - date.getDay() + 7) % 7;
+  date.setDate(1 + offset + 7 * (occurrence - 1));
+  return date;
+};
+
+const getLastWeekdayBefore = (year, monthIndex, dayOfMonth, weekday) => {
+  const date = new Date(year, monthIndex, dayOfMonth);
+  const offset = (date.getDay() - weekday + 7) % 7;
+  date.setDate(dayOfMonth - offset);
+  return date;
+};
+
+const buildGhanaHolidaySet = (year) => {
+  const easter = getEasterDate(year);
+  const goodFriday = new Date(easter);
+  goodFriday.setDate(easter.getDate() - 2);
+  const easterMonday = new Date(easter);
+  easterMonday.setDate(easter.getDate() + 1);
+  const holidays = [
+    new Date(year, 0, 1),
+    new Date(year, 2, 6),
+    goodFriday,
+    easterMonday,
+    new Date(year, 4, 1),
+    new Date(year, 8, 21),
+    getNthWeekday(year, 11, 5, 1),
+    new Date(year, 11, 25),
+    new Date(year, 11, 26),
+  ];
+  return new Set(
+    holidays.map((date) => {
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+        date.getDate()
+      ).padStart(2, "0")}`;
+      return key;
+    })
+  );
+};
+
+const isGhanaHoliday = (date) => {
+  if (!date) return false;
+  const year = date.getFullYear();
+  const holidaySet = buildGhanaHolidaySet(year);
+  const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+  return holidaySet.has(key);
 };
 
 const buildEventDate = (dateTimeValue, dateValue) => {
@@ -558,6 +642,51 @@ const ensureGoogleWatch = async (integration) => {
     channelResourceId: response.data.resourceId ?? null,
     channelExpiration: expiration,
   };
+};
+
+const runNightlyGoogleSync = async () => {
+  if (!googleNightlySyncEnabled) return;
+  try {
+    const integrations = await prisma.calendarIntegration.findMany({
+      where: { provider: "GOOGLE_CALENDAR" },
+    });
+    if (!integrations.length) return;
+    const results = await Promise.allSettled(
+      integrations.map((integration) => syncGoogleCalendar(integration))
+    );
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      console.warn(`Nightly Google sync completed with ${failures.length} failure(s).`);
+    } else {
+      console.info(`Nightly Google sync completed for ${integrations.length} calendar(s).`);
+    }
+  } catch (error) {
+    console.error("Nightly Google sync failed", error);
+  }
+};
+
+const scheduleNightlyGoogleSync = () => {
+  if (!googleNightlySyncEnabled) return;
+  if (!Number.isFinite(googleNightlySyncHour) || !Number.isFinite(googleNightlySyncMinute)) {
+    console.warn("Nightly Google sync skipped: invalid schedule configuration.");
+    return;
+  }
+
+  const scheduleNext = () => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(googleNightlySyncHour, googleNightlySyncMinute, 0, 0);
+    if (next <= now) {
+      next.setDate(next.getDate() + 1);
+    }
+    const delay = Math.max(next.getTime() - now.getTime(), 0);
+    setTimeout(async () => {
+      await runNightlyGoogleSync();
+      scheduleNext();
+    }, delay);
+  };
+
+  scheduleNext();
 };
 
 const fetchErpMetrics = async (poolInstance, label) => {
@@ -1223,6 +1352,198 @@ app.get("/api/bookings", authMiddleware, async (req, res) => {
   res.json(bookings.map(serializeBooking));
 });
 
+app.get("/api/public/booking-settings/:orgSlug", async (req, res) => {
+  const orgSlug = String(req.params.orgSlug || "").trim();
+  if (!orgSlug) {
+    return res.status(400).json({ error: "Organization slug is required." });
+  }
+
+  const organization = await prisma.organization.findUnique({
+    where: { slug: orgSlug },
+    select: { id: true, name: true, slug: true },
+  });
+  if (!organization) {
+    return res.status(404).json({ error: "Organization not found." });
+  }
+
+  const settings = await prisma.bookingSettings.findUnique({
+    where: { organizationId: organization.id },
+  });
+
+  res.json({
+    organizationName: organization.name,
+    organizationSlug: organization.slug,
+    bookingLink: settings?.bookingLink ?? "",
+    defaultLocation: settings?.defaultLocation ?? "",
+  });
+});
+
+app.get("/api/public/bookings/:orgSlug", async (req, res) => {
+  const orgSlug = String(req.params.orgSlug || "").trim();
+  if (!orgSlug) {
+    return res.status(400).json({ error: "Organization slug is required." });
+  }
+
+  const organization = await prisma.organization.findUnique({
+    where: { slug: orgSlug },
+    select: { id: true },
+  });
+  if (!organization) {
+    return res.status(404).json({ error: "Organization not found." });
+  }
+
+  const { from, to } = req.query;
+  const where = {
+    organizationId: organization.id,
+    status: { not: "CANCELED" },
+  };
+  if (from || to) {
+    where.startAt = {};
+    if (from) {
+      where.startAt.gte = new Date(from);
+    }
+    if (to) {
+      where.startAt.lte = new Date(to);
+    }
+  }
+
+  const bookings = await prisma.booking.findMany({
+    where,
+    select: { startAt: true, endAt: true, status: true },
+    orderBy: { startAt: "asc" },
+  });
+
+  res.json(
+    bookings.map((booking) => ({
+      startAt: booking.startAt.toISOString(),
+      endAt: booking.endAt.toISOString(),
+      status: booking.status,
+    }))
+  );
+});
+
+app.post("/api/public/bookings/:orgSlug", async (req, res) => {
+  const orgSlug = String(req.params.orgSlug || "").trim();
+  if (!orgSlug) {
+    return res.status(400).json({ error: "Organization slug is required." });
+  }
+
+  const organization = await prisma.organization.findUnique({
+    where: { slug: orgSlug },
+    select: { id: true },
+  });
+  if (!organization) {
+    return res.status(404).json({ error: "Organization not found." });
+  }
+
+  const {
+    attendeeName,
+    attendeeEmail,
+    title,
+    description,
+    startAt,
+    endAt,
+    durationMinutes,
+    company,
+  } = req.body ?? {};
+
+  if (typeof company === "string" && company.trim()) {
+    return res.status(202).json({ ok: true });
+  }
+
+  const normalizedEmail = typeof attendeeEmail === "string" ? attendeeEmail.trim() : "";
+  if (!normalizedEmail || !EMAIL_PATTERN.test(normalizedEmail)) {
+    return res.status(400).json({ error: "A valid email is required." });
+  }
+
+  const normalizedName = typeof attendeeName === "string" ? attendeeName.trim() : "";
+  const normalizedTitle =
+    typeof title === "string" && title.trim() ? title.trim() : "Appointment";
+  const normalizedDescription =
+    typeof description === "string" && description.trim() ? description.trim() : null;
+
+  const startDate = parseDateValue(startAt);
+  if (!startDate) {
+    return res.status(400).json({ error: "Valid start time is required." });
+  }
+  const startDay = startDate.getDay();
+  if (startDay === 0 || startDay === 6) {
+    return res.status(400).json({ error: "Weekend bookings are not available." });
+  }
+
+  let endDate = parseDateValue(endAt);
+  if (!endDate) {
+    const minutes = Number(durationMinutes ?? 60);
+    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 240) {
+      return res.status(400).json({ error: "Valid duration is required." });
+    }
+    endDate = new Date(startDate.getTime() + minutes * 60 * 1000);
+  }
+
+  if (endDate <= startDate) {
+    return res.status(400).json({ error: "End time must be after start time." });
+  }
+
+  const minimumStart = new Date(Date.now() + 5 * 60 * 1000);
+  if (startDate < minimumStart) {
+    return res.status(400).json({ error: "Start time must be in the future." });
+  }
+
+  const conflict = await prisma.booking.findFirst({
+    where: {
+      organizationId: organization.id,
+      status: { not: "CANCELED" },
+      startAt: { lt: endDate },
+      endAt: { gt: startDate },
+    },
+  });
+  if (conflict) {
+    return res.status(409).json({ error: "That time slot is no longer available." });
+  }
+
+  const settings = await prisma.bookingSettings.findUnique({
+    where: { organizationId: organization.id },
+  });
+  const location = settings?.defaultLocation ?? null;
+
+  const booking = await prisma.booking.create({
+    data: {
+      organizationId: organization.id,
+      title: normalizedTitle,
+      description: normalizedDescription,
+      startAt: startDate,
+      endAt: endDate,
+      location,
+      status: "CONFIRMED",
+      source: "MANUAL",
+      attendeeEmail: normalizedEmail,
+      attendeeName: normalizedName || null,
+    },
+  });
+
+  let updatedBooking = booking;
+  const integration = await prisma.calendarIntegration.findFirst({
+    where: { organizationId: organization.id, provider: "GOOGLE_CALENDAR" },
+  });
+  if (integration) {
+    try {
+      const { meetingLink, eventId } = await createGoogleCalendarEvent(integration, booking);
+      updatedBooking = await prisma.booking.update({
+        where: { id: booking.id },
+        data: {
+          meetingLink,
+          calendarEventId: eventId,
+          calendarProvider: "GOOGLE_CALENDAR",
+        },
+      });
+    } catch (error) {
+      console.warn("Unable to create Google Calendar event for public booking", error);
+    }
+  }
+
+  res.status(201).json(serializeBooking(updatedBooking));
+});
+
 app.post("/api/bookings", authMiddleware, requireAdmin, async (req, res) => {
   const {
     title,
@@ -1761,6 +2082,7 @@ const start = async () => {
   app.listen(port, () => {
     console.log(`API server listening on http://localhost:${port}`);
   });
+  scheduleNightlyGoogleSync();
 };
 
 start().catch((error) => {
