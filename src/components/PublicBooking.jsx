@@ -364,7 +364,7 @@ const PublicBooking = () => {
                 <div className="public-booking__legend">
                   <span className="public-booking__legend-item is-available">Available</span>
                   <span className="public-booking__legend-item is-booked">Booked</span>
-                  <span className="public-booking__legend-item is-blocked">Past</span>
+                  <span className="public-booking__legend-item is-blocked">Unavailable</span>
                 </div>
               </div>
               {availabilityError ? (
