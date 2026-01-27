@@ -320,7 +320,8 @@ const PublicBooking = () => {
     <section className="page public-booking">
       <header className="public-booking__hero">
         <p className="eyebrow">Appointment booking</p>
-        <h1>{settings.organizationName || "Book an appointment"}</h1>
+        <h1>Dev Dashboard</h1>
+        <h2>Book an Appointment</h2>
         <p className="muted">
           Choose a time that works for you. We’ll confirm details and send a calendar invite.
         </p>
