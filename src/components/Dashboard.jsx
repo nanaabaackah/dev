@@ -38,7 +38,7 @@ const DEFAULT_SLOT_FORM = {
   attendeeName: "",
   attendeeEmail: "",
   location: "",
-  status: "CONFIRMED",
+  status: "TENTATIVE",
   description: "",
 };
 
@@ -176,14 +176,20 @@ const buildAvailabilityMatrix = (days, bookings, holidayMap) => {
 
   return days.map((day) => {
     const isHoliday = holidayMap.has(day.key);
+    const isWeekend = day.date.getDay() === 0 || day.date.getDay() === 6;
+
     return TIME_SLOTS.map((slot) => {
       const { start, end } = buildSlotRange(day.date, slot);
       if (isHoliday || end <= now) {
         return "blocked";
       }
+      if (isWeekend || end <= now) {
+        return "blocked";
+      }
       const booked = bookingRanges.some((range) => hasOverlap(start, end, range.start, range.end));
       return booked ? "booked" : "available";
     });
+    
   });
 };
 
