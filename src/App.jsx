@@ -38,6 +38,18 @@ const getInitialTheme = () => {
 
 const AppShell = ({ children, theme, onToggleTheme }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [isNavOpen, setIsNavOpen] = useState(false);
+
+  useEffect(() => {
+    setIsNavOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    document.body.classList.toggle("nav-open", isNavOpen);
+    return () => document.body.classList.remove("nav-open");
+  }, [isNavOpen]);
 
   const handleSignOut = () => {
     localStorage.removeItem("token");
@@ -47,10 +59,24 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
 
   return (
     <div className="erp-shell">
-      <aside className="erp-sidebar">
-        <div className="brand">Dev KPI</div>
+      <aside className={`erp-sidebar ${isNavOpen ? "is-open" : ""}`} id="erp-sidebar">
+        <div className="sidebar-header">
+          <div className="brand">Dev KPI</div>
+          <button
+            className="nav-close"
+            type="button"
+            onClick={() => setIsNavOpen(false)}
+            aria-label="Close navigation"
+          >
+            Close
+          </button>
+        </div>
         <nav className="erp-nav">
-          <NavLink to="/dashboard" end className={({ isActive }) => (isActive ? "active" : "")}>
+          <NavLink
+            to="/dashboard"
+            end
+            className={({ isActive }) => (isActive ? "active" : "")}
+          >
             Dashboard
           </NavLink>
           <NavLink to="/accounting" className={({ isActive }) => (isActive ? "active" : "")}>
@@ -82,9 +108,27 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           </NavLink>
         </nav>
       </aside>
+      <button
+        className={`nav-scrim ${isNavOpen ? "is-open" : ""}`}
+        type="button"
+        aria-label="Close navigation"
+        onClick={() => setIsNavOpen(false)}
+      />
       <div className="erp-main">
         <header className="erp-topbar">
-          <span>Workspace overview</span>
+          <div className="topbar-title">
+            <button
+              className="nav-toggle"
+              type="button"
+              aria-label="Open navigation"
+              aria-controls="erp-sidebar"
+              aria-expanded={isNavOpen}
+              onClick={() => setIsNavOpen(true)}
+            >
+              Menu
+            </button>
+            <span>Workspace overview</span>
+          </div>
           <div className="topbar-actions">
             <ThemeToggle theme={theme} onToggle={onToggleTheme} />
             <button className="button button-ghost" type="button" onClick={handleSignOut}>

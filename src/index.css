@@ -92,6 +92,13 @@ button {
   height: 100vh;
 }
 
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .brand {
   font-weight: 600;
   font-size: 1.1rem;
@@ -115,6 +122,15 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .topbar-actions {
@@ -144,6 +160,43 @@ button {
 .theme-toggle__value {
   color: var(--ink);
   font-weight: 600;
+}
+
+.nav-toggle,
+.nav-close {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.nav-toggle:focus-visible,
+.nav-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.nav-toggle {
+  display: none;
+}
+
+.nav-close {
+  display: none;
+}
+
+.nav-scrim {
+  display: none;
+  border: none;
+  padding: 0;
+}
+
+body.nav-open {
+  overflow: hidden;
 }
 
 .page {
@@ -848,12 +901,53 @@ textarea.input {
   }
 
   .erp-sidebar {
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    align-items: start;
-    padding: 1.25rem;
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(78vw, 320px);
+    height: 100vh;
+    transform: translateX(-110%);
+    transition: transform 0.25s ease;
+    padding: 1.5rem;
+    grid-template-columns: 1fr;
     gap: 1rem;
-    position: static;
-    height: auto;
+    z-index: 120;
+    box-shadow: none;
+  }
+
+  .erp-sidebar.is-open {
+    transform: translateX(0);
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+  }
+
+  .nav-toggle,
+  .nav-close {
+    display: inline-flex;
+  }
+
+  .nav-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+    z-index: 110;
+  }
+
+  .nav-scrim.is-open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .erp-nav {
+    gap: 0.35rem;
+  }
+
+  .erp-nav a {
+    padding: 0.55rem 0.75rem;
   }
 
   .dashboard-hero {
