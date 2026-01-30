@@ -350,6 +350,51 @@ const Accounting = () => {
     });
   }, [entries]);
 
+  const expenseEntriesByStatus = useMemo(() => {
+    const base = {
+      PAID: [],
+      PENDING: [],
+      SCHEDULED: [],
+      OVERDUE: [],
+    };
+    sortedEntries.forEach((entry) => {
+      if (entry.type !== "EXPENSE") return;
+      const bucket = base[entry.status] || [];
+      bucket.push(entry);
+      base[entry.status] = bucket;
+    });
+    return base;
+  }, [sortedEntries]);
+
+  const renderLedgerRow = (entry) => {
+    const dateLabel = entry.status === "PAID" ? "Paid date" : "Due date";
+    const cadenceLabel = entry.recurringInterval
+      ? `Recurring ${entry.recurringInterval.toLowerCase()}`
+      : null;
+    const organizationLabel = entry.organization?.name ? `Org: ${entry.organization.name}` : null;
+    return (
+      <div className="table-row is-7" key={entry.id}>
+        <span className="table-strong">{entry.id}</span>
+        <div>
+          <div className="table-strong">{entry.serviceName}</div>
+          <span className="muted">
+            {[entry.detail, cadenceLabel, organizationLabel].filter(Boolean).join(" • ") || "—"}
+          </span>
+        </div>
+        <span>{entry.type}</span>
+        <div>
+          <div className="table-strong">{formatDate(resolveEntryDate(entry))}</div>
+          <span className="muted">{dateLabel}</span>
+        </div>
+        <span className="table-strong">{formatAmountValue(entry.amount)}</span>
+        <span>{entry.currency}</span>
+        <span className={`status-pill is-${STATUS_TONE[entry.status] || "info"}`}>
+          {entry.status}
+        </span>
+      </div>
+    );
+  };
+
   return (
     <section className="page">
       <header className="page-header">
@@ -643,7 +688,6 @@ const Accounting = () => {
           </div>
         </article>
       </div>
-
       <article className="panel">
         <div className="panel-header">
           <div>
@@ -665,39 +709,50 @@ const Accounting = () => {
             <span>Currency</span>
             <span>Status</span>
           </div>
-          {sortedEntries.map((entry) => {
-            const dateLabel = entry.status === "PAID" ? "Paid date" : "Due date";
-            const cadenceLabel = entry.recurringInterval
-              ? `Recurring ${entry.recurringInterval.toLowerCase()}`
-              : null;
-            const organizationLabel = entry.organization?.name
-              ? `Org: ${entry.organization.name}`
-              : null;
-            return (
-              <div className="table-row is-7" key={entry.id}>
-                <span className="table-strong">{entry.id}</span>
-                <div>
-                  <div className="table-strong">{entry.serviceName}</div>
-                  <span className="muted">
-                    {[entry.detail, cadenceLabel, organizationLabel].filter(Boolean).join(" • ") ||
-                      "—"}
-                  </span>
-                </div>
-                <span>{entry.type}</span>
-                <div>
-                  <div className="table-strong">{formatDate(resolveEntryDate(entry))}</div>
-                  <span className="muted">{dateLabel}</span>
-                </div>
-                <span className="table-strong">{formatAmountValue(entry.amount)}</span>
-                <span>{entry.currency}</span>
-                <span className={`status-pill is-${STATUS_TONE[entry.status] || "info"}`}>
-                  {entry.status}
-                </span>
-              </div>
-            );
-          })}
+          {sortedEntries.map(renderLedgerRow)}
         </div>
       </article>
+      <div className="stack">
+        {[
+          { status: "PENDING", label: "Pending payables" },
+          { status: "SCHEDULED", label: "Scheduled payments" },
+          { status: "OVERDUE", label: "Overdue expenses" },
+        ].map((section) => {
+          const rows = expenseEntriesByStatus[section.status] || [];
+          return (
+            <article className="panel" key={section.status}>
+              <div className="panel-header">
+                <div>
+                  <h3>{section.label}</h3>
+                  <p className="muted">
+                    {rows.length} entries • Amounts tracked in CAD and GHS.
+                  </p>
+                </div>
+                <span className={`status-pill is-${STATUS_TONE[section.status] || "info"}`}>
+                  {section.status}
+                </span>
+              </div>
+
+              <div className="data-table">
+                <div className="table-row is-7 table-head">
+                  <span>ID</span>
+                  <span>Service</span>
+                  <span>Type</span>
+                  <span>Paid date</span>
+                  <span>Amount</span>
+                  <span>Currency</span>
+                  <span>Status</span>
+                </div>
+                {rows.length ? rows.map(renderLedgerRow) : null}
+              </div>
+
+              {!rows.length ? (
+                <p className="muted">No {section.label.toLowerCase()} in this range.</p>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
     </section>
   );
 };

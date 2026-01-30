@@ -1366,7 +1366,10 @@ app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
     .filter((entry) => {
       const entryDate = resolveAccountingEntryDate(entry);
       if (!entryDate || Number.isNaN(entryDate.getTime())) return false;
-      return entryDate >= start && entryDate <= end;
+      if (entry.status === "PAID") {
+        return entryDate >= start && entryDate <= end;
+      }
+      return entryDate >= start;
     })
     .map(serializeAccountingEntry);
 
