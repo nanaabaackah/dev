@@ -53,14 +53,14 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           <NavLink to="/dashboard" end className={({ isActive }) => (isActive ? "active" : "")}>
             Dashboard
           </NavLink>
+          <NavLink to="/accounting" className={({ isActive }) => (isActive ? "active" : "")}>
+            Accounting
+          </NavLink>
           <NavLink to="/bookings" className={({ isActive }) => (isActive ? "active" : "")}>
             Bookings
           </NavLink>
           <NavLink to="/organizations" className={({ isActive }) => (isActive ? "active" : "")}>
             Organizations
-          </NavLink>
-          <NavLink to="/users" className={({ isActive }) => (isActive ? "active" : "")}>
-            Users
           </NavLink>
           <NavLink to="/inventory" className={({ isActive }) => (isActive ? "active" : "")}>
             Inventory
@@ -71,14 +71,14 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           <NavLink to="/reports" className={({ isActive }) => (isActive ? "active" : "")}>
             Reports
           </NavLink>
-          <NavLink to="/accounting" className={({ isActive }) => (isActive ? "active" : "")}>
-            Accounting
+          <NavLink to="/audit-logs" className={({ isActive }) => (isActive ? "active" : "")}>
+            Audit Logs
+          </NavLink>
+          <NavLink to="/users" className={({ isActive }) => (isActive ? "active" : "")}>
+            Users
           </NavLink>
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
             Settings
-          </NavLink>
-          <NavLink to="/audit-logs" className={({ isActive }) => (isActive ? "active" : "")}>
-            Audit Logs
           </NavLink>
         </nav>
       </aside>

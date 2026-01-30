@@ -393,7 +393,17 @@ button {
   z-index: 50;
 }
 
+.modal-dismiss {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
 .modal-card {
+  position: relative;
+  z-index: 1;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 18px;

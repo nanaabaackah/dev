@@ -6,6 +6,7 @@ import { formatStatusLabel, getStatusTone, isHealthyStatus } from "../utils/stat
 import { buildApiUrl } from "../api-url";
 import "./Dashboard.css";
 
+const ACCOUNTING_RANGE = { value: "all", label: "All time" };
 const RANGE_OPTIONS = [
   { value: "24h", label: "24H", description: "Last 24 hours", hours: 24 },
   { value: "7d", label: "7D", description: "Last 7 days", hours: 24 * 7 },
@@ -40,6 +41,55 @@ const DEFAULT_SLOT_FORM = {
   location: "",
   status: "TENTATIVE",
   description: "",
+};
+
+const formatAmountValue = (amount) =>
+  Number(amount || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+const formatAmount = (amount, currency) => `${currency} ${formatAmountValue(amount)}`;
+
+const buildAccountingSummary = (entries = []) => {
+  const base = {
+    paidRevenue: { CAD: 0, GHS: 0 },
+    paidExpenses: { CAD: 0, GHS: 0 },
+    pendingPayables: { CAD: 0, GHS: 0 },
+    counts: {
+      paidRevenue: 0,
+      paidExpenses: 0,
+      pendingPayables: 0,
+    },
+  };
+
+  entries.forEach((entry) => {
+    const amount = Number(entry.amount || 0);
+    if (!Number.isFinite(amount)) return;
+    if (entry.type === "REVENUE" && entry.status === "PAID") {
+      base.paidRevenue[entry.currency] += amount;
+      base.counts.paidRevenue += 1;
+    }
+    if (entry.type === "EXPENSE" && entry.status === "PAID") {
+      base.paidExpenses[entry.currency] += amount;
+      base.counts.paidExpenses += 1;
+    }
+    if (entry.type === "EXPENSE" && entry.status !== "PAID") {
+      base.pendingPayables[entry.currency] += amount;
+      base.counts.pendingPayables += 1;
+    }
+  });
+
+  return base;
+};
+
+const readStoredUser = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    return JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    return null;
+  }
 };
 
 const buildWeekDays = () => {
@@ -194,11 +244,16 @@ const buildAvailabilityMatrix = (days, bookings, holidayMap) => {
 };
 
 const Dashboard = () => {
+  const storedUser = useMemo(() => readStoredUser(), []);
+  const isAdmin = storedUser?.role?.name === "Admin";
   const { data: kpiData, loading, isRefreshing, error, reload } = useDashboardData();
   const [timeRange, setTimeRange] = useState("7d");
   const [availabilityBookings, setAvailabilityBookings] = useState([]);
   const [availabilityLoading, setAvailabilityLoading] = useState(true);
   const [availabilityError, setAvailabilityError] = useState("");
+  const [accountingSummary, setAccountingSummary] = useState(null);
+  const [accountingLoading, setAccountingLoading] = useState(true);
+  const [accountingError, setAccountingError] = useState("");
   const [slotModal, setSlotModal] = useState(null);
   const [slotForm, setSlotForm] = useState(DEFAULT_SLOT_FORM);
   const [slotStatus, setSlotStatus] = useState({ tone: "", message: "" });
@@ -370,11 +425,53 @@ const Dashboard = () => {
     loadAvailability();
   }, [loadAvailability]);
 
+  const loadAccountingSummary = useCallback(
+    async ({ silent = false } = {}) => {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        setAccountingLoading(false);
+        setAccountingError("Missing session. Please sign in again.");
+        return;
+      }
+
+      if (!silent) {
+        setAccountingLoading(true);
+      }
+      setAccountingError("");
+
+      try {
+        const query = new URLSearchParams({ range: ACCOUNTING_RANGE.value });
+        if (isAdmin) {
+          query.set("organizationId", "all");
+        }
+        const response = await fetch(buildApiUrl(`/api/accounting/entries?${query.toString()}`), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error || "Unable to load accounting summary");
+        }
+        setAccountingSummary(buildAccountingSummary(payload.entries || []));
+      } catch (err) {
+        setAccountingError(err.message);
+        setAccountingSummary(null);
+      } finally {
+        setAccountingLoading(false);
+      }
+    },
+    [isAdmin]
+  );
+
+  useEffect(() => {
+    loadAccountingSummary();
+  }, [loadAccountingSummary]);
+
   const handleRefresh = () => {
     if (!isRefreshing) {
       reload({ silent: true });
     }
     loadAvailability();
+    loadAccountingSummary({ silent: true });
   };
 
   const toggleSiteExpansion = (siteId) => {
@@ -464,6 +561,13 @@ const Dashboard = () => {
   const serviceHealthPercent = formatPercent(healthyServices, totalServices);
   const siteHealthPercent = formatPercent(onlineSites, totalSites);
   const pageHealthPercent = formatPercent(onlinePages, totalPages);
+  const accountingNetTotals = useMemo(() => {
+    if (!accountingSummary) return null;
+    return {
+      CAD: accountingSummary.paidRevenue.CAD - accountingSummary.paidExpenses.CAD,
+      GHS: accountingSummary.paidRevenue.GHS - accountingSummary.paidExpenses.GHS,
+    };
+  }, [accountingSummary]);
 
   const attentionItems = [
     ...systemEntries
@@ -828,6 +932,71 @@ const Dashboard = () => {
           </div>
         </div>
       ) : null}
+
+
+      <section className="stack">
+          <div className="panel-header">
+            <div>
+              <h3>Accounting snapshot</h3>
+              <p className="muted">Window: {ACCOUNTING_RANGE.label} across CAD and GHS.</p>
+            </div>
+            <Link className="button button-ghost" to="/accounting">
+              View ledger
+            </Link>
+        </div>
+
+        {accountingError ? (
+          <div className="notice is-error" role="alert">
+            {accountingError}
+          </div>
+        ) : null}
+
+        {accountingLoading ? (
+          <div className="loading-card" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            <span>Loading accounting summary...</span>
+          </div>
+        ) : null}
+
+        {!accountingLoading && accountingSummary ? (
+          <div className="kpi-grid">
+            <article className="panel kpi-card">
+              <span className="kpi-label">Paid revenue</span>
+              <div className="kpi-value">
+                <div>{formatAmount(accountingSummary.paidRevenue.CAD, "CAD")}</div>
+                <div>{formatAmount(accountingSummary.paidRevenue.GHS, "GHS")}</div>
+              </div>
+              <span className="kpi-delta">{accountingSummary.counts.paidRevenue} paid</span>
+            </article>
+            <article className="panel kpi-card">
+              <span className="kpi-label">Paid expenses</span>
+              <div className="kpi-value">
+                <div>{formatAmount(accountingSummary.paidExpenses.CAD, "CAD")}</div>
+                <div>{formatAmount(accountingSummary.paidExpenses.GHS, "GHS")}</div>
+              </div>
+              <span className="kpi-delta">{accountingSummary.counts.paidExpenses} paid</span>
+            </article>
+            <article className="panel kpi-card">
+              <span className="kpi-label">Net profit</span>
+              <div className="kpi-value">
+                <div>{formatAmount(accountingNetTotals?.CAD ?? 0, "CAD")}</div>
+                <div>{formatAmount(accountingNetTotals?.GHS ?? 0, "GHS")}</div>
+              </div>
+              <span className="kpi-delta">After paid expenses</span>
+            </article>
+            <article className="panel kpi-card">
+              <span className="kpi-label">Pending payables</span>
+              <div className="kpi-value">
+                <div>{formatAmount(accountingSummary.pendingPayables.CAD, "CAD")}</div>
+                <div>{formatAmount(accountingSummary.pendingPayables.GHS, "GHS")}</div>
+              </div>
+              <span className="kpi-delta">
+                {accountingSummary.counts.pendingPayables} pending
+              </span>
+            </article>
+          </div>
+        ) : null}
+      </section>
 
       {kpiData ? (
         <>

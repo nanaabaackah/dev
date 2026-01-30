@@ -1728,8 +1728,13 @@ const normalizeAccountingInterval = (value) => {
 
 const buildAccountingRange = (range) => {
   const now = new Date();
-  const start = new Date(now);
   const normalized = String(range || "mtd").toLowerCase();
+
+  if (["all", "all-time", "all_time"].includes(normalized)) {
+    return { start: new Date(0), end: now };
+  }
+
+  const start = new Date(now);
 
   if (normalized === "weekly") {
     const day = start.getDay();

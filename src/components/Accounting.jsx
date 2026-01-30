@@ -87,7 +87,9 @@ const Accounting = () => {
   const isAdmin = storedUser?.role?.name === "Admin";
   const userOrgId = storedUser?.organizationId ? String(storedUser.organizationId) : "";
   const [timeRange, setTimeRange] = useState("mtd");
-  const [selectedOrganizationId, setSelectedOrganizationId] = useState(userOrgId || "all");
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState(
+    isAdmin ? "all" : userOrgId || ""
+  );
   const [organizations, setOrganizations] = useState([]);
   const [organizationError, setOrganizationError] = useState("");
   const [entries, setEntries] = useState([]);
@@ -131,6 +133,21 @@ const Accounting = () => {
     [userOrgId]
   );
 
+  const openForm = useCallback(() => {
+    const defaultOrgId =
+      selectedOrganizationId && selectedOrganizationId !== "all"
+        ? selectedOrganizationId
+        : userOrgId || "";
+    resetFormState({ organizationId: defaultOrgId });
+    setShowForm(true);
+  }, [resetFormState, selectedOrganizationId, userOrgId]);
+
+  const closeForm = useCallback(() => {
+    setShowForm(false);
+    setEditingEntryId(null);
+    resetFormState();
+  }, [resetFormState]);
+
   const loadOrganizations = useCallback(async () => {
     if (!isAdmin) return;
     const token = localStorage.getItem("token");
@@ -170,6 +187,21 @@ const Accounting = () => {
   }, [loadOrganizations]);
 
   useEffect(() => {
+    if (!showForm) return;
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        closeForm();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [showForm, closeForm]);
+
+  useEffect(() => {
     if (!organizations.length) return;
     const hasSelected =
       selectedOrganizationId !== "all" &&
@@ -193,10 +225,11 @@ const Accounting = () => {
 
   useEffect(() => {
     if (!selectedOrganizationId || selectedOrganizationId === "all") return;
+    if (showForm) return;
     if (formState.organizationId !== selectedOrganizationId) {
       setFormState((prev) => ({ ...prev, organizationId: selectedOrganizationId }));
     }
-  }, [selectedOrganizationId, formState.organizationId]);
+  }, [selectedOrganizationId, formState.organizationId, showForm]);
 
   const loadEntries = useCallback(
     async ({ silent = false } = {}) => {
@@ -217,7 +250,11 @@ const Accounting = () => {
       try {
         const query = new URLSearchParams({ range: timeRange });
         if (selectedOrganizationId) {
-          query.set("organizationId", selectedOrganizationId);
+          if (selectedOrganizationId === "all" && isAdmin) {
+            query.set("organizationId", "all");
+          } else if (selectedOrganizationId !== "all") {
+            query.set("organizationId", selectedOrganizationId);
+          }
         }
         const response = await fetch(buildApiUrl(`/api/accounting/entries?${query.toString()}`), {
           headers: {
@@ -394,7 +431,7 @@ const Accounting = () => {
 
   const handleEditEntry = (entry) => {
     setOpenActionId(null);
-    setShowForm(false);
+    setShowForm(true);
     setEditingEntryId(entry.id);
     const dateValue = resolveEntryDate(entry);
     resetFormState({
@@ -408,11 +445,6 @@ const Accounting = () => {
       recurringInterval: entry.recurringInterval || "",
       organizationId: entry.organization?.id ? String(entry.organization.id) : userOrgId || "",
     });
-  };
-
-  const closeEditModal = () => {
-    setEditingEntryId(null);
-    resetFormState();
   };
 
   const handleMarkPaid = async (entry) => {
@@ -592,12 +624,10 @@ const Accounting = () => {
             type="button"
             onClick={() => {
               if (showForm) {
-                setShowForm(false);
-                setEditingEntryId(null);
-                resetFormState();
-              } else {
-                setShowForm(true);
+                closeForm();
+                return;
               }
+              openForm();
             }}
           >
             {showForm ? "Close entry" : "Add transaction"}
@@ -637,192 +667,30 @@ const Accounting = () => {
       ) : null}
 
       {showForm ? (
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>Manual entry</h3>
-              <p className="muted">
-                Add expenses or one-off revenue not from Faako subscriptions.
-              </p>
-            </div>
-          </div>
-
-          {formError ? (
-            <div className="notice is-error" role="alert">
-              {formError}
-            </div>
-          ) : null}
-
-          <form onSubmit={handleSubmit} className="stack">
-            <div className="page-grid">
-              <div className="stack">
-                {organizations.length ? (
-                  <label className="form-field">
-                    <span>Organization</span>
-                    <select
-                      className="input"
-                      value={formState.organizationId}
-                      onChange={(event) =>
-                        setFormState((prev) => ({ ...prev, organizationId: event.target.value }))
-                      }
-                    >
-                      {organizations.map((org) => (
-                        <option key={org.id} value={String(org.id)}>
-                          {org.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                <label className="form-field">
-                  <span>Type</span>
-                  <select
-                    className="input"
-                    value={formState.type}
-                    onChange={(event) =>
-                      setFormState((prev) => ({ ...prev, type: event.target.value }))
-                    }
-                  >
-                    {TYPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  <span>Status</span>
-                  <select
-                    className="input"
-                    value={formState.status}
-                    onChange={(event) =>
-                      setFormState((prev) => ({ ...prev, status: event.target.value }))
-                    }
-                  >
-                    {STATUS_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  <span>Currency</span>
-                  <select
-                    className="input"
-                    value={formState.currency}
-                    onChange={(event) =>
-                      setFormState((prev) => ({ ...prev, currency: event.target.value }))
-                    }
-                  >
-                    {CURRENCY_OPTIONS.map((currency) => (
-                      <option key={currency} value={currency}>
-                        {currency}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  <span>Billing cadence</span>
-                  <select
-                    className="input"
-                    value={formState.recurringInterval}
-                    onChange={(event) =>
-                      setFormState((prev) => ({ ...prev, recurringInterval: event.target.value }))
-                    }
-                  >
-                    {INTERVAL_OPTIONS.map((option) => (
-                      <option key={option.value || "once"} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <div className="stack">
-                <label className="form-field">
-                  <span>Amount</span>
-                  <input
-                    className="input"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={formState.amount}
-                    onChange={(event) =>
-                      setFormState((prev) => ({ ...prev, amount: event.target.value }))
-                    }
-                    placeholder="0.00"
-                  />
-                </label>
-                <label className="form-field">
-                  <span>Service name</span>
-                  <input
-                    className="input"
-                    type="text"
-                    value={formState.serviceName}
-                    onChange={(event) =>
-                      setFormState((prev) => ({ ...prev, serviceName: event.target.value }))
-                    }
-                    placeholder="Consulting retainer"
-                  />
-                </label>
-                <label className="form-field">
-                  <span>{formState.status === "PAID" ? "Paid date" : "Due date"}</span>
-                  <input
-                    className="input"
-                    type="date"
-                    value={formState.date}
-                    onChange={(event) =>
-                      setFormState((prev) => ({ ...prev, date: event.target.value }))
-                    }
-                  />
-                </label>
-              </div>
-            </div>
-            <label className="form-field">
-              <span>Details (optional)</span>
-              <textarea
-                className="input"
-                value={formState.detail}
-                onChange={(event) => setFormState((prev) => ({ ...prev, detail: event.target.value }))}
-                placeholder="Add extra context for this transaction"
-              />
-            </label>
-            <div className="header-actions">
-              <button
-                className="button button-ghost"
-                type="button"
-                onClick={() => {
-                  setShowForm(false);
-                  resetFormState();
-                }}
-              >
-                Cancel
-              </button>
-              <button className="button button-primary" type="submit" disabled={isSaving}>
-                {isSaving ? "Saving..." : "Save entry"}
-              </button>
-            </div>
-          </form>
-        </article>
-      ) : null}
-
-      {editingEntryId ? (
-        <div className="modal-backdrop" role="presentation" onClick={closeEditModal}>
-          <div
+        <div className="modal-backdrop" role="presentation">
+          <button
+            className="modal-dismiss"
+            type="button"
+            aria-label="Close modal"
+            onClick={closeForm}
+          />
+          <article
             className="modal-card"
             role="dialog"
             aria-modal="true"
-            aria-label="Edit entry"
-            onClick={(event) => event.stopPropagation()}
+            aria-labelledby="entry-modal-title"
           >
-            <div className="modal-header">
+            <div className="panel-header">
               <div>
-                <h3>Edit entry</h3>
-                <p className="muted">Update the selected transaction details.</p>
+                <h3 id="entry-modal-title">{editingEntryId ? "Edit entry" : "Manual entry"}</h3>
+                <p className="muted">
+                  {editingEntryId
+                    ? "Update the selected transaction details."
+                    : "Add expenses or one-off revenue not from Faako subscriptions."}
+                </p>
               </div>
-              <button className="icon-button" type="button" onClick={closeEditModal}>
-                ×
+              <button className="button button-ghost" type="button" onClick={closeForm}>
+                Close
               </button>
             </div>
 
@@ -970,15 +838,15 @@ const Accounting = () => {
                 />
               </label>
               <div className="header-actions">
-                <button className="button button-ghost" type="button" onClick={closeEditModal}>
+                <button className="button button-ghost" type="button" onClick={closeForm}>
                   Cancel
                 </button>
                 <button className="button button-primary" type="submit" disabled={isSaving}>
-                  {isSaving ? "Saving..." : "Save changes"}
+                  {isSaving ? "Saving..." : editingEntryId ? "Save changes" : "Save entry"}
                 </button>
               </div>
             </form>
-          </div>
+          </article>
         </div>
       ) : null}
 
