@@ -72,9 +72,24 @@ const resolveEntryDate = (entry) => {
   return entry.dueAt || entry.createdAt;
 };
 
+const readStoredUser = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    return JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    return null;
+  }
+};
+
 const Accounting = () => {
   const navigate = useNavigate();
+  const storedUser = useMemo(() => readStoredUser(), []);
+  const isAdmin = storedUser?.role?.name === "Admin";
+  const userOrgId = storedUser?.organizationId ? String(storedUser.organizationId) : "";
   const [timeRange, setTimeRange] = useState("mtd");
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState(userOrgId || "all");
+  const [organizations, setOrganizations] = useState([]);
+  const [organizationError, setOrganizationError] = useState("");
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -92,7 +107,75 @@ const Accounting = () => {
     detail: "",
     date: buildTodayDate(),
     recurringInterval: "",
+    organizationId: userOrgId || "",
   });
+
+  const loadOrganizations = useCallback(async () => {
+    if (!isAdmin) return;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      navigate("/login");
+      return;
+    }
+    setOrganizationError("");
+    try {
+      const response = await fetch(buildApiUrl("/api/organizations"), {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem("token");
+          localStorage.removeItem("user");
+          navigate("/login");
+          return;
+        }
+        if (response.status === 403) {
+          setOrganizations([]);
+          return;
+        }
+        throw new Error(payload?.error || "Unable to load organizations");
+      }
+      setOrganizations(Array.isArray(payload) ? payload : []);
+    } catch (err) {
+      setOrganizationError(err.message || "Unable to load organizations");
+    }
+  }, [isAdmin, navigate]);
+
+  useEffect(() => {
+    loadOrganizations();
+  }, [loadOrganizations]);
+
+  useEffect(() => {
+    if (!organizations.length) return;
+    const hasSelected =
+      selectedOrganizationId !== "all" &&
+      organizations.some((org) => String(org.id) === selectedOrganizationId);
+    const defaultOrgId =
+      userOrgId && organizations.some((org) => String(org.id) === userOrgId)
+        ? userOrgId
+        : String(organizations[0].id);
+
+    if (selectedOrganizationId && selectedOrganizationId !== "all" && !hasSelected) {
+      setSelectedOrganizationId(defaultOrgId);
+    }
+
+    if (
+      !formState.organizationId ||
+      !organizations.some((org) => String(org.id) === formState.organizationId)
+    ) {
+      setFormState((prev) => ({ ...prev, organizationId: defaultOrgId }));
+    }
+  }, [organizations, selectedOrganizationId, userOrgId, formState.organizationId]);
+
+  useEffect(() => {
+    if (!selectedOrganizationId || selectedOrganizationId === "all") return;
+    if (formState.organizationId !== selectedOrganizationId) {
+      setFormState((prev) => ({ ...prev, organizationId: selectedOrganizationId }));
+    }
+  }, [selectedOrganizationId, formState.organizationId]);
 
   const loadEntries = useCallback(
     async ({ silent = false } = {}) => {
@@ -110,14 +193,15 @@ const Accounting = () => {
       setError("");
 
       try {
-        const response = await fetch(
-          buildApiUrl(`/api/accounting/entries?range=${encodeURIComponent(timeRange)}`),
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }
-        );
+        const query = new URLSearchParams({ range: timeRange });
+        if (selectedOrganizationId) {
+          query.set("organizationId", selectedOrganizationId);
+        }
+        const response = await fetch(buildApiUrl(`/api/accounting/entries?${query.toString()}`), {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
         const payload = await response.json();
         if (!response.ok) {
           if (response.status === 401) {
@@ -139,7 +223,7 @@ const Accounting = () => {
         setIsRefreshing(false);
       }
     },
-    [navigate, timeRange]
+    [navigate, selectedOrganizationId, timeRange]
   );
 
   useEffect(() => {
@@ -206,8 +290,15 @@ const Accounting = () => {
       return;
     }
 
+    if (isAdmin && organizations.length && !formState.organizationId) {
+      setFormError("Select an organization.");
+      return;
+    }
+
     setIsSaving(true);
     try {
+      const organizationId =
+        formState.organizationId || (selectedOrganizationId !== "all" ? selectedOrganizationId : "");
       const payload = {
         type: formState.type,
         status: formState.status,
@@ -218,6 +309,7 @@ const Accounting = () => {
         paidAt: formState.status === "PAID" ? formState.date : undefined,
         dueAt: formState.status !== "PAID" ? formState.date : undefined,
         recurringInterval: formState.recurringInterval || undefined,
+        organizationId: organizationId || undefined,
       };
 
       const response = await fetch(buildApiUrl("/api/accounting/entries"), {
@@ -283,6 +375,22 @@ const Accounting = () => {
               </button>
             ))}
           </div>
+          {organizations.length ? (
+            <label className="form-field" style={{ minWidth: "220px" }}>
+              <select
+                className="input"
+                value={selectedOrganizationId}
+                onChange={(event) => setSelectedOrganizationId(event.target.value)}
+              >
+                {isAdmin ? <option value="all">All organizations</option> : null}
+                {organizations.map((org) => (
+                  <option key={org.id} value={String(org.id)}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <button
             className="button button-ghost"
             type="button"
@@ -310,6 +418,12 @@ const Accounting = () => {
         </div>
       ) : null}
 
+      {organizationError ? (
+        <div className="notice is-error" role="alert">
+          {organizationError}
+        </div>
+      ) : null}
+
       {faakoStatus && faakoStatus !== "ok" ? (
         <div className="notice" role="status">
           Faako subscription sync status: {faakoStatus.replace(/_/g, " ")}.
@@ -334,6 +448,24 @@ const Accounting = () => {
           <form onSubmit={handleSubmit} className="stack">
             <div className="page-grid">
               <div className="stack">
+                {organizations.length ? (
+                  <label className="form-field">
+                    <span>Organization</span>
+                    <select
+                      className="input"
+                      value={formState.organizationId}
+                      onChange={(event) =>
+                        setFormState((prev) => ({ ...prev, organizationId: event.target.value }))
+                      }
+                    >
+                      {organizations.map((org) => (
+                        <option key={org.id} value={String(org.id)}>
+                          {org.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <label className="form-field">
                   <span>Type</span>
                   <select
@@ -538,13 +670,17 @@ const Accounting = () => {
             const cadenceLabel = entry.recurringInterval
               ? `Recurring ${entry.recurringInterval.toLowerCase()}`
               : null;
+            const organizationLabel = entry.organization?.name
+              ? `Org: ${entry.organization.name}`
+              : null;
             return (
               <div className="table-row is-7" key={entry.id}>
                 <span className="table-strong">{entry.id}</span>
                 <div>
                   <div className="table-strong">{entry.serviceName}</div>
                   <span className="muted">
-                    {[entry.detail, cadenceLabel].filter(Boolean).join(" • ") || "—"}
+                    {[entry.detail, cadenceLabel, organizationLabel].filter(Boolean).join(" • ") ||
+                      "—"}
                   </span>
                 </div>
                 <span>{entry.type}</span>

@@ -763,6 +763,8 @@ const resolveTableName = async (poolInstance, tableNames) => {
 
 const DEFAULT_ORG_NAME = process.env.DEFAULT_ORG_NAME ?? "bynana-portfolio";
 const DEFAULT_ORG_SLUG = process.env.DEFAULT_ORG_SLUG ?? "bynana-portfolio";
+const REEBS_ORG_NAME = process.env.REEBS_ORG_NAME ?? "Reebs";
+const REEBS_ORG_SLUG = process.env.REEBS_ORG_SLUG ?? "reebs";
 const FAAKO_ORG_NAME = process.env.FAAKO_ORG_NAME ?? "Faako";
 const FAAKO_ORG_SLUG = process.env.FAAKO_ORG_SLUG ?? "faako";
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ?? "dev@nanaabaackah.com";
@@ -1092,6 +1094,14 @@ app.get("/api/users", authMiddleware, requireAdmin, async (req, res) => {
   );
 });
 
+app.get("/api/organizations", authMiddleware, requireAdmin, async (req, res) => {
+  const organizations = await prisma.organization.findMany({
+    select: { id: true, name: true, slug: true, status: true },
+    orderBy: { name: "asc" },
+  });
+  res.json(organizations);
+});
+
 app.post("/api/users", authMiddleware, requireAdmin, async (req, res) => {
   const { email, firstName, lastName, roleName, password } = req.body;
   if (!email || !firstName || !lastName || !roleName) {
@@ -1320,8 +1330,35 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
 
 app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
   const { start, end } = buildAccountingRange(req.query?.range);
+  const isAdmin = req.user?.roleName === "Admin";
+  const organizationParam = req.query?.organizationId;
+  let organizationFilter = { organizationId: req.user.organizationId };
+  let includeAllOrganizations = false;
+  let selectedOrganization = null;
+
+  if (isAdmin && organizationParam) {
+    if (String(organizationParam).toLowerCase() === "all") {
+      organizationFilter = {};
+      includeAllOrganizations = true;
+    } else {
+      const parsedOrgId = parseOrganizationId(organizationParam);
+      if (!parsedOrgId) {
+        return res.status(400).json({ error: "organizationId must be a valid id or 'all'" });
+      }
+      selectedOrganization = await prisma.organization.findUnique({
+        where: { id: parsedOrgId },
+        select: { id: true, name: true, slug: true },
+      });
+      if (!selectedOrganization) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
+      organizationFilter = { organizationId: selectedOrganization.id };
+    }
+  }
+
   const rawEntries = await prisma.accountingEntry.findMany({
-    where: { organizationId: req.user.organizationId },
+    where: organizationFilter,
+    include: { organization: { select: { id: true, name: true, slug: true } } },
     orderBy: { createdAt: "desc" },
   });
 
@@ -1334,6 +1371,28 @@ app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
     .map(serializeAccountingEntry);
 
   const faakoResult = await fetchFaakoSubscriptionEntries({ start, end });
+  let faakoEntries = faakoResult.entries;
+  let faakoOrganization = null;
+  if (faakoEntries.length) {
+    faakoOrganization = await prisma.organization.findUnique({
+      where: { slug: FAAKO_ORG_SLUG },
+      select: { id: true, name: true, slug: true },
+    });
+  }
+
+  if (!includeAllOrganizations) {
+    const allowedOrgId = selectedOrganization?.id ?? req.user.organizationId;
+    if (!faakoOrganization || faakoOrganization.id !== allowedOrgId) {
+      faakoEntries = [];
+    }
+  }
+
+  faakoEntries = faakoEntries.map((entry) => ({
+    ...entry,
+    organization: faakoOrganization
+      ? { id: faakoOrganization.id, name: faakoOrganization.name, slug: faakoOrganization.slug }
+      : null,
+  }));
 
   const resolveSortDate = (entry) => {
     if (entry.status === "PAID") {
@@ -1342,7 +1401,7 @@ app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
     return entry.dueAt || entry.createdAt;
   };
 
-  const entries = [...manualEntries, ...faakoResult.entries].sort((a, b) => {
+  const entries = [...manualEntries, ...faakoEntries].sort((a, b) => {
     const aDate = new Date(resolveSortDate(a));
     const bDate = new Date(resolveSortDate(b));
     return bDate - aDate;
@@ -1376,6 +1435,22 @@ app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, re
     return res.status(400).json({ error: "recurringInterval must be MONTHLY, QUARTERLY, or YEARLY" });
   }
 
+  let organizationId = req.user.organizationId;
+  if (req.body?.organizationId) {
+    const parsedOrganizationId = parseOrganizationId(req.body.organizationId);
+    if (!parsedOrganizationId) {
+      return res.status(400).json({ error: "organizationId must be a valid id" });
+    }
+    const organization = await prisma.organization.findUnique({
+      where: { id: parsedOrganizationId },
+      select: { id: true },
+    });
+    if (!organization) {
+      return res.status(404).json({ error: "Organization not found" });
+    }
+    organizationId = organization.id;
+  }
+
   const amountValue = Number(req.body?.amount);
   if (!Number.isFinite(amountValue) || amountValue <= 0) {
     return res.status(400).json({ error: "amount must be a positive number" });
@@ -1403,7 +1478,7 @@ app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, re
 
   const entry = await prisma.accountingEntry.create({
     data: {
-      organizationId: req.user.organizationId,
+      organizationId,
       type,
       status,
       currency,
@@ -1415,6 +1490,7 @@ app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, re
       source: "MANUAL",
       recurringInterval,
     },
+    include: { organization: { select: { id: true, name: true, slug: true } } },
   });
 
   res.status(201).json(serializeAccountingEntry(entry));
@@ -1445,6 +1521,12 @@ const normalizeAccountingStatus = (value) =>
 const normalizeAccountingCurrency = (value) => {
   const normalized = String(value || "").trim().toUpperCase();
   return ACCOUNTING_CURRENCY_VALUES.has(normalized) ? normalized : null;
+};
+
+const parseOrganizationId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
 };
 
 const normalizeAccountingInterval = (value) => {
@@ -1494,6 +1576,9 @@ const serializeAccountingEntry = (entry) => ({
   serviceName: entry.serviceName,
   detail: entry.detail,
   recurringInterval: entry.recurringInterval ?? null,
+  organization: entry.organization
+    ? { id: entry.organization.id, name: entry.organization.name, slug: entry.organization.slug }
+    : null,
   paidAt: entry.paidAt ? entry.paidAt.toISOString() : null,
   dueAt: entry.dueAt ? entry.dueAt.toISOString() : null,
   createdAt: entry.createdAt ? entry.createdAt.toISOString() : null,
@@ -2275,6 +2360,7 @@ const ensureDefaults = async () => {
 
   const organizationDefinitions = [
     { name: DEFAULT_ORG_NAME, slug: DEFAULT_ORG_SLUG, seedAdmin: true },
+    { name: REEBS_ORG_NAME, slug: REEBS_ORG_SLUG, seedAdmin: false },
     { name: FAAKO_ORG_NAME, slug: FAAKO_ORG_SLUG, seedAdmin: false },
   ].filter(
     (org, index, list) =>

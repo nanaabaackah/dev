@@ -6,6 +6,7 @@ import {
   Navigate,
   NavLink,
   useNavigate,
+  useLocation,
 } from "react-router-dom";
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
@@ -97,6 +98,47 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
   );
 };
 
+const getTitleForPath = (pathname) => {
+  if (pathname.startsWith("/book")) return "Booking | Dev";
+  switch (pathname) {
+    case "/":
+    case "/dashboard":
+      return "Dashboard | Dev";
+    case "/login":
+      return "Login | Dev";
+    case "/bookings":
+      return "Bookings | Dev";
+    case "/organizations":
+      return "Organizations | Dev";
+    case "/users":
+      return "Users | Dev";
+    case "/inventory":
+      return "Inventory | Dev";
+    case "/system-health":
+      return "System Health | Dev";
+    case "/reports":
+      return "Reports | Dev";
+    case "/accounting":
+      return "Accounting | Dev";
+    case "/settings":
+      return "Settings | Dev";
+    case "/audit-logs":
+      return "Audit Logs | Dev";
+    default:
+      return "Dev";
+  }
+};
+
+const TitleManager = () => {
+  const location = useLocation();
+
+  useEffect(() => {
+    document.title = getTitleForPath(location.pathname);
+  }, [location.pathname]);
+
+  return null;
+};
+
 const ShellPage = ({ children, theme, onToggleTheme }) => (
   <PrivateRoute>
     <AppShell theme={theme} onToggleTheme={onToggleTheme}>
@@ -119,6 +161,7 @@ function App() {
 
   return (
     <Router>
+      <TitleManager />
       <Routes>
         <Route path="/login" element={<Login theme={theme} onToggleTheme={handleToggleTheme} />} />
         <Route path="/book/:orgSlug?" element={<PublicBooking />} />
