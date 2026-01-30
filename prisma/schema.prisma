@@ -118,6 +118,8 @@ model AccountingEntry {
   source         AccountingSource   @default(MANUAL)
   sourceRef      String?
   recurringInterval AccountingInterval?
+  invoiceNumber  String?
+  archivedAt     DateTime?
   currency       CurrencyCode
   amount         Decimal            @db.Decimal(14, 2)
   serviceName    String

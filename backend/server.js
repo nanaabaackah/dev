@@ -1332,6 +1332,7 @@ app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
   const { start, end } = buildAccountingRange(req.query?.range);
   const isAdmin = req.user?.roleName === "Admin";
   const organizationParam = req.query?.organizationId;
+  const includeArchived = String(req.query?.includeArchived || "").toLowerCase() === "true";
   let organizationFilter = { organizationId: req.user.organizationId };
   let includeAllOrganizations = false;
   let selectedOrganization = null;
@@ -1357,7 +1358,10 @@ app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
   }
 
   const rawEntries = await prisma.accountingEntry.findMany({
-    where: organizationFilter,
+    where: {
+      ...organizationFilter,
+      ...(includeArchived ? {} : { archivedAt: null }),
+    },
     include: { organization: { select: { id: true, name: true, slug: true } } },
     orderBy: { createdAt: "desc" },
   });
@@ -1499,6 +1503,190 @@ app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, re
   res.status(201).json(serializeAccountingEntry(entry));
 });
 
+const parseAccountingEntryId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+};
+
+const pickAccountingEntry = async (id) => {
+  const entryId = parseAccountingEntryId(id);
+  if (!entryId) {
+    return { error: "Entry id must be a valid number." };
+  }
+  const entry = await prisma.accountingEntry.findUnique({
+    where: { id: entryId },
+    include: { organization: { select: { id: true, name: true, slug: true } } },
+  });
+  if (!entry) {
+    return { error: "Entry not found." };
+  }
+  return { entry };
+};
+
+const buildInvoiceNumber = (entryId) => {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return `INV-${stamp}-${String(entryId).padStart(4, "0")}`;
+};
+
+app.patch("/api/accounting/entries/:id", authMiddleware, requireAdmin, async (req, res) => {
+  const { entry, error } = await pickAccountingEntry(req.params.id);
+  if (error) {
+    return res.status(404).json({ error });
+  }
+  if (entry.source !== "MANUAL") {
+    return res.status(400).json({ error: "Only manual entries can be edited." });
+  }
+
+  const updateData = {};
+  const type = normalizeAccountingType(req.body?.type);
+  if (req.body?.type && !type) {
+    return res.status(400).json({ error: "type must be REVENUE or EXPENSE" });
+  }
+  if (type) updateData.type = type;
+
+  const status = normalizeAccountingStatus(req.body?.status);
+  if (req.body?.status && !status) {
+    return res.status(400).json({ error: "status must be PAID, PENDING, SCHEDULED, or OVERDUE" });
+  }
+  if (status) updateData.status = status;
+
+  const currency = normalizeAccountingCurrency(req.body?.currency);
+  if (req.body?.currency && !currency) {
+    return res.status(400).json({ error: "currency must be CAD or GHS" });
+  }
+  if (currency) updateData.currency = currency;
+
+  const recurringInterval = normalizeAccountingInterval(req.body?.recurringInterval);
+  if (req.body?.recurringInterval && !recurringInterval) {
+    return res.status(400).json({ error: "recurringInterval must be MONTHLY, QUARTERLY, or YEARLY" });
+  }
+  if (req.body?.recurringInterval !== undefined) {
+    updateData.recurringInterval = recurringInterval;
+  }
+
+  if (req.body?.amount !== undefined) {
+    const amountValue = Number(req.body.amount);
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      return res.status(400).json({ error: "amount must be a positive number" });
+    }
+    updateData.amount = new prismaPkg.Prisma.Decimal(amountValue);
+  }
+
+  if (req.body?.serviceName !== undefined) {
+    const serviceName =
+      typeof req.body.serviceName === "string" ? req.body.serviceName.trim() : "";
+    if (!serviceName) {
+      return res.status(400).json({ error: "serviceName is required" });
+    }
+    updateData.serviceName = serviceName;
+  }
+
+  if (req.body?.detail !== undefined) {
+    const detail =
+      typeof req.body.detail === "string" && req.body.detail.trim()
+        ? req.body.detail.trim()
+        : null;
+    updateData.detail = detail;
+  }
+
+  if (req.body?.organizationId !== undefined) {
+    const parsedOrganizationId = parseOrganizationId(req.body.organizationId);
+    if (!parsedOrganizationId) {
+      return res.status(400).json({ error: "organizationId must be a valid id" });
+    }
+    const organization = await prisma.organization.findUnique({
+      where: { id: parsedOrganizationId },
+      select: { id: true },
+    });
+    if (!organization) {
+      return res.status(404).json({ error: "Organization not found" });
+    }
+    updateData.organizationId = organization.id;
+  }
+
+  if (req.body?.paidAt !== undefined) {
+    updateData.paidAt = parseDateValue(req.body.paidAt);
+  }
+  if (req.body?.dueAt !== undefined) {
+    updateData.dueAt = parseDateValue(req.body.dueAt);
+  }
+
+  if (req.body?.archivedAt !== undefined) {
+    updateData.archivedAt = req.body.archivedAt ? new Date(req.body.archivedAt) : null;
+  }
+
+  if (updateData.status === "PAID") {
+    updateData.paidAt = updateData.paidAt ?? new Date();
+  }
+  if (updateData.status && updateData.status !== "PAID") {
+    updateData.dueAt = updateData.dueAt ?? new Date();
+  }
+
+  const updatedEntry = await prisma.accountingEntry.update({
+    where: { id: entry.id },
+    data: updateData,
+    include: { organization: { select: { id: true, name: true, slug: true } } },
+  });
+
+  res.json(serializeAccountingEntry(updatedEntry));
+});
+
+app.post("/api/accounting/entries/:id/mark-paid", authMiddleware, requireAdmin, async (req, res) => {
+  const { entry, error } = await pickAccountingEntry(req.params.id);
+  if (error) {
+    return res.status(404).json({ error });
+  }
+  if (entry.source !== "MANUAL") {
+    return res.status(400).json({ error: "Only manual entries can be updated." });
+  }
+  const updatedEntry = await prisma.accountingEntry.update({
+    where: { id: entry.id },
+    data: { status: "PAID", paidAt: new Date(), dueAt: null },
+    include: { organization: { select: { id: true, name: true, slug: true } } },
+  });
+  res.json(serializeAccountingEntry(updatedEntry));
+});
+
+app.post("/api/accounting/entries/:id/archive", authMiddleware, requireAdmin, async (req, res) => {
+  const { entry, error } = await pickAccountingEntry(req.params.id);
+  if (error) {
+    return res.status(404).json({ error });
+  }
+  if (entry.source !== "MANUAL") {
+    return res.status(400).json({ error: "Only manual entries can be archived." });
+  }
+  const updatedEntry = await prisma.accountingEntry.update({
+    where: { id: entry.id },
+    data: { archivedAt: new Date() },
+    include: { organization: { select: { id: true, name: true, slug: true } } },
+  });
+  res.json(serializeAccountingEntry(updatedEntry));
+});
+
+app.post(
+  "/api/accounting/entries/:id/invoice",
+  authMiddleware,
+  requireAdmin,
+  async (req, res) => {
+    const { entry, error } = await pickAccountingEntry(req.params.id);
+    if (error) {
+      return res.status(404).json({ error });
+    }
+    if (entry.source !== "MANUAL") {
+      return res.status(400).json({ error: "Invoices can only be generated for manual entries." });
+    }
+    const invoiceNumber = entry.invoiceNumber || buildInvoiceNumber(entry.id);
+    const updatedEntry = await prisma.accountingEntry.update({
+      where: { id: entry.id },
+      data: { invoiceNumber },
+      include: { organization: { select: { id: true, name: true, slug: true } } },
+    });
+    res.json({ invoiceNumber, entry: serializeAccountingEntry(updatedEntry) });
+  }
+);
+
 const BOOKING_STATUS_VALUES = new Set(["CONFIRMED", "TENTATIVE", "CANCELED"]);
 const ACCOUNTING_TYPE_VALUES = new Set(["REVENUE", "EXPENSE"]);
 const ACCOUNTING_STATUS_VALUES = new Set(["PAID", "PENDING", "SCHEDULED", "OVERDUE"]);
@@ -1579,6 +1767,8 @@ const serializeAccountingEntry = (entry) => ({
   serviceName: entry.serviceName,
   detail: entry.detail,
   recurringInterval: entry.recurringInterval ?? null,
+  invoiceNumber: entry.invoiceNumber ?? null,
+  archivedAt: entry.archivedAt ? entry.archivedAt.toISOString() : null,
   organization: entry.organization
     ? { id: entry.organization.id, name: entry.organization.name, slug: entry.organization.slug }
     : null,
