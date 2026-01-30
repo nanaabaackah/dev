@@ -19,6 +19,7 @@ model Organization {
   bookings Booking[]
   bookingSettings BookingSettings?
   calendarIntegrations CalendarIntegration[]
+  accountingEntries AccountingEntry[]
 }
 
 model Role {
@@ -108,6 +109,32 @@ model CalendarIntegration {
   @@unique([organizationId, provider])
 }
 
+model AccountingEntry {
+  id             Int                @id @default(autoincrement())
+  organizationId Int
+  organization   Organization       @relation(fields: [organizationId], references: [id])
+  type           AccountingType
+  status         AccountingStatus
+  source         AccountingSource   @default(MANUAL)
+  sourceRef      String?
+  recurringInterval AccountingInterval?
+  currency       CurrencyCode
+  amount         Decimal            @db.Decimal(14, 2)
+  serviceName    String
+  detail         String?
+  paidAt         DateTime?
+  dueAt          DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([organizationId, type])
+  @@index([organizationId, status])
+  @@index([organizationId, source])
+  @@index([organizationId, currency])
+  @@index([organizationId, paidAt])
+  @@index([organizationId, dueAt])
+}
+
 enum OrgStatus {
   ACTIVE
   INACTIVE
@@ -133,4 +160,32 @@ enum BookingStatus {
 
 enum CalendarProvider {
   GOOGLE_CALENDAR
+}
+
+enum AccountingType {
+  REVENUE
+  EXPENSE
+}
+
+enum AccountingStatus {
+  PAID
+  PENDING
+  SCHEDULED
+  OVERDUE
+}
+
+enum AccountingSource {
+  MANUAL
+  FAAKO_SUBSCRIPTION
+}
+
+enum AccountingInterval {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum CurrencyCode {
+  CAD
+  GHS
 }

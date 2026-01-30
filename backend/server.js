@@ -749,6 +749,18 @@ const resolveTableCount = async (poolInstance, tableNames) => {
   return fallback ?? { count: 0, qualifiedName: null };
 };
 
+const resolveTableName = async (poolInstance, tableNames) => {
+  const tableResult = await poolInstance.query(
+    "SELECT table_schema, table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_name = ANY($1) ORDER BY CASE WHEN table_schema = 'public' THEN 0 ELSE 1 END, table_schema",
+    [tableNames]
+  );
+  if (!tableResult.rows.length) {
+    return null;
+  }
+  const row = tableResult.rows[0];
+  return `"${row.table_schema}"."${row.table_name}"`;
+};
+
 const DEFAULT_ORG_NAME = process.env.DEFAULT_ORG_NAME ?? "bynana-portfolio";
 const DEFAULT_ORG_SLUG = process.env.DEFAULT_ORG_SLUG ?? "bynana-portfolio";
 const FAAKO_ORG_NAME = process.env.FAAKO_ORG_NAME ?? "Faako";
@@ -1306,7 +1318,113 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
   });
 });
 
+app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
+  const { start, end } = buildAccountingRange(req.query?.range);
+  const rawEntries = await prisma.accountingEntry.findMany({
+    where: { organizationId: req.user.organizationId },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const manualEntries = rawEntries
+    .filter((entry) => {
+      const entryDate = resolveAccountingEntryDate(entry);
+      if (!entryDate || Number.isNaN(entryDate.getTime())) return false;
+      return entryDate >= start && entryDate <= end;
+    })
+    .map(serializeAccountingEntry);
+
+  const faakoResult = await fetchFaakoSubscriptionEntries({ start, end });
+
+  const resolveSortDate = (entry) => {
+    if (entry.status === "PAID") {
+      return entry.paidAt || entry.createdAt;
+    }
+    return entry.dueAt || entry.createdAt;
+  };
+
+  const entries = [...manualEntries, ...faakoResult.entries].sort((a, b) => {
+    const aDate = new Date(resolveSortDate(a));
+    const bDate = new Date(resolveSortDate(b));
+    return bDate - aDate;
+  });
+
+  res.json({
+    entries,
+    faakoStatus: faakoResult.status,
+    window: {
+      start: start.toISOString(),
+      end: end.toISOString(),
+    },
+  });
+});
+
+app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, res) => {
+  const type = normalizeAccountingType(req.body?.type);
+  if (!type) {
+    return res.status(400).json({ error: "type must be REVENUE or EXPENSE" });
+  }
+  const status = normalizeAccountingStatus(req.body?.status);
+  if (!status) {
+    return res.status(400).json({ error: "status must be PAID, PENDING, SCHEDULED, or OVERDUE" });
+  }
+  const currency = normalizeAccountingCurrency(req.body?.currency);
+  if (!currency) {
+    return res.status(400).json({ error: "currency must be CAD or GHS" });
+  }
+  const recurringInterval = normalizeAccountingInterval(req.body?.recurringInterval);
+  if (req.body?.recurringInterval && !recurringInterval) {
+    return res.status(400).json({ error: "recurringInterval must be MONTHLY, QUARTERLY, or YEARLY" });
+  }
+
+  const amountValue = Number(req.body?.amount);
+  if (!Number.isFinite(amountValue) || amountValue <= 0) {
+    return res.status(400).json({ error: "amount must be a positive number" });
+  }
+
+  const serviceName = typeof req.body?.serviceName === "string" ? req.body.serviceName.trim() : "";
+  if (!serviceName) {
+    return res.status(400).json({ error: "serviceName is required" });
+  }
+
+  const detail =
+    typeof req.body?.detail === "string" && req.body.detail.trim()
+      ? req.body.detail.trim()
+      : null;
+
+  let paidAt = parseDateValue(req.body?.paidAt);
+  let dueAt = parseDateValue(req.body?.dueAt);
+
+  if (status === "PAID" && !paidAt) {
+    paidAt = new Date();
+  }
+  if (status !== "PAID" && !dueAt) {
+    dueAt = new Date();
+  }
+
+  const entry = await prisma.accountingEntry.create({
+    data: {
+      organizationId: req.user.organizationId,
+      type,
+      status,
+      currency,
+      amount: new prismaPkg.Prisma.Decimal(amountValue),
+      serviceName,
+      detail,
+      paidAt,
+      dueAt,
+      source: "MANUAL",
+      recurringInterval,
+    },
+  });
+
+  res.status(201).json(serializeAccountingEntry(entry));
+});
+
 const BOOKING_STATUS_VALUES = new Set(["CONFIRMED", "TENTATIVE", "CANCELED"]);
+const ACCOUNTING_TYPE_VALUES = new Set(["REVENUE", "EXPENSE"]);
+const ACCOUNTING_STATUS_VALUES = new Set(["PAID", "PENDING", "SCHEDULED", "OVERDUE"]);
+const ACCOUNTING_CURRENCY_VALUES = new Set(["CAD", "GHS"]);
+const ACCOUNTING_INTERVAL_VALUES = new Set(["MONTHLY", "QUARTERLY", "YEARLY"]);
 
 const parseDateValue = (value) => {
   if (!value) return null;
@@ -1317,6 +1435,70 @@ const parseDateValue = (value) => {
 
 const normalizeBookingStatus = (value) =>
   BOOKING_STATUS_VALUES.has(value) ? value : null;
+
+const normalizeAccountingType = (value) =>
+  ACCOUNTING_TYPE_VALUES.has(value) ? value : null;
+
+const normalizeAccountingStatus = (value) =>
+  ACCOUNTING_STATUS_VALUES.has(value) ? value : null;
+
+const normalizeAccountingCurrency = (value) => {
+  const normalized = String(value || "").trim().toUpperCase();
+  return ACCOUNTING_CURRENCY_VALUES.has(normalized) ? normalized : null;
+};
+
+const normalizeAccountingInterval = (value) => {
+  if (!value) return null;
+  const normalized = String(value).trim().toUpperCase();
+  return ACCOUNTING_INTERVAL_VALUES.has(normalized) ? normalized : null;
+};
+
+const buildAccountingRange = (range) => {
+  const now = new Date();
+  const start = new Date(now);
+  const normalized = String(range || "mtd").toLowerCase();
+
+  if (normalized === "weekly") {
+    const day = start.getDay();
+    const offset = (day + 6) % 7;
+    start.setDate(start.getDate() - offset);
+  } else if (normalized === "monthly") {
+    start.setDate(start.getDate() - 29);
+  } else if (normalized === "quarterly") {
+    const quarter = Math.floor(start.getMonth() / 3);
+    start.setMonth(quarter * 3, 1);
+  } else if (normalized === "yearly") {
+    start.setMonth(0, 1);
+  } else {
+    start.setDate(1);
+  }
+
+  start.setHours(0, 0, 0, 0);
+  return { start, end: now };
+};
+
+const resolveAccountingEntryDate = (entry) => {
+  const isPaid = entry.status === "PAID";
+  const candidate = isPaid ? entry.paidAt || entry.createdAt : entry.dueAt || entry.createdAt;
+  return candidate instanceof Date ? candidate : new Date(candidate);
+};
+
+const serializeAccountingEntry = (entry) => ({
+  id: entry.id,
+  source: entry.source,
+  sourceRef: entry.sourceRef,
+  type: entry.type,
+  status: entry.status,
+  currency: entry.currency,
+  amount: typeof entry.amount?.toNumber === "function" ? entry.amount.toNumber() : Number(entry.amount),
+  serviceName: entry.serviceName,
+  detail: entry.detail,
+  recurringInterval: entry.recurringInterval ?? null,
+  paidAt: entry.paidAt ? entry.paidAt.toISOString() : null,
+  dueAt: entry.dueAt ? entry.dueAt.toISOString() : null,
+  createdAt: entry.createdAt ? entry.createdAt.toISOString() : null,
+  updatedAt: entry.updatedAt ? entry.updatedAt.toISOString() : null,
+});
 
 const serializeBooking = (booking) => ({
   id: booking.id,
@@ -1331,6 +1513,82 @@ const serializeBooking = (booking) => ({
   attendeeEmail: booking.attendeeEmail,
   attendeeName: booking.attendeeName,
 });
+
+const fetchFaakoSubscriptionEntries = async ({ start, end }) => {
+  if (!faakoPool) {
+    return { status: "not_configured", entries: [] };
+  }
+
+  try {
+    const subscriptionTable = await resolveTableName(faakoPool, ["Subscription", "subscription"]);
+    const paymentTable = await resolveTableName(faakoPool, [
+      "SubscriptionPayment",
+      "subscriptionpayment",
+      "subscription_payment",
+    ]);
+
+    if (!subscriptionTable || !paymentTable) {
+      return { status: "missing_tables", entries: [] };
+    }
+
+    const paymentResult = await faakoPool.query(
+      `SELECT sp.id,
+              sp.amount,
+              sp.currency,
+              sp.status,
+              sp."paidAt",
+              sp."dueAt",
+              sp."createdAt",
+              sp."subscriptionId",
+              s.name AS "subscriptionName",
+              s.interval AS "interval"
+       FROM ${paymentTable} sp
+       LEFT JOIN ${subscriptionTable} s ON s.id = sp."subscriptionId"
+       WHERE sp.status = 'PAID'
+         AND COALESCE(sp."paidAt", sp."createdAt") BETWEEN $1 AND $2
+       ORDER BY COALESCE(sp."paidAt", sp."createdAt") DESC`,
+      [start, end]
+    );
+
+    const entries = paymentResult.rows
+      .map((row) => {
+        const currency = normalizeAccountingCurrency(row.currency);
+        if (!currency) {
+          return null;
+        }
+        const amount = Number(row.amount);
+        if (!Number.isFinite(amount)) {
+          return null;
+        }
+
+        const paidAt = row.paidAt || row.createdAt;
+        const recurringInterval = normalizeAccountingInterval(row.interval);
+        return {
+          id: `faako:${row.id}`,
+          source: "FAAKO_SUBSCRIPTION",
+          sourceRef: row.subscriptionId ?? row.id,
+          type: "REVENUE",
+          status: "PAID",
+          currency,
+          amount,
+          recurringInterval,
+          serviceName: row.subscriptionName
+            ? `Faako subscription • ${row.subscriptionName}`
+            : "Faako subscription",
+          detail: row.interval ? `Billing ${String(row.interval).toLowerCase()}` : null,
+          paidAt: paidAt ? new Date(paidAt).toISOString() : null,
+          dueAt: row.dueAt ? new Date(row.dueAt).toISOString() : null,
+          createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+        };
+      })
+      .filter(Boolean);
+
+    return { status: "ok", entries };
+  } catch (error) {
+    console.warn("Faako subscription sync failed", error);
+    return { status: "error", entries: [] };
+  }
+};
 
 app.get("/api/bookings", authMiddleware, async (req, res) => {
   const { from, to } = req.query;

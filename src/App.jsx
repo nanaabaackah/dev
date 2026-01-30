@@ -19,6 +19,7 @@ import Reports from "./components/Reports";
 import Settings from "./components/Settings";
 import AuditLogs from "./components/AuditLogs";
 import ThemeToggle from "./components/ThemeToggle";
+import Accounting from "./components/Accounting";
 
 const PrivateRoute = ({ children }) => {
   const token = localStorage.getItem("token");
@@ -68,6 +69,9 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           </NavLink>
           <NavLink to="/reports" className={({ isActive }) => (isActive ? "active" : "")}>
             Reports
+          </NavLink>
+          <NavLink to="/accounting" className={({ isActive }) => (isActive ? "active" : "")}>
+            Accounting
           </NavLink>
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
             Settings
@@ -171,6 +175,14 @@ function App() {
           element={
             <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
               <Reports />
+            </ShellPage>
+          }
+        />
+        <Route
+          path="/accounting"
+          element={
+            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
+              <Accounting />
             </ShellPage>
           }
         />
