@@ -1344,9 +1344,9 @@ app.get("/api/public/trust-stats", async (req, res) => {
   const range = buildRollingRange(30);
 
   try {
-    const [manualRevenue, inventoryItems, managedOrgs, faakoResult] = await Promise.all([
+    const [manualRevenue, inventoryUnits, managedOrgs, faakoResult] = await Promise.all([
       sumPaidRevenueGhs(range),
-      countInventoryItems(),
+      sumInventoryUnits(),
       resolveManagedOrganizationCount(),
       fetchFaakoSubscriptionEntries({ start: range.start, end: range.end }),
     ]);
@@ -1370,7 +1370,7 @@ app.get("/api/public/trust-stats", async (req, res) => {
         amount: monthlyTransactions,
         currency: "GHS",
       },
-      inventoryItems,
+      inventoryUnits,
       locations: managedOrgs,
     };
 
@@ -1846,18 +1846,17 @@ const sumPaidRevenueGhs = async ({ start, end }) => {
   return Number.isFinite(sum) ? sum : 0;
 };
 
-const countInventoryItems = async () => {
+const sumInventoryUnits = async () => {
   if (!reebsPool) return 0;
   try {
-    const result = await resolveTableCount(reebsPool, [
-      "inventory",
-      "Inventory",
-      "product",
-      "Product",
-    ]);
-    return result?.count ?? 0;
+    const inventoryTable = await resolveTableName(reebsPool, ["inventory", "Inventory"]);
+    if (!inventoryTable) return 0;
+    const result = await reebsPool.query(
+      `SELECT COALESCE(SUM(quantity), 0)::int AS total FROM ${inventoryTable}`
+    );
+    return result.rows[0]?.total ?? 0;
   } catch (error) {
-    console.warn("Inventory KPI query failed", error);
+    console.warn("Inventory units KPI query failed", error);
     return 0;
   }
 };
