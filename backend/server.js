@@ -1344,9 +1344,9 @@ app.get("/api/public/trust-stats", async (req, res) => {
   const range = buildRollingRange(30);
 
   try {
-    const [manualRevenue, bookingCount, managedOrgs, faakoResult] = await Promise.all([
+    const [manualRevenue, inventoryItems, managedOrgs, faakoResult] = await Promise.all([
       sumPaidRevenueGhs(range),
-      countBookingsInRange(range),
+      countInventoryItems(),
       resolveManagedOrganizationCount(),
       fetchFaakoSubscriptionEntries({ start: range.start, end: range.end }),
     ]);
@@ -1358,8 +1358,6 @@ app.get("/api/public/trust-stats", async (req, res) => {
     }, 0);
 
     const monthlyTransactions = Math.round((manualRevenue + faakoRevenue) * 100) / 100;
-    const ordersPerDay =
-      range.days > 0 ? Math.round(bookingCount / range.days) : 0;
 
     const payload = {
       generatedAt: new Date().toISOString(),
@@ -1372,7 +1370,7 @@ app.get("/api/public/trust-stats", async (req, res) => {
         amount: monthlyTransactions,
         currency: "GHS",
       },
-      ordersPerDay,
+      inventoryItems,
       locations: managedOrgs,
     };
 
@@ -1848,13 +1846,21 @@ const sumPaidRevenueGhs = async ({ start, end }) => {
   return Number.isFinite(sum) ? sum : 0;
 };
 
-const countBookingsInRange = async ({ start, end }) =>
-  prisma.booking.count({
-    where: {
-      startAt: { gte: start, lte: end },
-      status: { in: ["CONFIRMED", "TENTATIVE"] },
-    },
-  });
+const countInventoryItems = async () => {
+  if (!reebsPool) return 0;
+  try {
+    const result = await resolveTableCount(reebsPool, [
+      "inventory",
+      "Inventory",
+      "product",
+      "Product",
+    ]);
+    return result?.count ?? 0;
+  } catch (error) {
+    console.warn("Inventory KPI query failed", error);
+    return 0;
+  }
+};
 
 const resolveManagedOrganizationCount = async () => {
   const portfolioActive = await prisma.organization.count({ where: { status: "ACTIVE" } });
