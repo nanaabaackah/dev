@@ -28,7 +28,10 @@ const allowedOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map((origin) => normalizeOrigin(origin.trim()))
   .filter(Boolean);
-const productionExtraOrigins = ["https://dev.nanaabaackah.com"];
+const productionExtraOrigins = [
+  "https://dev.nanaabaackah.com",
+  "https://faako.nanaabaackah.com",
+];
 const devOrigins = isProduction
   ? productionExtraOrigins
   : [
@@ -69,6 +72,9 @@ const googleNightlySyncHour = Number(process.env.GOOGLE_NIGHTLY_SYNC_HOUR ?? 2);
 const googleNightlySyncMinute = Number(process.env.GOOGLE_NIGHTLY_SYNC_MINUTE ?? 0);
 const SITE_STATUS_TIMEOUT_MS = Number(process.env.SITE_STATUS_TIMEOUT_MS ?? 6500);
 const SITE_STATUS_CACHE_TTL_MS = Number(process.env.SITE_STATUS_CACHE_TTL_MS ?? 5 * 60 * 1000);
+const TRUST_STATS_CACHE_TTL_MS = Number(
+  process.env.TRUST_STATS_CACHE_TTL_MS ?? 5 * 60 * 1000
+);
 const SITE_STATUS_USER_AGENT =
   process.env.SITE_STATUS_USER_AGENT ?? "bynana-portfolio-status/1.0 (+https://dev.nanaabaackah.com)";
 
@@ -146,6 +152,7 @@ const SITE_PAGES = [
 ];
 
 let siteStatusCache = { checkedAt: 0, data: null };
+let trustStatsCache = { checkedAt: 0, data: null };
 
 const classifyResponseStatus = (response) => {
   if (!response) return "offline";
@@ -1328,6 +1335,58 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
   });
 });
 
+app.get("/api/public/trust-stats", async (req, res) => {
+  const now = Date.now();
+  if (trustStatsCache.data && now - trustStatsCache.checkedAt < TRUST_STATS_CACHE_TTL_MS) {
+    return res.json(trustStatsCache.data);
+  }
+
+  const range = buildRollingRange(30);
+
+  try {
+    const [manualRevenue, bookingCount, managedOrgs, faakoResult] = await Promise.all([
+      sumPaidRevenueGhs(range),
+      countBookingsInRange(range),
+      resolveManagedOrganizationCount(),
+      fetchFaakoSubscriptionEntries({ start: range.start, end: range.end }),
+    ]);
+
+    const faakoRevenue = (faakoResult?.entries ?? []).reduce((total, entry) => {
+      if (entry?.currency !== "GHS") return total;
+      const amount = Number(entry.amount);
+      return Number.isFinite(amount) ? total + amount : total;
+    }, 0);
+
+    const monthlyTransactions = Math.round((manualRevenue + faakoRevenue) * 100) / 100;
+    const ordersPerDay =
+      range.days > 0 ? Math.round(bookingCount / range.days) : 0;
+
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      range: {
+        start: range.start.toISOString(),
+        end: range.end.toISOString(),
+        days: range.days,
+      },
+      monthlyTransactions: {
+        amount: monthlyTransactions,
+        currency: "GHS",
+      },
+      ordersPerDay,
+      locations: managedOrgs,
+    };
+
+    trustStatsCache = { checkedAt: now, data: payload };
+    return res.json(payload);
+  } catch (error) {
+    console.warn("Trust stats query failed", error);
+    if (trustStatsCache.data) {
+      return res.json(trustStatsCache.data);
+    }
+    return res.status(500).json({ error: "Unable to load trust stats" });
+  }
+});
+
 app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
   const { start, end } = buildAccountingRange(req.query?.range);
   const isAdmin = req.user?.roleName === "Admin";
@@ -1753,6 +1812,62 @@ const buildAccountingRange = (range) => {
 
   start.setHours(0, 0, 0, 0);
   return { start, end: now };
+};
+
+const buildRollingRange = (days = 30) => {
+  const totalDays = Math.max(Number(days) || 30, 1);
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - (totalDays - 1));
+  start.setHours(0, 0, 0, 0);
+  return { start, end, days: totalDays };
+};
+
+const resolveDecimalAmount = (value) => {
+  if (typeof value?.toNumber === "function") {
+    return value.toNumber();
+  }
+  return Number(value ?? 0);
+};
+
+const sumPaidRevenueGhs = async ({ start, end }) => {
+  const result = await prisma.accountingEntry.aggregate({
+    _sum: { amount: true },
+    where: {
+      type: "REVENUE",
+      status: "PAID",
+      currency: "GHS",
+      archivedAt: null,
+      OR: [
+        { paidAt: { gte: start, lte: end } },
+        { paidAt: null, createdAt: { gte: start, lte: end } },
+      ],
+    },
+  });
+  const sum = resolveDecimalAmount(result?._sum?.amount);
+  return Number.isFinite(sum) ? sum : 0;
+};
+
+const countBookingsInRange = async ({ start, end }) =>
+  prisma.booking.count({
+    where: {
+      startAt: { gte: start, lte: end },
+      status: { in: ["CONFIRMED", "TENTATIVE"] },
+    },
+  });
+
+const resolveManagedOrganizationCount = async () => {
+  const portfolioActive = await prisma.organization.count({ where: { status: "ACTIVE" } });
+  const [reebsOrgs, faakoOrgs] = await Promise.all([
+    reebsPool ? resolveTableCount(reebsPool, ["organization", "Organization"]) : null,
+    faakoPool ? resolveTableCount(faakoPool, ["Organization", "organization"]) : null,
+  ]);
+
+  return (
+    portfolioActive +
+    (reebsOrgs?.count ?? 0) +
+    (faakoOrgs?.count ?? 0)
+  );
 };
 
 const resolveAccountingEntryDate = (entry) => {
