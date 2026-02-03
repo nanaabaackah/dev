@@ -1371,7 +1371,7 @@ app.get("/api/public/trust-stats", async (req, res) => {
         currency: "GHS",
       },
       inventoryUnits,
-      locations: managedOrgs,
+      organizations: managedOrgs,
     };
 
     trustStatsCache = { checkedAt: now, data: payload };
@@ -1850,11 +1850,30 @@ const sumInventoryUnits = async () => {
   if (!reebsPool) return 0;
   try {
     const inventoryTable = await resolveTableName(reebsPool, ["inventory", "Inventory"]);
-    if (!inventoryTable) return 0;
-    const result = await reebsPool.query(
-      `SELECT COALESCE(SUM(quantity), 0)::int AS total FROM ${inventoryTable}`
-    );
-    return result.rows[0]?.total ?? 0;
+    if (inventoryTable) {
+      const result = await reebsPool.query(
+        `SELECT COALESCE(SUM(quantity), 0)::int AS total FROM ${inventoryTable}`
+      );
+      return result.rows[0]?.total ?? 0;
+    }
+
+    const productTable = await resolveTableName(reebsPool, ["product", "Product"]);
+    if (!productTable) return 0;
+
+    try {
+      const result = await reebsPool.query(
+        `SELECT COALESCE(SUM(stock), 0)::int AS total
+         FROM ${productTable}
+         WHERE ("isArchived" IS NULL OR "isArchived" = false)
+           AND ("isDeleted" IS NULL OR "isDeleted" = false)`
+      );
+      return result.rows[0]?.total ?? 0;
+    } catch {
+      const result = await reebsPool.query(
+        `SELECT COALESCE(SUM(stock), 0)::int AS total FROM ${productTable}`
+      );
+      return result.rows[0]?.total ?? 0;
+    }
   } catch (error) {
     console.warn("Inventory units KPI query failed", error);
     return 0;
