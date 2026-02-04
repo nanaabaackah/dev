@@ -40,6 +40,7 @@ const devOrigins = isProduction
       "http://localhost:4173",
       "http://localhost:8888",
       "https://dev.nanaabaackah.com",
+      "https://faako.nanaabaackah.com",
     ];
 const allowedOriginSet = new Set([...allowedOrigins, ...devOrigins]);
 const allowAllOrigins = allowedOriginSet.size === 0;
