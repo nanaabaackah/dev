@@ -12,7 +12,7 @@ const AuditLogs = () => {
     if (!stored) return [];
     try {
       return JSON.parse(stored);
-    } catch (err) {
+    } catch {
       return [];
     }
   });

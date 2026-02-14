@@ -6,8 +6,153 @@
   background: var(--hero-gradient);
 }
 
+.dashboard-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.35fr);
+  gap: 1rem 1.2rem;
+  align-items: start;
+}
+
+.dashboard-hero__intro {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.dashboard-hero__side {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.dashboard-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.dashboard-brief-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 0.72rem 0.78rem;
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.dashboard-brief-card .kpi-value {
+  font-size: 1.3rem;
+  line-height: 1.15;
+}
+
+.dashboard-brief-card .muted {
+  font-size: 0.76rem;
+}
+
+.dashboard-brief-card .kpi-delta {
+  font-size: 0.72rem;
+}
+
+.dashboard-verse {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 0.82rem 0.88rem;
+  display: grid;
+  gap: 0.34rem;
+}
+
+.dashboard-verse__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.dashboard-verse__text {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.dashboard-verse__reference {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 .availability-panel {
   gap: 1.2rem;
+}
+
+.dashboard-productivity {
+  gap: 1rem;
+}
+
+.dashboard-productivity__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.dashboard-productivity .productivity-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.dashboard-productivity .productivity-card {
+  padding: 0.85rem 0.9rem;
+}
+
+.dashboard-productivity .productivity-card .kpi-value {
+  font-size: 1.5rem;
+}
+
+.dashboard-productivity__workspace {
+  display: grid;
+  grid-template-columns: 1.05fr 1.45fr;
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.dashboard-productivity__fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.dashboard-productivity__field {
+  gap: 0.35rem;
+}
+
+.dashboard-productivity__field span {
+  font-size: 0.7rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.dashboard-productivity__field .input {
+  text-align: center;
+  font-weight: 700;
+  padding: 0.5rem 0.6rem;
+}
+
+.dashboard-productivity__notes {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.dashboard-productivity__notes .input {
+  min-height: 88px;
+}
+
+.dashboard-productivity__save {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  flex-wrap: wrap;
 }
 
 .availability-callout {
@@ -58,6 +203,14 @@
 .availability-scroll {
   overflow-x: auto;
   padding-bottom: 0.35rem;
+}
+
+.availability-desktop {
+  display: block;
+}
+
+.availability-mobile {
+  display: none;
 }
 
 .availability-grid {
@@ -217,4 +370,272 @@
   justify-content: flex-end;
   gap: 0.6rem;
   flex-wrap: wrap;
+}
+
+.availability-mobile__days {
+  display: flex;
+  gap: 0.55rem;
+  overflow-x: auto;
+  padding-bottom: 0.2rem;
+}
+
+.availability-day-chip {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  border-radius: 14px;
+  padding: 0.42rem 0.58rem;
+  min-width: 62px;
+  display: grid;
+  justify-items: center;
+  gap: 0.2rem;
+  cursor: pointer;
+}
+
+.availability-day-chip__label {
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+
+.availability-day-chip__number {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.availability-day-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.availability-day-chip.is-active {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 42%);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.availability-day-chip.is-active .availability-day-chip__number {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.availability-mobile__agenda {
+  display: grid;
+  gap: 0.52rem;
+}
+
+.availability-agenda-slot {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 0.75rem 0.85rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.availability-agenda-slot span:last-child {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.availability-agenda-slot.is-available span:last-child {
+  color: #0f8a4c;
+}
+
+.availability-agenda-slot.is-booked span:last-child {
+  color: #b45309;
+}
+
+.availability-agenda-slot.is-blocked span:last-child {
+  color: #64748b;
+}
+
+.availability-agenda-slot:disabled {
+  opacity: 0.78;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .dashboard {
+    gap: 1rem;
+  }
+
+  .dashboard-hero {
+    grid-template-columns: 1fr;
+    gap: 0.8rem;
+  }
+
+  .dashboard-hero__intro h1 {
+    font-size: 1.55rem;
+    line-height: 1.12;
+  }
+
+  .dashboard-verse {
+    padding: 0.65rem 0.7rem;
+    border-radius: 12px;
+    gap: 0.28rem;
+  }
+
+  .dashboard-verse__text {
+    font-size: 0.82rem;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .dashboard-verse__reference {
+    font-size: 0.72rem;
+  }
+
+  .dashboard-brief-grid {
+    gap: 0.45rem;
+  }
+
+  .dashboard-brief-card {
+    padding: 0.62rem 0.62rem;
+    border-radius: 12px;
+    gap: 0.2rem;
+  }
+
+  .dashboard-brief-card .kpi-label {
+    font-size: 0.68rem;
+  }
+
+  .dashboard-brief-card .kpi-value {
+    font-size: 1.02rem;
+  }
+
+  .dashboard-brief-card .muted {
+    font-size: 0.66rem;
+  }
+
+  .dashboard-brief-card .kpi-delta {
+    font-size: 0.64rem;
+  }
+
+  .dashboard-productivity {
+    padding: 0.9rem;
+    border-radius: 18px;
+  }
+
+  .dashboard-productivity .panel-header .muted {
+    display: none;
+  }
+
+  .dashboard-productivity__header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .dashboard-productivity__header-actions .button {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.74rem;
+  }
+
+  .dashboard-productivity .productivity-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.52rem;
+  }
+
+  .dashboard-productivity .productivity-card {
+    border-radius: 12px;
+    padding: 0.62rem;
+  }
+
+  .dashboard-productivity .productivity-card__meta {
+    font-size: 0.66rem;
+    gap: 0.28rem;
+  }
+
+  .dashboard-productivity .productivity-card .kpi-value {
+    font-size: 1.05rem;
+    line-height: 1.15;
+  }
+
+  .dashboard-productivity .productivity-card .muted {
+    font-size: 0.63rem;
+  }
+
+  .dashboard-productivity__workspace {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .dashboard-productivity__fields {
+    gap: 0.45rem;
+  }
+
+  .dashboard-productivity__field .input {
+    border-radius: 12px;
+    font-size: 0.9rem;
+  }
+
+  .dashboard-productivity__notes .input {
+    min-height: 74px;
+  }
+
+  .dashboard-productivity .productivity-quick-actions {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.2rem;
+    scrollbar-width: thin;
+  }
+
+  .dashboard-productivity .productivity-quick-actions .button {
+    white-space: nowrap;
+    border-radius: 999px;
+    padding: 0.42rem 0.72rem;
+    min-height: 0;
+    font-size: 0.74rem;
+  }
+
+  .dashboard-productivity__save {
+    align-items: flex-start;
+  }
+
+  .dashboard-productivity__save .button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .availability-panel {
+    gap: 0.9rem;
+  }
+
+  .availability-callout {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.76rem;
+  }
+
+  .availability-legend {
+    gap: 0.48rem;
+    font-size: 0.72rem;
+  }
+
+  .availability-desktop {
+    display: none;
+  }
+
+  .availability-mobile {
+    display: grid;
+    gap: 0.78rem;
+  }
+}
+
+@media (max-width: 620px) {
+  .dashboard-brief-grid {
+    grid-template-columns: 1fr;
+  }
 }

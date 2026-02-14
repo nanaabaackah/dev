@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { buildApiUrl } from "../api-url";
+import { getApiErrorMessage, readJsonResponse } from "../utils/http";
+import { buildUserScopedCacheKey, readOfflineCache, writeOfflineCache } from "../utils/offlineCache";
 
 const useDashboardData = () => {
   const [data, setData] = useState(null);
@@ -30,7 +32,7 @@ const useDashboardData = () => {
             Authorization: `Bearer ${token}`,
           },
         });
-        const payload = await response.json();
+        const payload = await readJsonResponse(response);
         if (!response.ok) {
           if (response.status === 401) {
             localStorage.removeItem("token");
@@ -38,12 +40,21 @@ const useDashboardData = () => {
             navigate("/login");
             return;
           }
-          throw new Error(payload?.error || "Unable to load dashboard");
+          throw new Error(getApiErrorMessage(payload, "Unable to load dashboard"));
         }
         setData(payload);
+        const cacheKey = buildUserScopedCacheKey("dashboard");
+        writeOfflineCache(cacheKey, payload);
       } catch (err) {
         if (err.name !== "AbortError") {
-          setError(err.message);
+          const cacheKey = buildUserScopedCacheKey("dashboard");
+          const cached = readOfflineCache(cacheKey);
+          if (cached?.payload) {
+            setData(cached.payload);
+            setError("Offline mode: showing your most recent dashboard snapshot.");
+          } else {
+            setError(err.message);
+          }
         }
       } finally {
         setLoading(false);

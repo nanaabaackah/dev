@@ -35,3 +35,46 @@
 .bookings-page .button-danger:hover {
   box-shadow: 0 8px 20px rgba(185, 28, 28, 0.18);
 }
+
+.bookings-holiday-label {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.74rem;
+  color: #92400e;
+}
+
+.bookings-holiday-blocks {
+  margin-top: 0.8rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.bookings-holiday-blocks h4 {
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .bookings-page {
+    gap: 1rem;
+  }
+
+  .booking-panel {
+    gap: 0.95rem;
+  }
+
+  .booking-grid {
+    gap: 1rem;
+    grid-template-columns: 1fr;
+  }
+
+  .booking-actions,
+  .booking-sync {
+    gap: 0.45rem;
+  }
+
+  .bookings-holiday-label {
+    font-size: 0.68rem;
+  }
+}

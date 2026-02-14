@@ -8,6 +8,21 @@ import {
   useNavigate,
   useLocation,
 } from "react-router-dom";
+import {
+  Category,
+  WalletMoney,
+  CalendarTick,
+  TaskSquare,
+  Buildings2,
+  Box,
+  Monitor,
+  DocumentText,
+  ClipboardTick,
+  Profile2User,
+  Setting2,
+} from "iconsax-react";
+import { FiActivity } from "react-icons/fi";
+import { RiLogoutCircleRLine } from "react-icons/ri";
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
 import Bookings from "./components/Bookings";
@@ -21,6 +36,30 @@ import Settings from "./components/Settings";
 import AuditLogs from "./components/AuditLogs";
 import ThemeToggle from "./components/ThemeToggle";
 import Accounting from "./components/Accounting";
+import Productivity from "./components/Productivity";
+import useScrollAnimations from "./hooks/useScrollAnimations";
+
+const NAV_ITEMS = [
+  { to: "/dashboard", label: "Dashboard", Icon: Category },
+  { to: "/productivity", label: "Productivity", Icon: TaskSquare },
+  { to: "/accounting", label: "Accounting", Icon: WalletMoney },
+  { to: "/bookings", label: "Bookings", Icon: CalendarTick },
+  { to: "/organizations", label: "Organizations", Icon: Buildings2 },
+  { to: "/inventory", label: "Inventory", Icon: Box },
+  { to: "/system-health", label: "System Health", Icon: Monitor },
+  { to: "/reports", label: "Reports", Icon: DocumentText },
+  { to: "/audit-logs", label: "Audit Logs", Icon: ClipboardTick },
+  { to: "/users", label: "Users", Icon: Profile2User },
+  { to: "/settings", label: "Settings", Icon: Setting2 },
+];
+
+const MOBILE_TAB_ITEMS = [
+  { to: "/dashboard", label: "Home", Icon: Category },
+  { to: "/productivity", label: "Focus", Icon: TaskSquare },
+  { to: "/accounting", label: "Finance", Icon: WalletMoney },
+  { to: "/bookings", label: "Bookings", Icon: CalendarTick },
+  { to: "/settings", label: "Settings", Icon: Setting2 },
+];
 
 const PrivateRoute = ({ children }) => {
   const token = localStorage.getItem("token");
@@ -36,10 +75,43 @@ const getInitialTheme = () => {
   return "light";
 };
 
+const getTopbarLabel = (pathname) => {
+  if (pathname.startsWith("/book")) return "Booking";
+  switch (pathname) {
+    case "/dashboard":
+      return "Dashboard";
+    case "/accounting":
+      return "Accounting";
+    case "/productivity":
+      return "Productivity";
+    case "/bookings":
+      return "Bookings";
+    case "/organizations":
+      return "Organizations";
+    case "/users":
+      return "Users";
+    case "/inventory":
+      return "Inventory";
+    case "/system-health":
+      return "System Health";
+    case "/reports":
+      return "Reports";
+    case "/audit-logs":
+      return "Audit Logs";
+    case "/settings":
+      return "Settings";
+    default:
+      return "Workspace";
+  }
+};
+
 const AppShell = ({ children, theme, onToggleTheme }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [isNavOpen, setIsNavOpen] = useState(false);
+  const [isOffline, setIsOffline] = useState(
+    typeof navigator !== "undefined" ? !navigator.onLine : false
+  );
 
   useEffect(() => {
     setIsNavOpen(false);
@@ -51,6 +123,20 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
     return () => document.body.classList.remove("nav-open");
   }, [isNavOpen]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
   const handleSignOut = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
@@ -58,10 +144,13 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
   };
 
   return (
-    <div className="erp-shell">
+    <div className={`erp-shell ${isOffline ? "is-offline" : ""}`}>
       <aside className={`erp-sidebar ${isNavOpen ? "is-open" : ""}`} id="erp-sidebar">
         <div className="sidebar-header">
-          <div className="brand">Dev KPI</div>
+          <div className="brand">
+            <FiActivity aria-hidden="true" />
+            <span>Dev KPI</span>
+          </div>
           <button
             className="nav-close"
             type="button"
@@ -72,40 +161,21 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           </button>
         </div>
         <nav className="erp-nav">
-          <NavLink
-            to="/dashboard"
-            end
-            className={({ isActive }) => (isActive ? "active" : "")}
-          >
-            Dashboard
-          </NavLink>
-          <NavLink to="/accounting" className={({ isActive }) => (isActive ? "active" : "")}>
-            Accounting
-          </NavLink>
-          <NavLink to="/bookings" className={({ isActive }) => (isActive ? "active" : "")}>
-            Bookings
-          </NavLink>
-          <NavLink to="/organizations" className={({ isActive }) => (isActive ? "active" : "")}>
-            Organizations
-          </NavLink>
-          <NavLink to="/inventory" className={({ isActive }) => (isActive ? "active" : "")}>
-            Inventory
-          </NavLink>
-          <NavLink to="/system-health" className={({ isActive }) => (isActive ? "active" : "")}>
-            System Health
-          </NavLink>
-          <NavLink to="/reports" className={({ isActive }) => (isActive ? "active" : "")}>
-            Reports
-          </NavLink>
-          <NavLink to="/audit-logs" className={({ isActive }) => (isActive ? "active" : "")}>
-            Audit Logs
-          </NavLink>
-          <NavLink to="/users" className={({ isActive }) => (isActive ? "active" : "")}>
-            Users
-          </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
-            Settings
-          </NavLink>
+          {NAV_ITEMS.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === "/dashboard"}
+              className={({ isActive }) => (isActive ? "active" : "")}
+            >
+              {React.createElement(item.Icon, {
+                size: 16,
+                variant: "Linear",
+                className: "nav-icon",
+              })}
+              <span>{item.label}</span>
+            </NavLink>
+          ))}
         </nav>
       </aside>
       <button
@@ -127,17 +197,40 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
             >
               Menu
             </button>
-            <span>Workspace overview</span>
+            <span>{getTopbarLabel(location.pathname)}</span>
           </div>
           <div className="topbar-actions">
             <ThemeToggle theme={theme} onToggle={onToggleTheme} />
             <button className="button button-ghost" type="button" onClick={handleSignOut}>
-              Sign out
+              <RiLogoutCircleRLine aria-hidden="true" />
+              <span>Sign out</span>
             </button>
           </div>
         </header>
+        {isOffline ? (
+          <div className="offline-banner" role="status" aria-live="polite">
+            Offline mode. Showing cached content where available.
+          </div>
+        ) : null}
         <main className="erp-content">{children}</main>
       </div>
+      <nav className="mobile-tabbar" aria-label="Primary mobile navigation">
+        {MOBILE_TAB_ITEMS.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === "/dashboard"}
+            className={({ isActive }) => (isActive ? "active" : "")}
+          >
+            {React.createElement(item.Icon, {
+              size: 18,
+              variant: "Linear",
+              className: "mobile-tabbar__icon",
+            })}
+            <span>{item.label}</span>
+          </NavLink>
+        ))}
+      </nav>
     </div>
   );
 };
@@ -164,6 +257,8 @@ const getTitleForPath = (pathname) => {
       return "Reports | Dev";
     case "/accounting":
       return "Accounting | Dev";
+    case "/productivity":
+      return "Productivity | Dev";
     case "/settings":
       return "Settings | Dev";
     case "/audit-logs":
@@ -179,6 +274,14 @@ const TitleManager = () => {
   useEffect(() => {
     document.title = getTitleForPath(location.pathname);
   }, [location.pathname]);
+
+  return null;
+};
+
+const ScrollAnimationManager = () => {
+  const location = useLocation();
+
+  useScrollAnimations(location.pathname);
 
   return null;
 };
@@ -206,6 +309,7 @@ function App() {
   return (
     <Router>
       <TitleManager />
+      <ScrollAnimationManager />
       <Routes>
         <Route path="/login" element={<Login theme={theme} onToggleTheme={handleToggleTheme} />} />
         <Route path="/book/:orgSlug?" element={<PublicBooking />} />
@@ -270,6 +374,14 @@ function App() {
           element={
             <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
               <Accounting />
+            </ShellPage>
+          }
+        />
+        <Route
+          path="/productivity"
+          element={
+            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
+              <Productivity />
             </ShellPage>
           }
         />

@@ -20,6 +20,8 @@ model Organization {
   bookingSettings BookingSettings?
   calendarIntegrations CalendarIntegration[]
   accountingEntries AccountingEntry[]
+  productivityEntries ProductivityEntry[]
+  productivityTodos ProductivityTodo[]
 }
 
 model Role {
@@ -49,6 +51,8 @@ model User {
   status         UserStatus    @default(ACTIVE)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  productivityEntries ProductivityEntry[]
+  productivityTodos ProductivityTodo[]
 }
 
 model Booking {
@@ -135,6 +139,46 @@ model AccountingEntry {
   @@index([organizationId, currency])
   @@index([organizationId, paidAt])
   @@index([organizationId, dueAt])
+}
+
+model ProductivityEntry {
+  id              Int          @id @default(autoincrement())
+  organizationId  Int
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  userId          Int
+  user            User         @relation(fields: [userId], references: [id])
+  entryDate       DateTime     @db.Date
+  plannedTasks    Int          @default(0)
+  completedTasks  Int          @default(0)
+  deepWorkMinutes Int          @default(0)
+  focusBlocks     Int          @default(0)
+  blockers        String?
+  energyLevel     Int?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([userId, entryDate])
+  @@index([organizationId, entryDate])
+  @@index([userId, entryDate])
+}
+
+model ProductivityTodo {
+  id             Int          @id @default(autoincrement())
+  organizationId Int
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  userId         Int
+  user           User         @relation(fields: [userId], references: [id])
+  title          String
+  notes          String?
+  isDone         Boolean      @default(false)
+  priority       String?
+  dueAt          DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId, userId, isDone])
+  @@index([userId, dueAt])
 }
 
 enum OrgStatus {

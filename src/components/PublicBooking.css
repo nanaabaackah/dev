@@ -46,15 +46,48 @@
   color: #b91c1c;
 }
 
+.public-booking__legend-item.is-holiday {
+  background: rgba(251, 191, 36, 0.18);
+  border-color: rgba(217, 119, 6, 0.3);
+  color: #92400e;
+}
+
 .public-booking__legend-item.is-blocked {
   background: #eef2f7;
   border-color: #e2e8f0;
   color: #475569;
 }
 
+.public-holiday-list {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.65rem 0.8rem;
+  background: color-mix(in oklab, var(--surface), var(--card) 30%);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.public-holiday-list__items {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.public-holiday-list__row {
+  display: grid;
+  gap: 0.12rem;
+}
+
 .public-availability-scroll {
   overflow-x: auto;
   padding-bottom: 0.25rem;
+}
+
+.public-availability-desktop {
+  display: block;
+}
+
+.public-availability-mobile {
+  display: none;
 }
 
 .public-availability-grid {
@@ -84,6 +117,10 @@
   font-weight: 600;
 }
 
+.public-availability-day.is-holiday {
+  background: color-mix(in oklab, #f59e0b, var(--card) 92%);
+}
+
 .public-availability-day__label {
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -93,6 +130,20 @@
 
 .public-availability-day__date {
   font-size: 0.9rem;
+}
+
+.public-availability-day__holidays {
+  margin-top: 0.2rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.public-availability-holiday {
+  font-size: 0.62rem;
+  border-radius: 999px;
+  padding: 0.14rem 0.32rem;
+  background: rgba(251, 191, 36, 0.24);
+  color: #92400e;
 }
 
 .public-availability-time {
@@ -138,6 +189,120 @@
   box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
+.public-availability-mobile__days {
+  display: flex;
+  gap: 0.6rem;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.public-day-chip {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  border-radius: 14px;
+  padding: 0.45rem 0.6rem;
+  min-width: 62px;
+  display: grid;
+  justify-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+}
+
+.public-day-chip__label {
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.public-day-chip__number {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.public-day-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.public-day-chip__holiday-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+.public-day-chip.is-holiday {
+  border-color: rgba(217, 119, 6, 0.38);
+}
+
+.public-day-chip.is-active {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 45%);
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.public-day-chip.is-active .public-day-chip__number {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.public-availability-mobile__agenda {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.public-agenda-slot {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 0.8rem 0.9rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.public-agenda-slot span:last-child {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.public-agenda-slot.is-available {
+  cursor: pointer;
+}
+
+.public-agenda-slot.is-available span:last-child {
+  color: #0f8a4c;
+}
+
+.public-agenda-slot.is-available.is-selected {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 40%);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.public-agenda-slot.is-booked {
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.public-agenda-slot.is-booked span:last-child {
+  color: #b91c1c;
+}
+
+.public-agenda-slot.is-blocked {
+  background: color-mix(in oklab, var(--surface), var(--card) 35%);
+}
+
 .public-booking__grid {
   display: grid;
   gap: 1rem;
@@ -164,4 +329,45 @@
   width: 1px;
   height: 1px;
   overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .public-booking {
+    padding: 1rem 0.85rem 6.2rem;
+    gap: 1rem;
+  }
+
+  .public-booking__hero .eyebrow,
+  .public-booking__hero .muted {
+    display: none;
+  }
+
+  .public-booking .panel {
+    padding: 1rem;
+  }
+
+  .public-availability-desktop {
+    display: none;
+  }
+
+  .public-availability-mobile {
+    display: grid;
+    gap: 0.8rem;
+  }
+
+  .public-booking__legend-item {
+    font-size: 0.68rem;
+    padding: 0.16rem 0.46rem;
+  }
+
+  .public-booking__actions {
+    position: sticky;
+    bottom: calc(0.65rem + env(safe-area-inset-bottom));
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: color-mix(in oklab, var(--card), transparent 4%);
+    backdrop-filter: blur(8px);
+    padding: 0.65rem;
+    justify-content: flex-end;
+  }
 }

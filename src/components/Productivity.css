@@ -1,0 +1,433 @@
+.productivity-page {
+  gap: 1rem;
+}
+
+.productivity-page__actions {
+  align-items: center;
+}
+
+.productivity-page__columns {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.productivity-page__column {
+  gap: 1rem;
+  display: grid;
+  align-content: start;
+}
+
+.productivity-overview__cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.productivity-overview .productivity-card {
+  min-height: 120px;
+}
+
+.productivity-editor {
+  gap: 0.85rem;
+}
+
+.productivity-editor__fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.productivity-editor__field span {
+  font-size: 0.74rem;
+}
+
+.productivity-editor__field .input {
+  text-align: center;
+  font-weight: 700;
+}
+
+.productivity-editor .input[type="date"] {
+  text-align: left;
+  font-weight: 600;
+}
+
+.productivity-editor textarea.input {
+  min-height: 92px;
+}
+
+.productivity-editor__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.productivity-todos {
+  gap: 0.8rem;
+}
+
+.productivity-todos__composer {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.productivity-todos__meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.productivity-todos__filters {
+  width: fit-content;
+}
+
+.productivity-todos__list {
+  gap: 0.65rem;
+}
+
+.productivity-todo-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.productivity-todo-row__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+}
+
+.productivity-todo-row__content {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.productivity-todo-row.is-done .table-strong {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.productivity-jobs {
+  gap: 0.8rem;
+}
+
+.productivity-jobs .panel-header h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.productivity-jobs__search {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.productivity-jobs__types {
+  width: fit-content;
+}
+
+.productivity-jobs__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.productivity-job-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.productivity-job-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.productivity-job-card__footer {
+  margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.productivity-job-card__footer .button {
+  padding: 0.38rem 0.7rem;
+  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.productivity-ai {
+  gap: 0.8rem;
+}
+
+.productivity-ai__form {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.productivity-ai__prompt {
+  min-height: 120px;
+}
+
+.productivity-ai__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.productivity-ai__response {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 0.8rem;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.productivity-ai__response pre {
+  margin: 0;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.productivity-history__row {
+  align-items: center;
+}
+
+.productivity-history__metrics {
+  font-size: 0.82rem;
+}
+
+@media (max-width: 900px) {
+  .productivity-page__actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .productivity-page__actions .segmented {
+    width: 100%;
+    order: 1;
+    overflow-x: auto;
+  }
+
+  .productivity-page__actions .segment {
+    white-space: nowrap;
+  }
+
+  .productivity-page__columns {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .productivity-page__column {
+    display: contents;
+  }
+
+  .productivity-overview {
+    order: 1;
+  }
+
+  .productivity-todos {
+    order: 2;
+  }
+
+  .productivity-editor {
+    order: 3;
+  }
+
+  .productivity-jobs {
+    order: 4;
+  }
+
+  .productivity-ai {
+    order: 5;
+  }
+
+  .productivity-overview {
+    padding: 0.9rem;
+    border-radius: 18px;
+  }
+
+  .productivity-overview__cards {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.48rem;
+  }
+
+  .productivity-overview .productivity-card {
+    border-radius: 12px;
+    padding: 0.62rem;
+    min-height: auto;
+  }
+
+  .productivity-overview .productivity-card__meta {
+    font-size: 0.66rem;
+    gap: 0.3rem;
+  }
+
+  .productivity-overview .productivity-card .kpi-value {
+    font-size: 1.06rem;
+    line-height: 1.15;
+  }
+
+  .productivity-overview .productivity-card .muted {
+    font-size: 0.62rem;
+  }
+
+  .productivity-editor,
+  .productivity-todos,
+  .productivity-jobs,
+  .productivity-ai {
+    padding: 0.92rem;
+    border-radius: 18px;
+    gap: 0.65rem;
+  }
+
+  .productivity-editor__fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+  }
+
+  .productivity-editor__field .input {
+    border-radius: 12px;
+    padding: 0.48rem 0.58rem;
+    font-size: 0.88rem;
+  }
+
+  .productivity-editor textarea.input {
+    min-height: 72px;
+  }
+
+  .productivity-editor .productivity-quick-actions {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.2rem;
+    scrollbar-width: thin;
+  }
+
+  .productivity-editor .productivity-quick-actions .button {
+    white-space: nowrap;
+    border-radius: 999px;
+    padding: 0.42rem 0.68rem;
+    min-height: 0;
+    font-size: 0.74rem;
+  }
+
+  .productivity-editor__footer {
+    align-items: flex-start;
+  }
+
+  .productivity-editor__footer .button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .productivity-todos__meta {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.45rem;
+  }
+
+  .productivity-todos__composer .button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .productivity-todos__filters,
+  .productivity-jobs__types {
+    width: 100%;
+    overflow-x: auto;
+    padding: 0.18rem;
+    gap: 0.18rem;
+  }
+
+  .productivity-todo-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .productivity-todo-row .icon-button {
+    width: 28px;
+    height: 28px;
+  }
+
+  .productivity-todo-row .status-pill {
+    display: none;
+  }
+
+  .productivity-jobs__search {
+    grid-template-columns: 1fr;
+  }
+
+  .productivity-jobs__search .button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .productivity-ai__prompt {
+    min-height: 86px;
+  }
+
+  .productivity-ai__actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.45rem;
+  }
+
+  .productivity-ai__actions .button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .productivity-jobs__list {
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
+
+  .productivity-job-card {
+    border-radius: 12px;
+    padding: 0.65rem;
+  }
+
+  .productivity-job-card__meta .muted,
+  .productivity-job-card .muted {
+    font-size: 0.72rem;
+  }
+
+  .productivity-job-card__footer {
+    gap: 0.45rem;
+    align-items: flex-end;
+    flex-direction: column;
+  }
+
+  .productivity-job-card__footer .button {
+    width: 100%;
+    justify-content: center;
+    border-radius: 999px;
+  }
+
+  .productivity-history__metrics {
+    font-size: 0.72rem;
+  }
+
+  .productivity-history .button {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.75rem;
+  }
+}

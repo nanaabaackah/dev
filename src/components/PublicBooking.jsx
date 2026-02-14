@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { buildApiUrl } from "../api-url";
 import { formatDateTime } from "../utils/formatters";
+import { buildHolidayMapForDays, getHolidayLabelsForDate, toDateKey } from "../utils/holidays";
 import "./PublicBooking.css";
 
 const DEFAULT_ORG_SLUG = import.meta.env.VITE_DEFAULT_ORG_SLUG || "bynana-portfolio";
@@ -14,13 +15,6 @@ const TIME_SLOTS = [
   { label: "3:00 PM", hour: 15, minute: 0 },
   { label: "5:00 PM", hour: 17, minute: 0 },
 ];
-
-const toDateKey = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
 
 const toDateInputValue = (date) => {
   if (!date) return "";
@@ -63,7 +57,7 @@ const buildSlotRange = (dayDate, slot) => {
 
 const hasOverlap = (startA, endA, startB, endB) => startA < endB && endA > startB;
 
-const buildAvailabilityMatrix = (days, bookings) => {
+const buildAvailabilityMatrix = (days, bookings, holidayMap) => {
   const now = new Date();
   const activeBookings = bookings.filter((booking) => booking.status !== "CANCELED");
   const bookingRanges = activeBookings.map((booking) => ({
@@ -72,10 +66,11 @@ const buildAvailabilityMatrix = (days, bookings) => {
   }));
 
   return days.map((day) => {
+    const isHoliday = (holidayMap.get(day.key) || []).length > 0;
     const isWeekend = day.date.getDay() === 0 || day.date.getDay() === 6;
     return TIME_SLOTS.map((slot) => {
       const { start, end } = buildSlotRange(day.date, slot);
-      if (isWeekend || end <= now) {
+      if (isHoliday || isWeekend || end <= now) {
         return "blocked";
       }
       const booked = bookingRanges.some((range) => hasOverlap(start, end, range.start, range.end));
@@ -117,11 +112,13 @@ const PublicBooking = () => {
   const [availabilityBookings, setAvailabilityBookings] = useState([]);
   const [availabilityLoading, setAvailabilityLoading] = useState(true);
   const [availabilityError, setAvailabilityError] = useState("");
+  const [selectedDayKey, setSelectedDayKey] = useState("");
 
   const days = useMemo(() => buildWeekDays(), []);
+  const holidayMap = useMemo(() => buildHolidayMapForDays(days), [days]);
   const availabilityMatrix = useMemo(
-    () => buildAvailabilityMatrix(days, availabilityBookings),
-    [days, availabilityBookings]
+    () => buildAvailabilityMatrix(days, availabilityBookings, holidayMap),
+    [days, availabilityBookings, holidayMap]
   );
   const availabilityRange = useMemo(() => {
     if (!days.length) return null;
@@ -131,6 +128,27 @@ const PublicBooking = () => {
     end.setHours(23, 59, 59, 999);
     return { from: start.toISOString(), to: end.toISOString() };
   }, [days]);
+
+  const selectedDayIndex = useMemo(() => {
+    const index = days.findIndex((day) => day.key === selectedDayKey);
+    return index >= 0 ? index : 0;
+  }, [days, selectedDayKey]);
+  const selectedDay = days[selectedDayIndex] || null;
+  const selectedDayHolidayLabels = useMemo(
+    () => (selectedDay ? holidayMap.get(selectedDay.key) || [] : []),
+    [holidayMap, selectedDay]
+  );
+  const visibleHolidayRows = useMemo(
+    () =>
+      days
+        .map((day) => ({
+          key: day.key,
+          dateLabel: day.dateLabel,
+          labels: holidayMap.get(day.key) || [],
+        }))
+        .filter((day) => day.labels.length > 0),
+    [days, holidayMap]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -203,6 +221,24 @@ const PublicBooking = () => {
     };
   }, [orgSlug, availabilityRange]);
 
+  useEffect(() => {
+    if (!days.length) return;
+    const validSelected = days.some((day) => day.key === selectedDayKey);
+    if (validSelected) return;
+
+    const firstAvailableDay = days.find((day, dayIndex) =>
+      (availabilityMatrix[dayIndex] || []).some((slotStatus) => slotStatus === "available")
+    );
+    setSelectedDayKey((firstAvailableDay || days[0]).key);
+  }, [days, availabilityMatrix, selectedDayKey]);
+
+  useEffect(() => {
+    if (!form.date) return;
+    if (days.some((day) => day.key === form.date)) {
+      setSelectedDayKey(form.date);
+    }
+  }, [form.date, days]);
+
   const locationLabel = settings.defaultLocation || "Meeting link sent after booking";
   const isReadyToSubmit = useMemo(() => {
     return (
@@ -234,6 +270,14 @@ const PublicBooking = () => {
     const dayIndex = startDate.getDay();
     if (dayIndex === 0 || dayIndex === 6) {
       setStatus({ tone: "error", message: "Weekend slots are not available." });
+      return;
+    }
+    const holidayLabels = getHolidayLabelsForDate(startDate);
+    if (holidayLabels.length) {
+      setStatus({
+        tone: "error",
+        message: `Holiday block: ${holidayLabels.join(" • ")}.`,
+      });
       return;
     }
 
@@ -302,6 +346,7 @@ const PublicBooking = () => {
 
   const handleSlotSelect = (day, slot) => {
     const { start } = buildSlotRange(day.date, slot);
+    setSelectedDayKey(day.key);
     setForm((prev) => ({
       ...prev,
       date: toDateInputValue(start),
@@ -365,6 +410,7 @@ const PublicBooking = () => {
                 <div className="public-booking__legend">
                   <span className="public-booking__legend-item is-available">Available</span>
                   <span className="public-booking__legend-item is-booked">Booked</span>
+                  <span className="public-booking__legend-item is-holiday">Holiday</span>
                   <span className="public-booking__legend-item is-blocked">Unavailable</span>
                 </div>
               </div>
@@ -376,54 +422,178 @@ const PublicBooking = () => {
                   <span>Loading availability...</span>
                 </div>
               ) : (
-                <div className="public-availability-scroll">
-                  <div className="public-availability-grid" role="grid">
-                    <div className="public-availability-cell public-availability-corner" />
-                    {days.map((day) => (
-                      <div
-                        className="public-availability-cell public-availability-day"
-                        role="columnheader"
-                        key={day.key}
-                      >
-                        <span className="public-availability-day__label">{day.label}</span>
-                        <span className="public-availability-day__date">{day.dateLabel}</span>
+                <>
+                  {visibleHolidayRows.length ? (
+                    <div className="public-holiday-list" role="status" aria-live="polite">
+                      <span className="kpi-label">Holiday blocks this week</span>
+                      <div className="public-holiday-list__items">
+                        {visibleHolidayRows.map((holiday) => (
+                          <div className="public-holiday-list__row" key={holiday.key}>
+                            <span className="table-strong">{holiday.dateLabel}</span>
+                            <span className="muted">{holiday.labels.join(" • ")}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                    {TIME_SLOTS.map((slot, slotIndex) => (
-                      <React.Fragment key={slot.label}>
-                        <div className="public-availability-cell public-availability-time" role="rowheader">
-                          {slot.label}
-                        </div>
-                        {days.map((day, dayIndex) => {
-                          const status = availabilityMatrix[dayIndex]?.[slotIndex] || "available";
-                          const isSelected = isSelectedSlot(day, slot);
-                          if (status === "available") {
+                    </div>
+                  ) : null}
+
+                  <div className="public-availability-scroll public-availability-desktop">
+                    <div className="public-availability-grid" role="grid">
+                      <div className="public-availability-cell public-availability-corner" />
+                      {days.map((day) => {
+                        const holidayLabels = holidayMap.get(day.key) || [];
+                        return (
+                          <div
+                            className={`public-availability-cell public-availability-day${
+                              holidayLabels.length ? " is-holiday" : ""
+                            }`}
+                            role="columnheader"
+                            key={day.key}
+                          >
+                            <span className="public-availability-day__label">{day.label}</span>
+                            <span className="public-availability-day__date">{day.dateLabel}</span>
+                            {holidayLabels.length ? (
+                              <div className="public-availability-day__holidays">
+                                {holidayLabels.map((label) => (
+                                  <span className="public-availability-holiday" key={`${day.key}-${label}`}>
+                                    {label}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                      {TIME_SLOTS.map((slot, slotIndex) => (
+                        <React.Fragment key={slot.label}>
+                          <div className="public-availability-cell public-availability-time" role="rowheader">
+                            {slot.label}
+                          </div>
+                          {days.map((day, dayIndex) => {
+                            const status = availabilityMatrix[dayIndex]?.[slotIndex] || "available";
+                            const isSelected = isSelectedSlot(day, slot);
+                            const holidayLabels = holidayMap.get(day.key) || [];
+                            if (status === "available") {
+                              return (
+                                <button
+                                  type="button"
+                                  key={`${day.key}-${slot.label}`}
+                                  className={`public-availability-cell public-availability-slot is-${status}${
+                                    isSelected ? " is-selected" : ""
+                                  }`}
+                                  onClick={() => handleSlotSelect(day, slot)}
+                                >
+                                  Open
+                                </button>
+                              );
+                            }
                             return (
-                              <button
-                                type="button"
+                              <div
                                 key={`${day.key}-${slot.label}`}
-                                className={`public-availability-cell public-availability-slot is-${status}${
-                                  isSelected ? " is-selected" : ""
-                                }`}
-                                onClick={() => handleSlotSelect(day, slot)}
+                                className={`public-availability-cell public-availability-slot is-${status}`}
                               >
-                                Open
-                              </button>
+                                {status === "booked"
+                                  ? "Booked"
+                                  : holidayLabels.length
+                                    ? "Holiday"
+                                    : "Unavailable"}
+                              </div>
                             );
-                          }
-                          return (
-                            <div
-                              key={`${day.key}-${slot.label}`}
-                              className={`public-availability-cell public-availability-slot is-${status}`}
-                            >
-                              {status === "booked" ? "Booked" : "Unavailable"}
-                            </div>
-                          );
-                        })}
-                      </React.Fragment>
-                    ))}
+                          })}
+                        </React.Fragment>
+                      ))}
+                    </div>
                   </div>
-                </div>
+
+                  <div className="public-availability-mobile" aria-label="Mobile schedule picker">
+                    <div
+                      className="public-availability-mobile__days"
+                      role="tablist"
+                      aria-label="Choose day"
+                    >
+                      {days.map((day, dayIndex) => {
+                        const isActive = selectedDay?.key === day.key;
+                        const hasOpenSlot = (availabilityMatrix[dayIndex] || []).some(
+                          (slotStatus) => slotStatus === "available"
+                        );
+                        const holidayLabels = holidayMap.get(day.key) || [];
+                        return (
+                          <button
+                            key={day.key}
+                            type="button"
+                            role="tab"
+                            aria-selected={isActive}
+                            className={`public-day-chip ${isActive ? "is-active" : ""}${
+                              holidayLabels.length ? " is-holiday" : ""
+                            }`}
+                            onClick={() => setSelectedDayKey(day.key)}
+                          >
+                            <span className="public-day-chip__label">{day.label}</span>
+                            <span className="public-day-chip__number">{day.date.getDate()}</span>
+                            {holidayLabels.length ? (
+                              <span className="public-day-chip__holiday-dot" />
+                            ) : hasOpenSlot ? (
+                              <span className="public-day-chip__dot" />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {selectedDayHolidayLabels.length ? (
+                      <div className="notice">
+                        Holiday block: {selectedDayHolidayLabels.join(" • ")}.
+                      </div>
+                    ) : null}
+
+                    <div className="public-availability-mobile__agenda" role="list">
+                      {selectedDay
+                        ? TIME_SLOTS.map((slot, slotIndex) => {
+                            const status = availabilityMatrix[selectedDayIndex]?.[slotIndex] || "blocked";
+                            const isSelected = isSelectedSlot(selectedDay, slot);
+                            const holidayLabels = holidayMap.get(selectedDay.key) || [];
+                            const statusLabel =
+                              status === "available"
+                                ? isSelected
+                                  ? "Selected"
+                                  : "Open"
+                                : status === "booked"
+                                  ? "Booked"
+                                  : holidayLabels.length
+                                    ? "Holiday"
+                                  : "Unavailable";
+
+                            if (status === "available") {
+                              return (
+                                <button
+                                  key={`${selectedDay.key}-${slot.label}`}
+                                  type="button"
+                                  className={`public-agenda-slot is-${status}${
+                                    isSelected ? " is-selected" : ""
+                                  }`}
+                                  onClick={() => handleSlotSelect(selectedDay, slot)}
+                                >
+                                  <span>{slot.label}</span>
+                                  <span>{statusLabel}</span>
+                                </button>
+                              );
+                            }
+
+                            return (
+                              <div
+                                key={`${selectedDay.key}-${slot.label}`}
+                                className={`public-agenda-slot is-${status}`}
+                                role="listitem"
+                              >
+                                <span>{slot.label}</span>
+                                <span>{statusLabel}</span>
+                              </div>
+                            );
+                          })
+                        : null}
+                    </div>
+                  </div>
+                </>
               )}
             </section>
             <div className="public-booking__grid">

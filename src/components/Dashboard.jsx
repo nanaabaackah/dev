@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { ReceiptItem, TaskSquare, Timer1 } from "iconsax-react";
 import useDashboardData from "../hooks/useDashboardData";
 import { formatDateTime, formatPercent, formatRatio } from "../utils/formatters";
+import { getApiErrorMessage, readJsonResponse } from "../utils/http";
 import { formatStatusLabel, getStatusTone, isHealthyStatus } from "../utils/status";
+import { buildUserScopedCacheKey, readOfflineCache, writeOfflineCache } from "../utils/offlineCache";
 import { buildApiUrl } from "../api-url";
 import "./Dashboard.css";
 
@@ -90,6 +93,70 @@ const readStoredUser = () => {
   } catch {
     return null;
   }
+};
+
+const buildTodayDate = () => new Date().toISOString().slice(0, 10);
+
+const DEFAULT_PRODUCTIVITY_STATE = {
+  entryDate: buildTodayDate(),
+  plannedTasks: "5",
+  completedTasks: "0",
+  deepWorkMinutes: "0",
+  focusBlocks: "0",
+  blockers: "",
+  updatedAt: null,
+};
+
+const DEFAULT_PRODUCTIVITY_SUMMARY = {
+  plannedTasks: 0,
+  completedTasks: 0,
+  deepWorkMinutes: 0,
+  focusBlocks: 0,
+  completionRate: 0,
+  focusScore: 0,
+  streakDays: 0,
+  momentumLabel: "Start a focus block",
+  entriesLogged: 0,
+};
+
+const buildProductivityState = (entry) => ({
+  entryDate: entry?.entryDate || buildTodayDate(),
+  plannedTasks: String(entry?.plannedTasks ?? DEFAULT_PRODUCTIVITY_STATE.plannedTasks),
+  completedTasks: String(entry?.completedTasks ?? DEFAULT_PRODUCTIVITY_STATE.completedTasks),
+  deepWorkMinutes: String(entry?.deepWorkMinutes ?? DEFAULT_PRODUCTIVITY_STATE.deepWorkMinutes),
+  focusBlocks: String(entry?.focusBlocks ?? DEFAULT_PRODUCTIVITY_STATE.focusBlocks),
+  blockers: String(entry?.blockers ?? DEFAULT_PRODUCTIVITY_STATE.blockers),
+  updatedAt: entry?.updatedAt ?? null,
+});
+
+const DEFAULT_DAILY_VERSE = {
+  status: "idle",
+  text: "",
+  reference: "",
+  source: "youversion",
+  warning: "",
+  updatedAt: null,
+};
+
+const DEFAULT_DAILY_WEATHER = {
+  status: "idle",
+  temperature: null,
+  feelsLike: null,
+  temperatureUnit: "FAHRENHEIT",
+  conditionLabel: "",
+  locationLabel: "Current location",
+  warning: "",
+  updatedAt: null,
+};
+
+const getTemperatureUnitSymbol = (unit) => {
+  if (String(unit || "").toUpperCase() === "CELSIUS") return "C";
+  return "F";
+};
+
+const formatTemperatureValue = (value, unit) => {
+  if (!Number.isFinite(value)) return "--";
+  return `${Math.round(value)}°${getTemperatureUnitSymbol(unit)}`;
 };
 
 const buildWeekDays = () => {
@@ -259,6 +326,38 @@ const Dashboard = () => {
   const [slotStatus, setSlotStatus] = useState({ tone: "", message: "" });
   const [isSlotSaving, setIsSlotSaving] = useState(false);
   const [expandedSites, setExpandedSites] = useState({});
+  const [selectedAvailabilityDayKey, setSelectedAvailabilityDayKey] = useState("");
+  const [productivityState, setProductivityState] = useState(() => buildProductivityState());
+  const [productivitySummary, setProductivitySummary] = useState(DEFAULT_PRODUCTIVITY_SUMMARY);
+  const [productivityError, setProductivityError] = useState("");
+  const [productivityNotice, setProductivityNotice] = useState("");
+  const [isProductivitySaving, setIsProductivitySaving] = useState(false);
+  const [verseOfDay, setVerseOfDay] = useState(DEFAULT_DAILY_VERSE);
+  const [dailyWeather, setDailyWeather] = useState(DEFAULT_DAILY_WEATHER);
+  const [briefRefreshTick, setBriefRefreshTick] = useState(0);
+  const todayLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      }).format(new Date()),
+    []
+  );
+  const availabilityCacheKey = useMemo(
+    () => buildUserScopedCacheKey("dashboard:availability"),
+    []
+  );
+  const accountingCacheKey = useMemo(
+    () => buildUserScopedCacheKey("dashboard:accounting-summary"),
+    []
+  );
+  const productivityCacheKey = useMemo(
+    () => buildUserScopedCacheKey("dashboard:productivity"),
+    []
+  );
+  const verseCacheKey = useMemo(() => buildUserScopedCacheKey("dashboard:verse"), []);
+  const weatherCacheKey = useMemo(() => buildUserScopedCacheKey("dashboard:weather"), []);
 
   const days = useMemo(() => buildWeekDays(), []);
   const holidayMap = useMemo(() => buildHolidayMap(days), [days]);
@@ -267,6 +366,12 @@ const Dashboard = () => {
     () => buildAvailabilityMatrix(days, availabilityBookings, holidayMap),
     [days, availabilityBookings, holidayMap]
   );
+
+  const selectedAvailabilityDayIndex = useMemo(() => {
+    const index = days.findIndex((day) => day.key === selectedAvailabilityDayKey);
+    return index >= 0 ? index : 0;
+  }, [days, selectedAvailabilityDayKey]);
+  const selectedAvailabilityDay = days[selectedAvailabilityDayIndex] || null;
 
   const availabilityTotals = useMemo(() => {
     const totals = { available: 0, booked: 0, blocked: 0 };
@@ -295,6 +400,21 @@ const Dashboard = () => {
 
   const totalSlots = TIME_SLOTS.length * days.length;
   const availableSlots = availabilityTotals.available;
+  const todayDateKey = buildTodayDate();
+
+  const todayBookingsCount = useMemo(
+    () =>
+      availabilityBookings.filter(
+        (booking) => booking.status !== "CANCELED" && toDateKey(new Date(booking.startAt)) === todayDateKey
+      ).length,
+    [availabilityBookings, todayDateKey]
+  );
+
+  const todayOpenSlots = useMemo(() => {
+    const dayIndex = days.findIndex((day) => day.key === todayDateKey);
+    if (dayIndex < 0) return 0;
+    return (availabilityMatrix[dayIndex] || []).filter((status) => status === "available").length;
+  }, [availabilityMatrix, days, todayDateKey]);
 
   const findSlotBooking = useCallback(
     (day, slot) => {
@@ -371,9 +491,9 @@ const Dashboard = () => {
         },
         body: JSON.stringify(payload),
       });
-      const result = await response.json();
+      const result = await readJsonResponse(response);
       if (!response.ok) {
-        throw new Error(result?.error || "Unable to save booking.");
+        throw new Error(getApiErrorMessage(result, "Unable to save booking."));
       }
       setSlotStatus({ tone: "success", message: "Booking saved." });
       await loadAvailability();
@@ -409,21 +529,40 @@ const Dashboard = () => {
       const response = await fetch(buildApiUrl(`/api/bookings?${query.toString()}`), {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok) {
-        throw new Error(payload?.error || "Unable to load availability");
+        throw new Error(getApiErrorMessage(payload, "Unable to load availability"));
       }
-      setAvailabilityBookings(Array.isArray(payload) ? payload : []);
+      const bookings = Array.isArray(payload) ? payload : [];
+      setAvailabilityBookings(bookings);
+      writeOfflineCache(availabilityCacheKey, bookings);
     } catch (err) {
-      setAvailabilityError(err.message);
+      const cached = readOfflineCache(availabilityCacheKey);
+      if (Array.isArray(cached?.payload)) {
+        setAvailabilityBookings(cached.payload);
+        setAvailabilityError("Offline mode: showing cached availability.");
+      } else {
+        setAvailabilityError(err.message);
+      }
     } finally {
       setAvailabilityLoading(false);
     }
-  }, []);
+  }, [availabilityCacheKey]);
 
   useEffect(() => {
     loadAvailability();
   }, [loadAvailability]);
+
+  useEffect(() => {
+    if (!days.length) return;
+    const validSelected = days.some((day) => day.key === selectedAvailabilityDayKey);
+    if (validSelected) return;
+
+    const firstOpenDay = days.find((day, dayIndex) =>
+      (availabilityMatrix[dayIndex] || []).some((slotStatus) => slotStatus === "available")
+    );
+    setSelectedAvailabilityDayKey((firstOpenDay || days[0]).key);
+  }, [days, availabilityMatrix, selectedAvailabilityDayKey]);
 
   const loadAccountingSummary = useCallback(
     async ({ silent = false } = {}) => {
@@ -447,24 +586,260 @@ const Dashboard = () => {
         const response = await fetch(buildApiUrl(`/api/accounting/entries?${query.toString()}`), {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const payload = await response.json();
+        const payload = await readJsonResponse(response);
         if (!response.ok) {
-          throw new Error(payload?.error || "Unable to load accounting summary");
+          throw new Error(getApiErrorMessage(payload, "Unable to load accounting summary"));
         }
-        setAccountingSummary(buildAccountingSummary(payload.entries || []));
+        const entries = payload.entries || [];
+        setAccountingSummary(buildAccountingSummary(entries));
+        writeOfflineCache(accountingCacheKey, entries);
       } catch (err) {
-        setAccountingError(err.message);
-        setAccountingSummary(null);
+        const cached = readOfflineCache(accountingCacheKey);
+        if (Array.isArray(cached?.payload)) {
+          setAccountingSummary(buildAccountingSummary(cached.payload));
+          setAccountingError("Offline mode: showing cached accounting summary.");
+        } else {
+          setAccountingError(err.message);
+          setAccountingSummary(null);
+        }
       } finally {
         setAccountingLoading(false);
       }
     },
-    [isAdmin]
+    [accountingCacheKey, isAdmin]
   );
 
   useEffect(() => {
     loadAccountingSummary();
   }, [loadAccountingSummary]);
+
+  useEffect(() => {
+    if (!productivityNotice) return undefined;
+    const timeout = window.setTimeout(() => {
+      setProductivityNotice("");
+    }, 2400);
+    return () => window.clearTimeout(timeout);
+  }, [productivityNotice]);
+
+  const loadProductivity = useCallback(async () => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    setProductivityError("");
+
+    try {
+      const query = new URLSearchParams({ range: "14d" });
+      const response = await fetch(buildApiUrl(`/api/productivity/entries?${query.toString()}`), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        throw new Error(getApiErrorMessage(payload, "Unable to load productivity data"));
+      }
+
+      setProductivitySummary(payload?.summary || DEFAULT_PRODUCTIVITY_SUMMARY);
+      setProductivityState(buildProductivityState(payload?.activeEntry));
+      writeOfflineCache(productivityCacheKey, {
+        summary: payload?.summary || DEFAULT_PRODUCTIVITY_SUMMARY,
+        activeEntry: payload?.activeEntry || null,
+      });
+    } catch (err) {
+      const cached = readOfflineCache(productivityCacheKey);
+      if (cached?.payload) {
+        setProductivitySummary(cached.payload.summary || DEFAULT_PRODUCTIVITY_SUMMARY);
+        setProductivityState(buildProductivityState(cached.payload.activeEntry));
+        setProductivityError("Offline mode: showing cached productivity data.");
+      } else {
+        setProductivityError(err.message || "Unable to load productivity data");
+      }
+    }
+  }, [productivityCacheKey]);
+
+  useEffect(() => {
+    loadProductivity();
+  }, [loadProductivity]);
+
+  useEffect(() => {
+    let isActive = true;
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setVerseOfDay((prev) => ({
+        ...prev,
+        status: "error",
+        warning: "Missing session. Please sign in again.",
+      }));
+      return undefined;
+    }
+
+    setVerseOfDay((prev) => ({ ...prev, status: "loading", warning: "" }));
+
+    fetch(buildApiUrl("/api/dashboard/verse-of-day"), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then(async (response) => {
+        const payload = await readJsonResponse(response);
+        if (!response.ok) {
+          throw new Error(getApiErrorMessage(payload, "Unable to load verse of the day"));
+        }
+
+        const verse = payload?.verse || {};
+        const nextVerse = {
+          status: "ready",
+          text: String(verse?.text || "").trim(),
+          reference: String(verse?.reference || "").trim(),
+          source: String(verse?.source || payload?.meta?.source || "youversion"),
+          warning: String(payload?.meta?.warning || ""),
+          updatedAt: payload?.meta?.fetchedAt || new Date().toISOString(),
+        };
+        if (!nextVerse.text || !nextVerse.reference) {
+          throw new Error("Verse endpoint returned incomplete data.");
+        }
+        if (!isActive) return;
+        setVerseOfDay(nextVerse);
+        writeOfflineCache(verseCacheKey, nextVerse);
+      })
+      .catch((requestError) => {
+        if (!isActive) return;
+        const cached = readOfflineCache(verseCacheKey);
+        if (cached?.payload?.text && cached?.payload?.reference) {
+          setVerseOfDay({
+            ...cached.payload,
+            status: "ready",
+            warning: cached.payload.warning || "Offline mode: showing cached verse.",
+          });
+          return;
+        }
+        setVerseOfDay((prev) => ({
+          ...prev,
+          status: "error",
+          warning: requestError.message || "Unable to load verse of the day.",
+        }));
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [verseCacheKey, briefRefreshTick]);
+
+  useEffect(() => {
+    let isActive = true;
+    if (typeof window === "undefined" || typeof navigator === "undefined" || !navigator.geolocation) {
+      const cached = readOfflineCache(weatherCacheKey);
+      if (cached?.payload) {
+        setDailyWeather({
+          ...DEFAULT_DAILY_WEATHER,
+          ...cached.payload,
+          status: "ready",
+          warning: cached.payload.warning || "Offline mode: showing cached weather.",
+        });
+      } else {
+        setDailyWeather((prev) => ({ ...prev, status: "unavailable" }));
+      }
+      return undefined;
+    }
+
+    setDailyWeather((prev) => ({ ...prev, status: "loading" }));
+
+    const handleSuccess = async (position) => {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        if (!isActive) return;
+        setDailyWeather((prev) => ({
+          ...prev,
+          status: "error",
+          warning: "Missing session. Please sign in again.",
+        }));
+        return;
+      }
+
+      const latitude = Number(position?.coords?.latitude);
+      const longitude = Number(position?.coords?.longitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        if (!isActive) return;
+        setDailyWeather((prev) => ({ ...prev, status: "error" }));
+        return;
+      }
+
+      try {
+        const weatherQuery = new URLSearchParams({
+          lat: String(latitude),
+          lng: String(longitude),
+        });
+        const weatherResponse = await fetch(
+          buildApiUrl(`/api/dashboard/weather?${weatherQuery.toString()}`),
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+        const weatherPayload = await readJsonResponse(weatherResponse);
+        if (!weatherResponse.ok) {
+          throw new Error(getApiErrorMessage(weatherPayload, "Unable to load weather"));
+        }
+
+        const weather = weatherPayload?.weather || {};
+        const parsedTemperature = Number(weather?.temperature);
+        const parsedFeelsLike = Number(weather?.feelsLike);
+        const nextWeather = {
+          status: "ready",
+          temperature: Number.isFinite(parsedTemperature) ? parsedTemperature : null,
+          feelsLike: Number.isFinite(parsedFeelsLike) ? parsedFeelsLike : null,
+          temperatureUnit: String(weather?.temperatureUnit || "FAHRENHEIT"),
+          conditionLabel: String(weather?.conditionLabel || "Current conditions"),
+          locationLabel: String(weather?.locationLabel || "Current location"),
+          warning: String(weatherPayload?.meta?.warning || ""),
+          updatedAt: weatherPayload?.meta?.fetchedAt || new Date().toISOString(),
+        };
+        if (!isActive) return;
+        setDailyWeather(nextWeather);
+        writeOfflineCache(weatherCacheKey, nextWeather);
+      } catch (requestError) {
+        if (!isActive) return;
+        const cached = readOfflineCache(weatherCacheKey);
+        if (cached?.payload) {
+          setDailyWeather({
+            ...DEFAULT_DAILY_WEATHER,
+            ...cached.payload,
+            status: "ready",
+            warning: cached.payload.warning || "Offline mode: showing cached weather.",
+          });
+          return;
+        }
+        setDailyWeather((prev) => ({
+          ...prev,
+          status: "error",
+          warning: requestError.message || "Unable to fetch weather forecast.",
+        }));
+      }
+    };
+
+    const handleError = () => {
+      if (!isActive) return;
+      const cached = readOfflineCache(weatherCacheKey);
+      if (cached?.payload) {
+        setDailyWeather({
+          ...DEFAULT_DAILY_WEATHER,
+          ...cached.payload,
+          status: "ready",
+          warning: cached.payload.warning || "Location unavailable. Showing cached weather.",
+        });
+        return;
+      }
+      setDailyWeather((prev) => ({ ...prev, status: "unavailable" }));
+    };
+
+    navigator.geolocation.getCurrentPosition(handleSuccess, handleError, {
+      enableHighAccuracy: false,
+      timeout: 12000,
+      maximumAge: 20 * 60 * 1000,
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [weatherCacheKey, briefRefreshTick]);
 
   const handleRefresh = () => {
     if (!isRefreshing) {
@@ -472,6 +847,8 @@ const Dashboard = () => {
     }
     loadAvailability();
     loadAccountingSummary({ silent: true });
+    loadProductivity();
+    setBriefRefreshTick((previous) => previous + 1);
   };
 
   const toggleSiteExpansion = (siteId) => {
@@ -568,6 +945,129 @@ const Dashboard = () => {
       GHS: accountingSummary.paidRevenue.GHS - accountingSummary.paidExpenses.GHS,
     };
   }, [accountingSummary]);
+  const productivityMetrics = useMemo(() => {
+    const plannedTasks = Math.max(Number(productivityState.plannedTasks) || 0, 0);
+    const completedTasks = Math.max(Number(productivityState.completedTasks) || 0, 0);
+    const deepWorkMinutes = Math.max(Number(productivityState.deepWorkMinutes) || 0, 0);
+    const focusBlocks = Math.max(Number(productivityState.focusBlocks) || 0, 0);
+    const completionRate = plannedTasks ? Math.round((completedTasks / plannedTasks) * 100) : 0;
+    const focusScore = Math.min(
+      100,
+      Math.round(completionRate * 0.5 + Math.min(deepWorkMinutes, 240) * 0.2 + focusBlocks * 8)
+    );
+
+    let momentumLabel = "Start a focus block";
+    if (completionRate >= 80 && deepWorkMinutes >= 90) momentumLabel = "Strong momentum";
+    else if (completionRate >= 60 || deepWorkMinutes >= 60) momentumLabel = "On track";
+
+    return {
+      plannedTasks,
+      completedTasks,
+      deepWorkMinutes,
+      focusBlocks,
+      completionRate,
+      focusScore,
+      momentumLabel,
+    };
+  }, [productivityState]);
+  const productivitySavedLabel = productivityState.updatedAt
+    ? new Date(productivityState.updatedAt).toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "Not saved yet";
+  const verseTextLabel =
+    verseOfDay.status === "ready" && verseOfDay.text
+      ? `"${verseOfDay.text}"`
+      : verseOfDay.status === "loading"
+        ? "Loading verse..."
+        : '"Keep moving with purpose today."';
+  const verseReferenceLabel =
+    verseOfDay.status === "ready" && verseOfDay.reference
+      ? verseOfDay.reference
+      : verseOfDay.warning || "Verse unavailable.";
+  const weatherPrimaryLabel =
+    dailyWeather.status === "ready"
+      ? formatTemperatureValue(dailyWeather.temperature, dailyWeather.temperatureUnit)
+      : dailyWeather.status === "loading"
+        ? "Loading..."
+        : "--";
+  const weatherSecondaryLabel =
+    dailyWeather.status === "ready"
+      ? `${dailyWeather.conditionLabel || "Current conditions"} • ${dailyWeather.locationLabel}`
+      : dailyWeather.status === "unavailable"
+        ? "Enable location for local weather."
+        : dailyWeather.status === "error"
+          ? dailyWeather.warning || "Unable to fetch forecast."
+          : "Fetching local forecast.";
+  const weatherFeelsLikeLabel =
+    dailyWeather.status === "ready" && Number.isFinite(dailyWeather.feelsLike)
+      ? `Feels like ${formatTemperatureValue(dailyWeather.feelsLike, dailyWeather.temperatureUnit)}`
+      : dailyWeather.warning || "Current forecast";
+
+  const handleProductivityField = (field, value) => {
+    setProductivityState((prev) => ({
+      ...prev,
+      [field]: value,
+      updatedAt: prev.updatedAt,
+    }));
+  };
+
+  const bumpProductivityMetric = (field, amount) => {
+    setProductivityState((prev) => {
+      const current = Math.max(Number(prev[field]) || 0, 0);
+      return {
+        ...prev,
+        [field]: String(Math.max(current + amount, 0)),
+      };
+    });
+  };
+
+  const handleSaveProductivity = () => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setProductivityError("Missing session. Please sign in again.");
+      return;
+    }
+
+    const payload = {
+      entryDate: productivityState.entryDate || buildTodayDate(),
+      plannedTasks: Number(productivityState.plannedTasks || 0),
+      completedTasks: Number(productivityState.completedTasks || 0),
+      deepWorkMinutes: Number(productivityState.deepWorkMinutes || 0),
+      focusBlocks: Number(productivityState.focusBlocks || 0),
+      blockers: productivityState.blockers,
+    };
+
+    setIsProductivitySaving(true);
+    setProductivityError("");
+
+    fetch(buildApiUrl("/api/productivity/entries"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(async (response) => {
+        const result = await readJsonResponse(response);
+        if (!response.ok) {
+          throw new Error(getApiErrorMessage(result, "Unable to save productivity entry"));
+        }
+        setProductivityState(buildProductivityState(result));
+        setProductivityNotice("Productivity tracker saved.");
+        loadProductivity();
+      })
+      .catch((saveError) => {
+        setProductivityError(saveError.message || "Unable to save productivity entry");
+      })
+      .finally(() => {
+        setIsProductivitySaving(false);
+      });
+  };
 
   const attentionItems = [
     ...systemEntries
@@ -633,43 +1133,77 @@ const Dashboard = () => {
   return (
     <section className="page dashboard">
       <div className="panel dashboard-hero availability-hero">
-        <div>
-          <p className="eyebrow">Operations overview</p>
-          <h1>ERP KPI Command Center</h1>
+        <div className="dashboard-hero__intro">
+          <p className="eyebrow">Daily brief</p>
+          <h1>Welcome Baaba</h1>
           <p className="muted">
-            Window {rangeDescription} | Last synced {lastSyncedLabel} | Sites tracked{" "}
-            {siteStatuses.length} | Last check {lastCheckedLabel} | Availability {availableSlots}/
-            {totalSlots}
+            {todayLabel} | Window {rangeDescription} | Last synced {lastSyncedLabel}
           </p>
+          <article className="dashboard-verse">
+            <span className="dashboard-verse__label">Verse of the day</span>
+            <p className="dashboard-verse__text">{verseTextLabel}</p>
+            <p className="dashboard-verse__reference">{verseReferenceLabel}</p>
+          </article>
         </div>
-        <div className="hero-actions">
-          <div className="segmented" role="tablist" aria-label="Time range">
-            {RANGE_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                className={`segment ${option.value === timeRange ? "is-active" : ""}`}
-                type="button"
-                aria-pressed={option.value === timeRange}
-                onClick={() => setTimeRange(option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
+        <div className="dashboard-hero__side">
+          <div className="dashboard-brief-grid">
+            <article className="dashboard-brief-card">
+              <span className="kpi-label">Weather</span>
+              <div className="kpi-value">{weatherPrimaryLabel}</div>
+              <span className="muted">{weatherSecondaryLabel}</span>
+              <span className="kpi-delta">{weatherFeelsLikeLabel}</span>
+            </article>
+            <article className="dashboard-brief-card">
+              <span className="kpi-label">Bookings today</span>
+              <div className="kpi-value">{todayBookingsCount}</div>
+              <span className="muted">Scheduled bookings</span>
+              <span className="kpi-delta">Availability {availableSlots}/{totalSlots}</span>
+            </article>
+            <article className="dashboard-brief-card">
+              <span className="kpi-label">Open slots today</span>
+              <div className="kpi-value">{todayOpenSlots}/{TIME_SLOTS.length}</div>
+              <span className="muted">Available windows</span>
+              <span className="kpi-delta">
+                {nextAvailable ? `Next open ${nextAvailable.day.dateLabel} ${nextAvailable.time}` : "No open slots"}
+              </span>
+            </article>
+            <article className="dashboard-brief-card">
+              <span className="kpi-label">Service health</span>
+              <div className="kpi-value">{serviceHealthPercent}</div>
+              <span className="muted">{healthyServices}/{totalServices} healthy services</span>
+              <span className="kpi-delta">{onlineSites}/{totalSites} sites online</span>
+            </article>
           </div>
-          <button
-            className="button button-primary"
-            type="button"
-            onClick={handleRefresh}
-            disabled={isRefreshing || loading}
-          >
-            {isRefreshing ? "Refreshing..." : "Refresh metrics"}
-          </button>
-          <Link className="button button-ghost" to="/bookings">
-            Bookings
-          </Link>
-          <a className="button button-ghost" href="#site-status">
-            Site status
-          </a>
+
+          <div className="hero-actions">
+            <div className="segmented" role="tablist" aria-label="Time range">
+              {RANGE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  className={`segment ${option.value === timeRange ? "is-active" : ""}`}
+                  type="button"
+                  aria-pressed={option.value === timeRange}
+                  onClick={() => setTimeRange(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={handleRefresh}
+              disabled={isRefreshing || loading}
+            >
+              {isRefreshing ? "Refreshing..." : "Refresh metrics"}
+            </button>
+            <Link className="button button-ghost" to="/bookings">
+              Bookings
+            </Link>
+            <a className="button button-ghost" href="#site-status">
+              Site status
+            </a>
+          </div>
         </div>
       </div>
 
@@ -685,6 +1219,150 @@ const Dashboard = () => {
           {error}
         </div>
       ) : null}
+
+      <section className="panel dashboard-productivity" id="productivity">
+        <div className="panel-header">
+          <div>
+            <h3>Productivity tracker</h3>
+            <p className="muted">Track daily execution from the dashboard.</p>
+          </div>
+          <div className="dashboard-productivity__header-actions">
+            <span className="status-pill is-info">
+              {productivitySummary.momentumLabel || productivityMetrics.momentumLabel}
+            </span>
+            <Link className="button button-ghost" to="/productivity">
+              Open module
+            </Link>
+          </div>
+        </div>
+
+        {productivityError ? (
+          <div className="notice is-error" role="alert">
+            {productivityError}
+          </div>
+        ) : null}
+
+        <div className="productivity-grid">
+          <div className="productivity-card">
+            <span className="productivity-card__meta">
+              <TaskSquare size={14} variant="Linear" />
+              Completion
+            </span>
+            <div className="kpi-value">{productivityMetrics.completionRate}%</div>
+            <span className="muted">
+              {productivityMetrics.completedTasks}/{productivityMetrics.plannedTasks} tasks
+            </span>
+          </div>
+          <div className="productivity-card">
+            <span className="productivity-card__meta">
+              <Timer1 size={14} variant="Linear" />
+              Deep work
+            </span>
+            <div className="kpi-value">{productivityMetrics.deepWorkMinutes}m</div>
+            <span className="muted">{productivityMetrics.focusBlocks} blocks</span>
+          </div>
+          <div className="productivity-card">
+            <span className="productivity-card__meta">
+              <ReceiptItem size={14} variant="Linear" />
+              Focus score
+            </span>
+            <div className="kpi-value">{productivityMetrics.focusScore}</div>
+            <span className="muted">
+              {Math.max(productivityMetrics.plannedTasks - productivityMetrics.completedTasks, 0)} left
+            </span>
+          </div>
+        </div>
+
+        <div className="dashboard-productivity__workspace">
+          <div className="dashboard-productivity__fields">
+            <label className="form-field dashboard-productivity__field">
+              <span>Planned</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={productivityState.plannedTasks}
+                onChange={(event) => handleProductivityField("plannedTasks", event.target.value)}
+                aria-label="Planned tasks"
+              />
+            </label>
+            <label className="form-field dashboard-productivity__field">
+              <span>Done</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={productivityState.completedTasks}
+                onChange={(event) => handleProductivityField("completedTasks", event.target.value)}
+                aria-label="Completed tasks"
+              />
+            </label>
+            <label className="form-field dashboard-productivity__field">
+              <span>Focus min</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={productivityState.deepWorkMinutes}
+                onChange={(event) => handleProductivityField("deepWorkMinutes", event.target.value)}
+                aria-label="Deep work minutes"
+              />
+            </label>
+          </div>
+
+          <div className="dashboard-productivity__notes">
+            <label className="form-field">
+              <span>Blockers</span>
+              <textarea
+                className="input"
+                value={productivityState.blockers}
+                onChange={(event) => handleProductivityField("blockers", event.target.value)}
+                placeholder="What is slowing you down?"
+              />
+            </label>
+            <div className="productivity-quick-actions">
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => bumpProductivityMetric("deepWorkMinutes", 25)}
+              >
+                +25m focus
+              </button>
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => bumpProductivityMetric("completedTasks", 1)}
+              >
+                +1 task
+              </button>
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => bumpProductivityMetric("focusBlocks", 1)}
+              >
+                +1 block
+              </button>
+            </div>
+            <div className="dashboard-productivity__save">
+              <button
+                className="button button-primary"
+                type="button"
+                onClick={handleSaveProductivity}
+                disabled={isProductivitySaving}
+              >
+                {isProductivitySaving ? "Saving..." : "Save update"}
+              </button>
+              <span className="muted">Last saved {productivitySavedLabel}</span>
+            </div>
+          </div>
+        </div>
+
+        {productivityNotice ? (
+          <div className="notice is-success" role="status">
+            {productivityNotice}
+          </div>
+        ) : null}
+      </section>
 
       <section className="panel availability-panel" id="availability">
         <div className="panel-header">
@@ -732,7 +1410,7 @@ const Dashboard = () => {
           <div className="availability-callout muted">No available slots in this window.</div>
         )}
 
-        <div className="availability-scroll">
+        <div className="availability-scroll availability-desktop">
           <div className="availability-grid" role="grid">
             <div className="availability-cell availability-corner" aria-hidden="true" />
             {days.map((day) => {
@@ -781,6 +1459,53 @@ const Dashboard = () => {
                 })}
               </React.Fragment>
             ))}
+          </div>
+        </div>
+
+        <div className="availability-mobile" aria-label="Mobile weekly availability">
+          <div className="availability-mobile__days" role="tablist" aria-label="Choose day">
+            {days.map((day, dayIndex) => {
+              const isActive = selectedAvailabilityDay?.key === day.key;
+              const hasOpenSlot = (availabilityMatrix[dayIndex] || []).some(
+                (slotStatus) => slotStatus === "available"
+              );
+              return (
+                <button
+                  key={day.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`availability-day-chip ${isActive ? "is-active" : ""}`}
+                  onClick={() => setSelectedAvailabilityDayKey(day.key)}
+                >
+                  <span className="availability-day-chip__label">{day.label}</span>
+                  <span className="availability-day-chip__number">{day.date.getDate()}</span>
+                  {hasOpenSlot ? <span className="availability-day-chip__dot" /> : null}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="availability-mobile__agenda" role="list">
+            {selectedAvailabilityDay
+              ? TIME_SLOTS.map((slot, slotIndex) => {
+                  const status = availabilityMatrix[selectedAvailabilityDayIndex]?.[slotIndex] || "blocked";
+                  const slotBooking = findSlotBooking(selectedAvailabilityDay, slot);
+                  const isBlocked = status === "blocked" && !slotBooking;
+                  return (
+                    <button
+                      key={`${selectedAvailabilityDay.key}-${slot.label}`}
+                      type="button"
+                      className={`availability-agenda-slot is-${status}`}
+                      onClick={() => openSlotModal(selectedAvailabilityDay, slot, status)}
+                      disabled={isBlocked}
+                    >
+                      <span>{slot.label}</span>
+                      <span>{STATUS_LABELS[status]}</span>
+                    </button>
+                  );
+                })
+              : null}
           </div>
         </div>
       </section>

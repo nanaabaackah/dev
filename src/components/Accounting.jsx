@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { DocumentDownload, NoteText, ReceiptItem, TaskSquare, Timer1 } from "iconsax-react";
+import { FiPlus, FiTrash2 } from "react-icons/fi";
 import { buildApiUrl } from "../api-url";
+import { calculateInvoiceTotals, downloadInvoicePdf } from "../utils/invoicePdf";
 
 const RANGE_OPTIONS = [
   { value: "mtd", label: "MTD" },
@@ -81,6 +84,67 @@ const readStoredUser = () => {
   }
 };
 
+const createLineItemId = () =>
+  `line-${Date.now()}-${Math.random().toString(16).slice(2, 9)}`;
+
+const buildFutureDate = (offsetDays = 0) => {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+};
+
+const DEFAULT_PRODUCTIVITY_STATE = {
+  entryDate: buildTodayDate(),
+  plannedTasks: "5",
+  completedTasks: "0",
+  deepWorkMinutes: "0",
+  focusBlocks: "0",
+  blockers: "",
+  updatedAt: null,
+};
+
+const DEFAULT_PRODUCTIVITY_SUMMARY = {
+  plannedTasks: 0,
+  completedTasks: 0,
+  deepWorkMinutes: 0,
+  focusBlocks: 0,
+  completionRate: 0,
+  focusScore: 0,
+  streakDays: 0,
+  momentumLabel: "Start a focus block",
+  entriesLogged: 0,
+};
+
+const buildProductivityState = (entry) => ({
+  entryDate: entry?.entryDate || buildTodayDate(),
+  plannedTasks: String(entry?.plannedTasks ?? DEFAULT_PRODUCTIVITY_STATE.plannedTasks),
+  completedTasks: String(entry?.completedTasks ?? DEFAULT_PRODUCTIVITY_STATE.completedTasks),
+  deepWorkMinutes: String(entry?.deepWorkMinutes ?? DEFAULT_PRODUCTIVITY_STATE.deepWorkMinutes),
+  focusBlocks: String(entry?.focusBlocks ?? DEFAULT_PRODUCTIVITY_STATE.focusBlocks),
+  blockers: String(entry?.blockers ?? DEFAULT_PRODUCTIVITY_STATE.blockers),
+  updatedAt: entry?.updatedAt ?? null,
+});
+
+const buildInvoiceFormFromEntry = (entry = null) => ({
+  clientName: entry?.organization?.name || "",
+  clientEmail: "",
+  clientAddress: "",
+  issueDate: buildTodayDate(),
+  dueDate: entry?.dueAt ? String(entry.dueAt).slice(0, 10) : buildFutureDate(14),
+  currency: entry?.currency || "CAD",
+  taxRate: "0",
+  discount: "0",
+  notes: entry?.detail || "Thank you for your business.",
+  lineItems: [
+    {
+      id: createLineItemId(),
+      description: entry?.serviceName || "",
+      quantity: "1",
+      rate: entry?.amount ? String(entry.amount) : "",
+    },
+  ],
+});
+
 const Accounting = () => {
   const navigate = useNavigate();
   const storedUser = useMemo(() => readStoredUser(), []);
@@ -103,6 +167,16 @@ const Accounting = () => {
   const [actionNotice, setActionNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  const [productivityState, setProductivityState] = useState(() => buildProductivityState());
+  const [productivitySummary, setProductivitySummary] = useState(DEFAULT_PRODUCTIVITY_SUMMARY);
+  const [productivityNotice, setProductivityNotice] = useState("");
+  const [productivityError, setProductivityError] = useState("");
+  const [isProductivitySaving, setIsProductivitySaving] = useState(false);
+  const [invoiceComposer, setInvoiceComposer] = useState(null);
+  const [invoiceForm, setInvoiceForm] = useState(() => buildInvoiceFormFromEntry());
+  const [invoiceError, setInvoiceError] = useState("");
+  const [isInvoicePreparing, setIsInvoicePreparing] = useState(false);
+  const [isInvoiceDownloading, setIsInvoiceDownloading] = useState(false);
   const [formState, setFormState] = useState({
     type: "EXPENSE",
     status: "PENDING",
@@ -148,6 +222,13 @@ const Accounting = () => {
     resetFormState();
   }, [resetFormState]);
 
+  const closeInvoiceComposer = useCallback(() => {
+    setInvoiceComposer(null);
+    setInvoiceForm(buildInvoiceFormFromEntry());
+    setInvoiceError("");
+    setIsInvoiceDownloading(false);
+  }, []);
+
   const loadOrganizations = useCallback(async () => {
     if (!isAdmin) return;
     const token = localStorage.getItem("token");
@@ -187,19 +268,26 @@ const Accounting = () => {
   }, [loadOrganizations]);
 
   useEffect(() => {
-    if (!showForm) return;
+    if (!showForm && !invoiceComposer) return undefined;
+
     const handleKeyDown = (event) => {
-      if (event.key === "Escape") {
+      if (event.key !== "Escape") return;
+      if (invoiceComposer) {
+        closeInvoiceComposer();
+        return;
+      }
+      if (showForm) {
         closeForm();
       }
     };
+
     document.addEventListener("keydown", handleKeyDown);
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = "";
     };
-  }, [showForm, closeForm]);
+  }, [showForm, invoiceComposer, closeForm, closeInvoiceComposer]);
 
   useEffect(() => {
     if (!organizations.length) return;
@@ -283,12 +371,56 @@ const Accounting = () => {
         setIsRefreshing(false);
       }
     },
-    [navigate, selectedOrganizationId, timeRange]
+    [navigate, selectedOrganizationId, timeRange, isAdmin]
   );
 
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
+
+  const loadProductivity = useCallback(
+    async ({ silent = false } = {}) => {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        if (!silent) {
+          setProductivityError("Missing session. Please sign in again.");
+        }
+        return;
+      }
+
+      if (!silent) {
+        setProductivityError("");
+      }
+
+      try {
+        const query = new URLSearchParams({ range: "14d" });
+        const response = await fetch(buildApiUrl(`/api/productivity/entries?${query.toString()}`), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error || "Unable to load productivity data");
+        }
+        setProductivitySummary(payload?.summary || DEFAULT_PRODUCTIVITY_SUMMARY);
+        setProductivityState(buildProductivityState(payload?.activeEntry));
+      } catch (productivityLoadError) {
+        setProductivityError(productivityLoadError.message || "Unable to load productivity data");
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    loadProductivity();
+  }, [loadProductivity]);
+
+  useEffect(() => {
+    if (!productivityNotice) return undefined;
+    const timeout = window.setTimeout(() => {
+      setProductivityNotice("");
+    }, 2400);
+    return () => window.clearTimeout(timeout);
+  }, [productivityNotice]);
 
   const summary = useMemo(() => {
     const base = {
@@ -329,6 +461,135 @@ const Accounting = () => {
     }),
     [summary]
   );
+
+  const productivityMetrics = useMemo(() => {
+    const plannedTasks = Math.max(Number(productivityState.plannedTasks) || 0, 0);
+    const completedTasks = Math.max(Number(productivityState.completedTasks) || 0, 0);
+    const deepWorkMinutes = Math.max(Number(productivityState.deepWorkMinutes) || 0, 0);
+    const focusBlocks = Math.max(Number(productivityState.focusBlocks) || 0, 0);
+    const completionRate = plannedTasks ? Math.round((completedTasks / plannedTasks) * 100) : 0;
+    const focusScore = Math.min(
+      100,
+      Math.round(completionRate * 0.5 + Math.min(deepWorkMinutes, 240) * 0.2 + focusBlocks * 8)
+    );
+
+    let momentumLabel = "Start a focus block";
+    if (completionRate >= 80 && deepWorkMinutes >= 90) momentumLabel = "Strong momentum";
+    else if (completionRate >= 60 || deepWorkMinutes >= 60) momentumLabel = "On track";
+
+    return {
+      plannedTasks,
+      completedTasks,
+      deepWorkMinutes,
+      focusBlocks,
+      completionRate,
+      focusScore,
+      momentumLabel,
+    };
+  }, [productivityState]);
+
+  const invoiceTotals = useMemo(
+    () =>
+      calculateInvoiceTotals({
+        lineItems: invoiceForm.lineItems,
+        taxRate: invoiceForm.taxRate,
+        discount: invoiceForm.discount,
+      }),
+    [invoiceForm.lineItems, invoiceForm.taxRate, invoiceForm.discount]
+  );
+
+  const handleProductivityField = (field, value) => {
+    setProductivityState((prev) => ({
+      ...prev,
+      [field]: value,
+      updatedAt: prev.updatedAt,
+    }));
+  };
+
+  const bumpProductivityMetric = (field, amount) => {
+    setProductivityState((prev) => {
+      const current = Math.max(Number(prev[field]) || 0, 0);
+      return {
+        ...prev,
+        [field]: String(Math.max(current + amount, 0)),
+      };
+    });
+  };
+
+  const handleSaveProductivity = async () => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setProductivityError("Missing session. Please sign in again.");
+      return;
+    }
+
+    const payload = {
+      entryDate: productivityState.entryDate || buildTodayDate(),
+      plannedTasks: Number(productivityState.plannedTasks || 0),
+      completedTasks: Number(productivityState.completedTasks || 0),
+      deepWorkMinutes: Number(productivityState.deepWorkMinutes || 0),
+      focusBlocks: Number(productivityState.focusBlocks || 0),
+      blockers: productivityState.blockers,
+    };
+
+    setIsProductivitySaving(true);
+    setProductivityError("");
+
+    try {
+      const response = await fetch(buildApiUrl("/api/productivity/entries"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || "Unable to save productivity data");
+      }
+      setProductivityState(buildProductivityState(result));
+      setProductivityNotice("Productivity tracker saved.");
+      loadProductivity({ silent: true });
+    } catch (saveError) {
+      setProductivityError(saveError.message || "Unable to save productivity data");
+    } finally {
+      setIsProductivitySaving(false);
+    }
+  };
+
+  const updateInvoiceField = (field, value) => {
+    setInvoiceForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const updateInvoiceLineItem = (lineId, field, value) => {
+    setInvoiceForm((prev) => ({
+      ...prev,
+      lineItems: prev.lineItems.map((line) =>
+        line.id === lineId ? { ...line, [field]: value } : line
+      ),
+    }));
+  };
+
+  const addInvoiceLineItem = () => {
+    setInvoiceForm((prev) => ({
+      ...prev,
+      lineItems: [
+        ...prev.lineItems,
+        { id: createLineItemId(), description: "", quantity: "1", rate: "" },
+      ],
+    }));
+  };
+
+  const removeInvoiceLineItem = (lineId) => {
+    setInvoiceForm((prev) => {
+      if (prev.lineItems.length <= 1) return prev;
+      return {
+        ...prev,
+        lineItems: prev.lineItems.filter((line) => line.id !== lineId),
+      };
+    });
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -475,15 +736,66 @@ const Accounting = () => {
 
   const handleGenerateInvoice = async (entry) => {
     try {
+      setError("");
+      setInvoiceError("");
       setActionNotice("");
+      setIsInvoicePreparing(true);
       const payload = await performEntryAction(entry.id, `/api/accounting/entries/${entry.id}/invoice`);
       const invoiceNumber = payload?.invoiceNumber || payload?.entry?.invoiceNumber;
-      setActionNotice(invoiceNumber ? `Invoice ${invoiceNumber} generated.` : "Invoice generated.");
+      if (!invoiceNumber) {
+        throw new Error("Unable to prepare invoice number.");
+      }
+      const resolvedEntry = payload?.entry ? { ...entry, ...payload.entry } : entry;
+      setInvoiceComposer({
+        invoiceNumber,
+        entry: resolvedEntry,
+      });
+      setInvoiceForm(buildInvoiceFormFromEntry(resolvedEntry));
+      setActionNotice(`Invoice ${invoiceNumber} ready for PDF export.`);
       loadEntries({ silent: true });
     } catch (err) {
       setError(err.message);
     } finally {
       setOpenActionId(null);
+      setIsInvoicePreparing(false);
+    }
+  };
+
+  const handleDownloadInvoice = async () => {
+    if (!invoiceComposer) return;
+
+    setInvoiceError("");
+    const clientName = invoiceForm.clientName.trim();
+    if (!clientName) {
+      setInvoiceError("Client name is required before exporting the PDF.");
+      return;
+    }
+    if (!invoiceTotals.items.length) {
+      setInvoiceError("Add at least one invoice line item.");
+      return;
+    }
+
+    setIsInvoiceDownloading(true);
+    try {
+      await downloadInvoicePdf({
+        invoiceNumber: invoiceComposer.invoiceNumber,
+        issueDate: invoiceForm.issueDate,
+        dueDate: invoiceForm.dueDate,
+        billFrom: "Dev KPI Workspace",
+        clientName,
+        clientEmail: invoiceForm.clientEmail.trim(),
+        clientAddress: invoiceForm.clientAddress.trim(),
+        currency: invoiceForm.currency,
+        lineItems: invoiceForm.lineItems,
+        taxRate: invoiceForm.taxRate,
+        discount: invoiceForm.discount,
+        notes: invoiceForm.notes,
+      });
+      setActionNotice(`Invoice ${invoiceComposer.invoiceNumber} PDF downloaded.`);
+    } catch (downloadError) {
+      setInvoiceError(downloadError.message || "Unable to create PDF.");
+    } finally {
+      setIsInvoiceDownloading(false);
     }
   };
 
@@ -503,11 +815,21 @@ const Accounting = () => {
     return base;
   }, [sortedEntries]);
 
+  const productivitySavedLabel = productivityState.updatedAt
+    ? new Date(productivityState.updatedAt).toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "Not saved yet";
+
   const renderLedgerRow = (entry) => {
     const dateLabel = entry.status === "PAID" ? "Paid date" : "Due date";
     const cadenceLabel = entry.recurringInterval
       ? `Recurring ${entry.recurringInterval.toLowerCase()}`
       : null;
+    const invoiceLabel = entry.invoiceNumber ? `Invoice ${entry.invoiceNumber}` : null;
     const organizationLabel = entry.organization?.name ? `Org: ${entry.organization.name}` : null;
     const canManage = entry.source === "MANUAL";
     return (
@@ -516,7 +838,7 @@ const Accounting = () => {
         <div>
           <div className="table-strong">{entry.serviceName}</div>
           <div className="muted">
-            {[entry.detail, cadenceLabel].filter(Boolean).join(" • ") || "—"}
+            {[entry.detail, cadenceLabel, invoiceLabel].filter(Boolean).join(" • ") || "—"}
           </div>
           {organizationLabel ? <div className="muted">{organizationLabel}</div> : null}
         </div>
@@ -549,9 +871,9 @@ const Accounting = () => {
               <button
                 type="button"
                 onClick={() => handleGenerateInvoice(entry)}
-                disabled={!canManage}
+                disabled={!canManage || isInvoicePreparing}
               >
-                Generate invoice
+                {isInvoicePreparing ? "Preparing invoice..." : "Create invoice PDF"}
               </button>
               <button
                 type="button"
@@ -577,8 +899,8 @@ const Accounting = () => {
           <p className="eyebrow">Finance</p>
           <h1>Accounting</h1>
           <p className="muted">
-            Paid services revenue and expenses, including pending payables. Window:{" "}
-            {RANGE_LABELS[timeRange] || "Month to date"}.
+            Paid services revenue and expenses, pending payables, productivity metrics, and
+            invoice-ready PDFs. Window: {RANGE_LABELS[timeRange] || "Month to date"}.
           </p>
         </div>
         <div className="header-actions">
@@ -849,6 +1171,401 @@ const Accounting = () => {
           </article>
         </div>
       ) : null}
+
+      {invoiceComposer ? (
+        <div className="modal-backdrop" role="presentation">
+          <button
+            className="modal-dismiss"
+            type="button"
+            aria-label="Close invoice builder"
+            onClick={closeInvoiceComposer}
+          />
+          <article
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="invoice-modal-title"
+          >
+            <div className="panel-header">
+              <div>
+                <h3 id="invoice-modal-title">Invoice builder</h3>
+                <p className="muted">
+                  Invoice #{invoiceComposer.invoiceNumber} for {invoiceComposer.entry.serviceName}.
+                </p>
+              </div>
+              <button className="button button-ghost" type="button" onClick={closeInvoiceComposer}>
+                Close
+              </button>
+            </div>
+
+            {invoiceError ? (
+              <div className="notice is-error" role="alert">
+                {invoiceError}
+              </div>
+            ) : null}
+
+            <div className="invoice-meta">
+              <div className="invoice-grid">
+                <label className="form-field">
+                  <span>Client name</span>
+                  <input
+                    className="input"
+                    type="text"
+                    value={invoiceForm.clientName}
+                    onChange={(event) => updateInvoiceField("clientName", event.target.value)}
+                    placeholder="Client or company name"
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Client email</span>
+                  <input
+                    className="input"
+                    type="email"
+                    value={invoiceForm.clientEmail}
+                    onChange={(event) => updateInvoiceField("clientEmail", event.target.value)}
+                    placeholder="billing@company.com"
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Issue date</span>
+                  <input
+                    className="input"
+                    type="date"
+                    value={invoiceForm.issueDate}
+                    onChange={(event) => updateInvoiceField("issueDate", event.target.value)}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Due date</span>
+                  <input
+                    className="input"
+                    type="date"
+                    value={invoiceForm.dueDate}
+                    onChange={(event) => updateInvoiceField("dueDate", event.target.value)}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Currency</span>
+                  <select
+                    className="input"
+                    value={invoiceForm.currency}
+                    onChange={(event) => updateInvoiceField("currency", event.target.value)}
+                  >
+                    {CURRENCY_OPTIONS.map((currency) => (
+                      <option key={currency} value={currency}>
+                        {currency}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>Client address</span>
+                  <input
+                    className="input"
+                    type="text"
+                    value={invoiceForm.clientAddress}
+                    onChange={(event) => updateInvoiceField("clientAddress", event.target.value)}
+                    placeholder="Street, city, postal code"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="invoice-line-items">
+              <div className="panel-header">
+                <div>
+                  <h4>Line items</h4>
+                  <p className="muted">Define billable items for this invoice.</p>
+                </div>
+                <button className="button button-ghost" type="button" onClick={addInvoiceLineItem}>
+                  <FiPlus aria-hidden="true" />
+                  <span>Add line</span>
+                </button>
+              </div>
+
+              {invoiceForm.lineItems.map((lineItem) => (
+                <div className="invoice-line-row" key={lineItem.id}>
+                  <label className="form-field">
+                    <span>Description</span>
+                    <input
+                      className="input"
+                      type="text"
+                      value={lineItem.description}
+                      onChange={(event) =>
+                        updateInvoiceLineItem(lineItem.id, "description", event.target.value)
+                      }
+                      placeholder="Consulting sprint"
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>Qty</span>
+                    <input
+                      className="input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={lineItem.quantity}
+                      onChange={(event) =>
+                        updateInvoiceLineItem(lineItem.id, "quantity", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>Rate</span>
+                    <input
+                      className="input"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={lineItem.rate}
+                      onChange={(event) =>
+                        updateInvoiceLineItem(lineItem.id, "rate", event.target.value)
+                      }
+                    />
+                  </label>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label="Remove line item"
+                    onClick={() => removeInvoiceLineItem(lineItem.id)}
+                    disabled={invoiceForm.lineItems.length <= 1}
+                  >
+                    <FiTrash2 aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="invoice-grid">
+              <label className="form-field">
+                <span>Tax (%)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={invoiceForm.taxRate}
+                  onChange={(event) => updateInvoiceField("taxRate", event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Discount amount</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={invoiceForm.discount}
+                  onChange={(event) => updateInvoiceField("discount", event.target.value)}
+                />
+              </label>
+            </div>
+
+            <label className="form-field">
+              <span>
+                <NoteText className="field-icon" size={14} variant="Linear" />
+                Notes
+              </span>
+              <textarea
+                className="input"
+                value={invoiceForm.notes}
+                onChange={(event) => updateInvoiceField("notes", event.target.value)}
+                placeholder="Optional payment instructions"
+              />
+            </label>
+
+            <div className="invoice-summary">
+              <div className="invoice-summary__row">
+                <span>Subtotal</span>
+                <span>{formatAmount(invoiceTotals.subtotal, invoiceForm.currency)}</span>
+              </div>
+              <div className="invoice-summary__row">
+                <span>Tax ({invoiceTotals.taxRate.toFixed(2)}%)</span>
+                <span>{formatAmount(invoiceTotals.taxAmount, invoiceForm.currency)}</span>
+              </div>
+              <div className="invoice-summary__row">
+                <span>Discount</span>
+                <span>-{formatAmount(invoiceTotals.discount, invoiceForm.currency)}</span>
+              </div>
+              <div className="invoice-summary__row is-total">
+                <span>Total</span>
+                <span>{formatAmount(invoiceTotals.total, invoiceForm.currency)}</span>
+              </div>
+            </div>
+
+            <div className="header-actions">
+              <button className="button button-ghost" type="button" onClick={closeInvoiceComposer}>
+                Cancel
+              </button>
+              <button
+                className="button button-primary"
+                type="button"
+                onClick={handleDownloadInvoice}
+                disabled={isInvoiceDownloading}
+              >
+                <DocumentDownload size={16} variant="Linear" />
+                <span>{isInvoiceDownloading ? "Generating PDF..." : "Download invoice PDF"}</span>
+              </button>
+            </div>
+          </article>
+        </div>
+      ) : null}
+
+      <article className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>Productivity tracker</h3>
+            <p className="muted">Track daily execution alongside accounting output.</p>
+          </div>
+          <div className="header-actions">
+            <span className="status-pill is-info">
+              {productivitySummary.momentumLabel || productivityMetrics.momentumLabel}
+            </span>
+            <Link className="button button-ghost" to="/productivity">
+              Open module
+            </Link>
+          </div>
+        </div>
+
+        {productivityError ? (
+          <div className="notice is-error" role="alert">
+            {productivityError}
+          </div>
+        ) : null}
+
+        <div className="productivity-grid">
+          <div className="productivity-card">
+            <span className="productivity-card__meta">
+              <TaskSquare size={14} variant="Linear" />
+              Completion rate
+            </span>
+            <div className="kpi-value">{productivityMetrics.completionRate}%</div>
+            <span className="muted">
+              {productivityMetrics.completedTasks}/{productivityMetrics.plannedTasks} tasks
+            </span>
+          </div>
+          <div className="productivity-card">
+            <span className="productivity-card__meta">
+              <Timer1 size={14} variant="Linear" />
+              Deep work
+            </span>
+            <div className="kpi-value">{productivityMetrics.deepWorkMinutes} min</div>
+            <span className="muted">{productivityMetrics.focusBlocks} focus blocks</span>
+          </div>
+          <div className="productivity-card">
+            <span className="productivity-card__meta">
+              <ReceiptItem size={14} variant="Linear" />
+              Focus score
+            </span>
+            <div className="kpi-value">{productivityMetrics.focusScore}</div>
+            <span className="muted">
+              Last saved {productivitySavedLabel} • {productivitySummary.streakDays || 0} day streak
+            </span>
+          </div>
+        </div>
+
+        <div className="page-grid">
+          <div className="stack">
+            <label className="form-field">
+              <span>Planned tasks</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={productivityState.plannedTasks}
+                onChange={(event) => handleProductivityField("plannedTasks", event.target.value)}
+              />
+            </label>
+            <label className="form-field">
+              <span>Completed tasks</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={productivityState.completedTasks}
+                onChange={(event) => handleProductivityField("completedTasks", event.target.value)}
+              />
+            </label>
+            <label className="form-field">
+              <span>Deep work minutes</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={productivityState.deepWorkMinutes}
+                onChange={(event) => handleProductivityField("deepWorkMinutes", event.target.value)}
+              />
+            </label>
+            <label className="form-field">
+              <span>Blockers / notes</span>
+              <textarea
+                className="input"
+                value={productivityState.blockers}
+                onChange={(event) => handleProductivityField("blockers", event.target.value)}
+                placeholder="Capture blockers, follow-ups, and context"
+              />
+            </label>
+          </div>
+
+          <div className="stack">
+            <div className="invoice-summary">
+              <div className="invoice-summary__row">
+                <span>Tasks remaining</span>
+                <span>
+                  {Math.max(
+                    productivityMetrics.plannedTasks - productivityMetrics.completedTasks,
+                    0
+                  )}
+                </span>
+              </div>
+              <div className="invoice-summary__row">
+                <span>Focus blocks</span>
+                <span>{productivityMetrics.focusBlocks}</span>
+              </div>
+              <div className="invoice-summary__row is-total">
+                <span>Execution score</span>
+                <span>{productivityMetrics.focusScore}/100</span>
+              </div>
+            </div>
+            <div className="productivity-quick-actions">
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => bumpProductivityMetric("deepWorkMinutes", 25)}
+              >
+                +25 min focus
+              </button>
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => bumpProductivityMetric("completedTasks", 1)}
+              >
+                +1 task done
+              </button>
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => bumpProductivityMetric("focusBlocks", 1)}
+              >
+                +1 focus block
+              </button>
+            </div>
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={handleSaveProductivity}
+              disabled={isProductivitySaving}
+            >
+              {isProductivitySaving ? "Saving..." : "Save productivity update"}
+            </button>
+            {productivityNotice ? (
+              <div className="notice is-success" role="status">
+                {productivityNotice}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </article>
 
       <div className="panel-grid">
         <article className="panel">

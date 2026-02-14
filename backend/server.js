@@ -76,6 +76,23 @@ const SITE_STATUS_CACHE_TTL_MS = Number(process.env.SITE_STATUS_CACHE_TTL_MS ?? 
 const TRUST_STATS_CACHE_TTL_MS = Number(
   process.env.TRUST_STATS_CACHE_TTL_MS ?? 5 * 60 * 1000
 );
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 20000);
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const YOUVERSION_VERSE_ENDPOINT =
+  process.env.YOUVERSION_VERSE_ENDPOINT || "https://www.bible.com/verse-of-the-day";
+const YOUVERSION_API_KEY = process.env.YOUVERSION_API_KEY;
+const YOUVERSION_BEARER_TOKEN = process.env.YOUVERSION_BEARER_TOKEN;
+const YOUVERSION_APP_ID = process.env.YOUVERSION_APP_ID;
+const YOUVERSION_TIMEOUT_MS = Number(process.env.YOUVERSION_TIMEOUT_MS ?? 12000);
+const GOOGLE_WEATHER_API_KEY = process.env.GOOGLE_WEATHER_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+const GOOGLE_WEATHER_UNITS_SYSTEM =
+  String(process.env.GOOGLE_WEATHER_UNITS_SYSTEM || "IMPERIAL").trim().toUpperCase() === "METRIC"
+    ? "METRIC"
+    : "IMPERIAL";
+const GOOGLE_WEATHER_LANGUAGE_CODE =
+  String(process.env.GOOGLE_WEATHER_LANGUAGE_CODE || "en").trim() || "en";
 const SITE_STATUS_USER_AGENT =
   process.env.SITE_STATUS_USER_AGENT ?? "bynana-portfolio-status/1.0 (+https://dev.nanaabaackah.com)";
 
@@ -154,6 +171,9 @@ const SITE_PAGES = [
 
 let siteStatusCache = { checkedAt: 0, data: null };
 let trustStatsCache = { checkedAt: 0, data: null };
+const jobsRecommendationCache = new Map();
+let dashboardVerseCache = { dayKey: "", checkedAt: 0, payload: null };
+const dashboardWeatherCache = new Map();
 
 const classifyResponseStatus = (response) => {
   if (!response) return "offline";
@@ -172,6 +192,35 @@ const fetchWithTimeout = async (url, options = {}) => {
       headers: {
         "User-Agent": SITE_STATUS_USER_AGENT,
         ...(options.headers || {}),
+      },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const fetchExternalWithTimeout = async (url, options = {}) => {
+  const {
+    timeoutMs = SITE_STATUS_TIMEOUT_MS,
+    headers = {},
+    method = "GET",
+    ...rest
+  } = options || {};
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    Number.isFinite(timeoutMs) ? Math.max(timeoutMs, 1000) : SITE_STATUS_TIMEOUT_MS
+  );
+
+  try {
+    return await fetch(url, {
+      ...rest,
+      method,
+      redirect: "follow",
+      headers: {
+        "User-Agent": SITE_STATUS_USER_AGENT,
+        ...headers,
       },
       signal: controller.signal,
     });
@@ -309,41 +358,62 @@ const getLastWeekdayBefore = (year, monthIndex, dayOfMonth, weekday) => {
   return date;
 };
 
-const buildGhanaHolidaySet = (year) => {
+const toLocalDateKey = (date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+
+const formatHolidayLabel = (holiday) => `${holiday.region}: ${holiday.label}`;
+
+const buildCalendarHolidayList = (year) => {
   const easter = getEasterDate(year);
   const goodFriday = new Date(easter);
   goodFriday.setDate(easter.getDate() - 2);
   const easterMonday = new Date(easter);
   easterMonday.setDate(easter.getDate() + 1);
-  const holidays = [
-    new Date(year, 0, 1),
-    new Date(year, 2, 6),
-    goodFriday,
-    easterMonday,
-    new Date(year, 4, 1),
-    new Date(year, 8, 21),
-    getNthWeekday(year, 11, 5, 1),
-    new Date(year, 11, 25),
-    new Date(year, 11, 26),
+
+  return [
+    { date: new Date(year, 0, 1), label: "New Year's Day", region: "CA" },
+    { date: goodFriday, label: "Good Friday", region: "CA" },
+    { date: getLastWeekdayBefore(year, 4, 25, 1), label: "Victoria Day", region: "CA" },
+    { date: new Date(year, 6, 1), label: "Canada Day", region: "CA" },
+    { date: getNthWeekday(year, 8, 1, 1), label: "Labour Day", region: "CA" },
+    { date: getNthWeekday(year, 9, 1, 2), label: "Thanksgiving", region: "CA" },
+    { date: new Date(year, 11, 25), label: "Christmas Day", region: "CA" },
+    { date: new Date(year, 11, 26), label: "Boxing Day", region: "CA" },
+    { date: new Date(year, 0, 1), label: "New Year's Day", region: "GH" },
+    { date: new Date(year, 2, 6), label: "Independence Day", region: "GH" },
+    { date: goodFriday, label: "Good Friday", region: "GH" },
+    { date: easterMonday, label: "Easter Monday", region: "GH" },
+    { date: new Date(year, 4, 1), label: "May Day", region: "GH" },
+    { date: new Date(year, 8, 21), label: "Founders' Day", region: "GH" },
+    { date: getNthWeekday(year, 11, 5, 1), label: "Farmers' Day", region: "GH" },
+    { date: new Date(year, 11, 25), label: "Christmas Day", region: "GH" },
+    { date: new Date(year, 11, 26), label: "Boxing Day", region: "GH" },
   ];
-  return new Set(
-    holidays.map((date) => {
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-        date.getDate()
-      ).padStart(2, "0")}`;
-      return key;
-    })
-  );
 };
 
-const isGhanaHoliday = (date) => {
+const buildHolidayLabelMap = (year) => {
+  const map = new Map();
+  buildCalendarHolidayList(year).forEach((holiday) => {
+    const key = toLocalDateKey(holiday.date);
+    const labels = map.get(key) || [];
+    labels.push(formatHolidayLabel(holiday));
+    map.set(key, labels);
+  });
+  return map;
+};
+
+const getHolidayLabelsForDate = (date) => {
+  if (!date) return [];
+  const key = toLocalDateKey(date);
+  const map = buildHolidayLabelMap(date.getFullYear());
+  return map.get(key) || [];
+};
+
+const isBlockedHolidayDate = (date) => {
   if (!date) return false;
-  const year = date.getFullYear();
-  const holidaySet = buildGhanaHolidaySet(year);
-  const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate()
-  ).padStart(2, "0")}`;
-  return holidaySet.has(key);
+  return getHolidayLabelsForDate(date).length > 0;
 };
 
 const buildEventDate = (dateTimeValue, dateValue) => {
@@ -741,7 +811,7 @@ const resolveTableCount = async (poolInstance, tableNames) => {
 
   let fallback = null;
   for (const row of tableResult.rows) {
-    const qualifiedName = `\"${row.table_schema}\".\"${row.table_name}\"`;
+    const qualifiedName = `"${row.table_schema}"."${row.table_name}"`;
     const countResult = await poolInstance.query(
       `SELECT COUNT(*)::int AS count FROM ${qualifiedName}`
     );
@@ -1336,6 +1406,54 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
   });
 });
 
+app.get("/api/dashboard/verse-of-day", authMiddleware, async (_req, res) => {
+  const payload = await getDashboardVerseOfDayPayload();
+  res.json(payload);
+});
+
+app.get("/api/dashboard/weather", authMiddleware, async (req, res) => {
+  if (!GOOGLE_WEATHER_API_KEY) {
+    return res.status(503).json({
+      error: "Google Weather API is not configured. Add GOOGLE_WEATHER_API_KEY on the server.",
+    });
+  }
+
+  const latitude = parseCoordinate(req.query?.lat, -90, 90);
+  const longitude = parseCoordinate(req.query?.lng, -180, 180);
+  if (latitude === null || longitude === null) {
+    return res.status(400).json({
+      error: "lat and lng query params are required and must be valid coordinates.",
+    });
+  }
+
+  const cacheKey = buildWeatherCacheKey({ latitude, longitude });
+  const now = Date.now();
+  const cached = dashboardWeatherCache.get(cacheKey);
+  if (cached && now - cached.checkedAt < DASHBOARD_WEATHER_CACHE_TTL_MS) {
+    return res.json(cached.payload);
+  }
+
+  try {
+    const weatherPayload = await fetchGoogleCurrentWeather({ latitude, longitude });
+    const payload = {
+      ...weatherPayload,
+      meta: {
+        source: "google-weather",
+        fetchedAt: new Date().toISOString(),
+        coordinates: { latitude, longitude },
+      },
+    };
+    dashboardWeatherCache.set(cacheKey, { checkedAt: now, payload });
+    return res.json(payload);
+  } catch (error) {
+    console.warn("Unable to load weather conditions", error);
+    return res.status(502).json({
+      error: "Unable to fetch weather right now.",
+      details: error?.message || "Unknown weather provider error",
+    });
+  }
+});
+
 app.get("/api/public/trust-stats", async (req, res) => {
   const now = Date.now();
   if (trustStatsCache.data && now - trustStatsCache.checkedAt < TRUST_STATS_CACHE_TTL_MS) {
@@ -1745,11 +1863,479 @@ app.post(
   }
 );
 
+app.get("/api/productivity/entries", authMiddleware, async (req, res) => {
+  const isAdmin = req.user?.roleName === "Admin";
+  const queryUserId = req.query?.userId;
+  const { start, end, days, key } = buildProductivityRange(req.query?.range);
+  let userId = req.user.userId;
+
+  if (isAdmin && queryUserId !== undefined && String(queryUserId).trim()) {
+    const parsedUserId = parseOrganizationId(queryUserId);
+    if (!parsedUserId) {
+      return res.status(400).json({ error: "userId must be a valid id" });
+    }
+    const selectedUser = await prisma.user.findFirst({
+      where: {
+        id: parsedUserId,
+        organizationId: req.user.organizationId,
+      },
+      select: { id: true },
+    });
+    if (!selectedUser) {
+      return res.status(404).json({ error: "User not found in this organization" });
+    }
+    userId = selectedUser.id;
+  }
+
+  const entries = await prisma.productivityEntry.findMany({
+    where: {
+      organizationId: req.user.organizationId,
+      userId,
+      entryDate: {
+        gte: start,
+        lte: end,
+      },
+    },
+    include: {
+      user: {
+        select: { id: true, fullName: true, email: true },
+      },
+    },
+    orderBy: [{ entryDate: "desc" }, { updatedAt: "desc" }],
+  });
+
+  const serializedEntries = entries.map(serializeProductivityEntry);
+  const summary = buildProductivitySummary(entries);
+  const todayKey = toDateKeyUtc(new Date());
+  const activeEntry = serializedEntries.find((entry) => entry.entryDate === todayKey) || null;
+
+  res.json({
+    entries: serializedEntries,
+    summary,
+    activeEntry,
+    range: {
+      key,
+      days,
+      start: start.toISOString(),
+      end: end.toISOString(),
+    },
+  });
+});
+
+app.get("/api/productivity/summary", authMiddleware, async (req, res) => {
+  const { start, end, days, key } = buildProductivityRange(req.query?.range);
+  const entries = await prisma.productivityEntry.findMany({
+    where: {
+      organizationId: req.user.organizationId,
+      userId: req.user.userId,
+      entryDate: {
+        gte: start,
+        lte: end,
+      },
+    },
+    orderBy: { entryDate: "desc" },
+  });
+
+  const summary = buildProductivitySummary(entries);
+  const latestEntry = entries.length ? serializeProductivityEntry(entries[0]) : null;
+
+  res.json({
+    summary,
+    latestEntry,
+    range: {
+      key,
+      days,
+      start: start.toISOString(),
+      end: end.toISOString(),
+    },
+  });
+});
+
+app.post("/api/productivity/entries", authMiddleware, async (req, res) => {
+  const entryDate = parseProductivityDate(req.body?.entryDate);
+  if (!entryDate) {
+    return res.status(400).json({ error: "entryDate must be a valid date (YYYY-MM-DD)" });
+  }
+
+  const plannedTasks = parseNonNegativeInt(req.body?.plannedTasks, 0, 5000);
+  const completedTasks = parseNonNegativeInt(req.body?.completedTasks, 0, 5000);
+  const deepWorkMinutes = parseNonNegativeInt(req.body?.deepWorkMinutes, 0, 2880);
+  const focusBlocks = parseNonNegativeInt(req.body?.focusBlocks, 0, 200);
+
+  const energyLevel = normalizeEnergyLevel(req.body?.energyLevel);
+  const hasEnergyField =
+    req.body?.energyLevel !== undefined &&
+    req.body?.energyLevel !== null &&
+    req.body?.energyLevel !== "";
+  if (hasEnergyField && energyLevel === null) {
+    return res.status(400).json({ error: "energyLevel must be a whole number between 1 and 10" });
+  }
+
+  const blockers =
+    typeof req.body?.blockers === "string" && req.body.blockers.trim()
+      ? req.body.blockers.trim().slice(0, 2000)
+      : null;
+
+  const entry = await prisma.productivityEntry.upsert({
+    where: {
+      userId_entryDate: {
+        userId: req.user.userId,
+        entryDate,
+      },
+    },
+    create: {
+      organizationId: req.user.organizationId,
+      userId: req.user.userId,
+      entryDate,
+      plannedTasks,
+      completedTasks,
+      deepWorkMinutes,
+      focusBlocks,
+      blockers,
+      energyLevel,
+    },
+    update: {
+      plannedTasks,
+      completedTasks,
+      deepWorkMinutes,
+      focusBlocks,
+      blockers,
+      energyLevel,
+    },
+    include: {
+      user: {
+        select: { id: true, fullName: true, email: true },
+      },
+    },
+  });
+
+  res.status(201).json(serializeProductivityEntry(entry));
+});
+
+app.get("/api/productivity/todos", authMiddleware, async (req, res) => {
+  const status = normalizeTodoStatusFilter(req.query?.status);
+  const where = {
+    organizationId: req.user.organizationId,
+    userId: req.user.userId,
+  };
+
+  if (status === "open") where.isDone = false;
+  if (status === "done") where.isDone = true;
+
+  const todos = await prisma.productivityTodo.findMany({
+    where,
+    orderBy: [{ isDone: "asc" }, { dueAt: "asc" }, { createdAt: "desc" }],
+  });
+
+  res.json({
+    status,
+    todos: todos.map(serializeProductivityTodo),
+  });
+});
+
+app.post("/api/productivity/todos", authMiddleware, async (req, res) => {
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  if (!title) {
+    return res.status(400).json({ error: "title is required" });
+  }
+  if (title.length > 160) {
+    return res.status(400).json({ error: "title cannot exceed 160 characters" });
+  }
+
+  const notes =
+    typeof req.body?.notes === "string" && req.body.notes.trim()
+      ? req.body.notes.trim().slice(0, 2000)
+      : null;
+
+  const priority = normalizeTodoPriority(req.body?.priority);
+  if (req.body?.priority !== undefined && req.body?.priority !== null && !priority) {
+    return res.status(400).json({ error: "priority must be low, medium, or high" });
+  }
+
+  const rawDueAt = req.body?.dueAt;
+  const dueAt = parseDateValue(rawDueAt);
+  if (rawDueAt && !dueAt) {
+    return res.status(400).json({ error: "dueAt must be a valid date" });
+  }
+
+  const todo = await prisma.productivityTodo.create({
+    data: {
+      organizationId: req.user.organizationId,
+      userId: req.user.userId,
+      title,
+      notes,
+      priority,
+      dueAt,
+      isDone: false,
+      completedAt: null,
+    },
+  });
+
+  res.status(201).json(serializeProductivityTodo(todo));
+});
+
+app.patch("/api/productivity/todos/:id", authMiddleware, async (req, res) => {
+  const todoId = parseProductivityTodoId(req.params.id);
+  if (!todoId) {
+    return res.status(400).json({ error: "Todo id must be a valid number." });
+  }
+
+  const existing = await prisma.productivityTodo.findFirst({
+    where: {
+      id: todoId,
+      organizationId: req.user.organizationId,
+      userId: req.user.userId,
+    },
+  });
+  if (!existing) {
+    return res.status(404).json({ error: "Todo not found." });
+  }
+
+  const updateData = {};
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "title")) {
+    const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+    if (!title) {
+      return res.status(400).json({ error: "title is required" });
+    }
+    if (title.length > 160) {
+      return res.status(400).json({ error: "title cannot exceed 160 characters" });
+    }
+    updateData.title = title;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "notes")) {
+    updateData.notes =
+      typeof req.body?.notes === "string" && req.body.notes.trim()
+        ? req.body.notes.trim().slice(0, 2000)
+        : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "priority")) {
+    const priority = normalizeTodoPriority(req.body?.priority);
+    if (req.body?.priority !== null && req.body?.priority !== "" && !priority) {
+      return res.status(400).json({ error: "priority must be low, medium, or high" });
+    }
+    updateData.priority = priority;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "dueAt")) {
+    const rawDueAt = req.body?.dueAt;
+    const dueAt = parseDateValue(rawDueAt);
+    if (rawDueAt && !dueAt) {
+      return res.status(400).json({ error: "dueAt must be a valid date" });
+    }
+    updateData.dueAt = dueAt;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "isDone")) {
+    const isDone = Boolean(req.body?.isDone);
+    updateData.isDone = isDone;
+    updateData.completedAt = isDone ? new Date() : null;
+  }
+
+  const updated = await prisma.productivityTodo.update({
+    where: { id: existing.id },
+    data: updateData,
+  });
+
+  res.json(serializeProductivityTodo(updated));
+});
+
+app.delete("/api/productivity/todos/:id", authMiddleware, async (req, res) => {
+  const todoId = parseProductivityTodoId(req.params.id);
+  if (!todoId) {
+    return res.status(400).json({ error: "Todo id must be a valid number." });
+  }
+
+  const existing = await prisma.productivityTodo.findFirst({
+    where: {
+      id: todoId,
+      organizationId: req.user.organizationId,
+      userId: req.user.userId,
+    },
+    select: { id: true },
+  });
+  if (!existing) {
+    return res.status(404).json({ error: "Todo not found." });
+  }
+
+  await prisma.productivityTodo.delete({ where: { id: existing.id } });
+  res.json({ ok: true, id: existing.id });
+});
+
+app.get("/api/jobs/recommendations", authMiddleware, async (req, res) => {
+  const search = normalizeJobSearch(req.query?.search);
+  const workTypes = parseJobWorkTypes(req.query?.workTypes);
+  const parsedLimit = Number(req.query?.limit);
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 24)
+    : 12;
+  const cacheKey = buildJobRecommendationCacheKey({ search, workTypes, limit });
+  const now = Date.now();
+  const cached = jobsRecommendationCache.get(cacheKey);
+  if (cached && now - cached.checkedAt < JOB_RECOMMENDATION_CACHE_TTL_MS) {
+    return res.json(cached.payload);
+  }
+
+  try {
+    const result = await fetchRecommendedJobs({ search, workTypes, limit });
+    const jobs = Array.isArray(result?.jobs) ? result.jobs : [];
+    const sources = Array.isArray(result?.sources) ? result.sources : [];
+    const payload = {
+      jobs,
+      meta: {
+        source: sources.join(",") || "job-boards",
+        sources,
+        search,
+        workTypes,
+        total: jobs.length,
+        fetchedAt: new Date().toISOString(),
+        ...(result?.warning ? { warning: result.warning } : {}),
+      },
+    };
+    jobsRecommendationCache.set(cacheKey, { checkedAt: now, payload });
+    return res.json(payload);
+  } catch (error) {
+    console.warn("Unable to fetch job recommendations", error);
+    return res.json({
+      jobs: [],
+      meta: {
+        source: "job-boards",
+        sources: [],
+        search,
+        workTypes,
+        total: 0,
+        fetchedAt: new Date().toISOString(),
+        warning: "Live recommendations are temporarily unavailable.",
+      },
+    });
+  }
+});
+
+app.post("/api/ai/productivity-coach", authMiddleware, async (req, res) => {
+  if (!OPENAI_API_KEY) {
+    return res.status(503).json({
+      error: "AI assistant is not configured. Add OPENAI_API_KEY on the server.",
+    });
+  }
+
+  const prompt = normalizeAiPrompt(req.body?.prompt);
+  if (!prompt) {
+    return res.status(400).json({ error: "prompt is required" });
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = Number.isFinite(OPENAI_TIMEOUT_MS) ? Math.max(OPENAI_TIMEOUT_MS, 5000) : 20000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const openAiResponse = await fetch(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        max_output_tokens: 700,
+        temperature: 0.4,
+        input: [
+          {
+            role: "system",
+            content: PRODUCTIVITY_AI_SYSTEM_PROMPT,
+          },
+          {
+            role: "user",
+            content: buildProductivityAiInput({
+              prompt,
+              context: req.body?.context,
+            }),
+          },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    const payload = await openAiResponse.json().catch(() => null);
+    if (!openAiResponse.ok) {
+      const message =
+        payload?.error?.message ||
+        payload?.error ||
+        `OpenAI request failed with status ${openAiResponse.status}`;
+      return res.status(502).json({ error: message });
+    }
+
+    const reply = extractOpenAiResponseText(payload);
+    if (!reply) {
+      return res.status(502).json({ error: "AI response did not include text output." });
+    }
+
+    return res.json({
+      reply,
+      model: payload?.model || OPENAI_MODEL,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      return res.status(504).json({ error: "AI request timed out." });
+    }
+    console.error("Productivity AI request failed", error);
+    return res.status(500).json({ error: "Unable to generate AI guidance right now." });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+});
+
 const BOOKING_STATUS_VALUES = new Set(["CONFIRMED", "TENTATIVE", "CANCELED"]);
 const ACCOUNTING_TYPE_VALUES = new Set(["REVENUE", "EXPENSE"]);
 const ACCOUNTING_STATUS_VALUES = new Set(["PAID", "PENDING", "SCHEDULED", "OVERDUE"]);
 const ACCOUNTING_CURRENCY_VALUES = new Set(["CAD", "GHS"]);
 const ACCOUNTING_INTERVAL_VALUES = new Set(["MONTHLY", "QUARTERLY", "YEARLY"]);
+const PRODUCTIVITY_TODO_PRIORITY_VALUES = new Set(["low", "medium", "high"]);
+const PRODUCTIVITY_RANGE_DAYS = {
+  "7d": 7,
+  "14d": 14,
+  "30d": 30,
+  "90d": 90,
+};
+const JOB_WORK_TYPES = new Set(["freelance", "contract", "full_time"]);
+const JOB_RECOMMENDATION_CACHE_TTL_MS = Number(
+  process.env.JOB_RECOMMENDATION_CACHE_TTL_MS ?? 10 * 60 * 1000
+);
+const DASHBOARD_VERSE_CACHE_TTL_MS = Number(
+  process.env.DASHBOARD_VERSE_CACHE_TTL_MS ?? 12 * 60 * 60 * 1000
+);
+const DASHBOARD_WEATHER_CACHE_TTL_MS = Number(
+  process.env.DASHBOARD_WEATHER_CACHE_TTL_MS ?? 15 * 60 * 1000
+);
+const ARBEITNOW_PAGE_LIMIT = Math.min(
+  Math.max(Number(process.env.ARBEITNOW_PAGE_LIMIT ?? 2), 1),
+  4
+);
+const AI_PROMPT_MAX_LENGTH = 1600;
+const AI_TODOS_CONTEXT_LIMIT = 8;
+const AI_JOBS_CONTEXT_LIMIT = 6;
+const AI_ENTRY_BLOCKERS_MAX_LENGTH = 320;
+
+const PRODUCTIVITY_AI_SYSTEM_PROMPT = `
+You are a productivity coach for a developer and entrepreneur.
+
+Priorities:
+- Turn context into clear execution.
+- Keep advice practical and specific.
+- Focus on today's highest-impact work.
+
+Output rules:
+- Plain text only.
+- Keep it concise and scannable.
+- Use these sections in order:
+  1) Top priorities
+  2) Time-block plan
+  3) Risk and blockers
+  4) Job application focus
+- In each section, use short bullet points.
+- Do not mention that you are an AI model.
+`.trim();
 
 const parseDateValue = (value) => {
   if (!value) return null;
@@ -1820,6 +2406,865 @@ const buildRollingRange = (days = 30) => {
   start.setDate(start.getDate() - (totalDays - 1));
   start.setHours(0, 0, 0, 0);
   return { start, end, days: totalDays };
+};
+
+const toDateKeyUtc = (date) => {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const toUtcStartOfDay = (date) =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+
+const parseProductivityDate = (value) => {
+  if (!value) {
+    return toUtcStartOfDay(new Date());
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      const parsed = new Date(`${normalized}T00:00:00.000Z`);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return toUtcStartOfDay(parsed);
+};
+
+const buildProductivityRange = (range) => {
+  const key = String(range || "14d").toLowerCase();
+  const days = PRODUCTIVITY_RANGE_DAYS[key] || PRODUCTIVITY_RANGE_DAYS["14d"];
+  const end = toUtcStartOfDay(new Date());
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+  return { key, days, start, end };
+};
+
+const parseNonNegativeInt = (value, fallback = 0, max = Number.MAX_SAFE_INTEGER) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const bounded = Math.max(Math.trunc(parsed), 0);
+  return Math.min(bounded, max);
+};
+
+const normalizeEnergyLevel = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return null;
+  if (parsed < 1 || parsed > 10) return null;
+  return parsed;
+};
+
+const normalizeTodoPriority = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const normalized = String(value).trim().toLowerCase();
+  return PRODUCTIVITY_TODO_PRIORITY_VALUES.has(normalized) ? normalized : null;
+};
+
+const normalizeTodoStatusFilter = (value) => {
+  const normalized = String(value || "all").trim().toLowerCase();
+  if (normalized === "open" || normalized === "done") return normalized;
+  return "all";
+};
+
+const parseProductivityTodoId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+};
+
+const DAILY_VERSE_FALLBACKS = [
+  {
+    reference: "Philippians 4:13",
+    text: "I can do all things through Christ who strengthens me.",
+  },
+  {
+    reference: "Proverbs 16:3",
+    text: "Commit your work to the Lord, and your plans will be established.",
+  },
+  { reference: "Psalm 46:10", text: "Be still, and know that I am God." },
+  { reference: "Isaiah 41:10", text: "Do not fear, for I am with you." },
+  {
+    reference: "Romans 8:28",
+    text: "In all things God works for the good of those who love him.",
+  },
+  {
+    reference: "Joshua 1:9",
+    text: "Be strong and courageous. Do not be afraid; the Lord your God is with you.",
+  },
+  {
+    reference: "Jeremiah 29:11",
+    text: "For I know the plans I have for you, says the Lord.",
+  },
+  { reference: "Psalm 23:1", text: "The Lord is my shepherd; I shall not want." },
+];
+
+const HTML_ENTITY_MAP = {
+  amp: "&",
+  quot: '"',
+  apos: "'",
+  lt: "<",
+  gt: ">",
+  nbsp: " ",
+};
+
+const VERSE_REFERENCE_PATTERN =
+  /(?:[1-3]\s+)?[A-Z][A-Za-z']+(?:\s+[A-Z][A-Za-z']+){0,4}\s+\d+:\d+(?:-\d+)?(?:\s*\([A-Za-z0-9 -]+\))?/;
+
+const decodeHtmlEntities = (value) =>
+  String(value || "").replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_match, token) => {
+    const normalized = String(token || "").toLowerCase();
+    if (normalized.startsWith("#x")) {
+      const parsed = Number.parseInt(normalized.slice(2), 16);
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : "";
+    }
+    if (normalized.startsWith("#")) {
+      const parsed = Number.parseInt(normalized.slice(1), 10);
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : "";
+    }
+    return HTML_ENTITY_MAP[normalized] ?? "";
+  });
+
+const normalizeWhitespace = (value) => decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
+
+const extractMetaContent = (html, key) => {
+  const escaped = String(key || "")
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escaped) return "";
+
+  const keyFirstPattern = new RegExp(
+    `<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`,
+    "i"
+  );
+  const contentFirstPattern = new RegExp(
+    `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["'][^>]*>`,
+    "i"
+  );
+  const keyFirstMatch = html.match(keyFirstPattern);
+  if (keyFirstMatch?.[1]) return normalizeWhitespace(keyFirstMatch[1]);
+  const contentFirstMatch = html.match(contentFirstPattern);
+  if (contentFirstMatch?.[1]) return normalizeWhitespace(contentFirstMatch[1]);
+  return "";
+};
+
+const extractTitleContent = (html) => {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!match?.[1]) return "";
+  return normalizeWhitespace(match[1]);
+};
+
+const extractVerseReference = (...inputs) => {
+  for (const source of inputs) {
+    const value = normalizeWhitespace(source);
+    if (!value) continue;
+    const match = value.match(VERSE_REFERENCE_PATTERN);
+    if (match?.[0]) return match[0].trim();
+  }
+  return "";
+};
+
+const normalizeVerseText = (value, reference) => {
+  let text = normalizeWhitespace(value);
+  if (!text) return "";
+
+  if (reference) {
+    const escapedReference = reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`\\s*[\\-–|:]?\\s*${escapedReference}\\s*$`, "i"), "").trim();
+  }
+
+  text = text.replace(/^verse of the day[:\s-]*/i, "").trim();
+  text = text.replace(/^daily bible verse[:\s-]*/i, "").trim();
+  text = text.replace(/\s+read\b[\s\S]*$/i, "").trim();
+  return text.replace(/^["'“”]+|["'“”]+$/g, "").trim();
+};
+
+const parseYouVersionJsonResponse = (payload) => {
+  if (!payload || typeof payload !== "object") return null;
+
+  const candidates = [
+    payload,
+    payload?.data,
+    payload?.verse,
+    payload?.verseOfDay,
+    payload?.data?.verse,
+    payload?.data?.verseOfDay,
+    Array.isArray(payload?.data) ? payload.data[0] : null,
+    Array.isArray(payload?.items) ? payload.items[0] : null,
+  ].filter((item) => item && typeof item === "object");
+
+  for (const candidate of candidates) {
+    const reference = extractVerseReference(
+      candidate?.reference,
+      candidate?.passage,
+      candidate?.citation,
+      candidate?.verse_reference,
+      candidate?.title
+    );
+    const rawText =
+      candidate?.text ||
+      candidate?.content ||
+      candidate?.body ||
+      candidate?.description ||
+      candidate?.verse_text ||
+      candidate?.verse?.text ||
+      candidate?.verse?.content ||
+      candidate?.passage_text;
+    const text = normalizeVerseText(
+      rawText,
+      reference
+    );
+    if (reference && text && text !== "[object Object]" && text.length >= 12) {
+      return { reference, text };
+    }
+  }
+
+  return null;
+};
+
+const parseYouVersionHtmlResponse = (html) => {
+  const ogDescription =
+    extractMetaContent(html, "og:description") ||
+    extractMetaContent(html, "description") ||
+    extractMetaContent(html, "twitter:description");
+  const ogTitle = extractMetaContent(html, "og:title") || extractTitleContent(html);
+  const reference = extractVerseReference(ogTitle, ogDescription);
+  const verseFromMeta = normalizeVerseText(ogDescription, reference);
+  if (reference && verseFromMeta) {
+    return { reference, text: verseFromMeta };
+  }
+
+  const plainText = normalizeWhitespace(
+    String(html || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+  );
+  const plainReference = extractVerseReference(plainText);
+  if (!plainReference) return null;
+
+  const referenceIndex = plainText.indexOf(plainReference);
+  if (referenceIndex < 0) return null;
+
+  const leadingSlice = plainText.slice(Math.max(0, referenceIndex - 420), referenceIndex).trim();
+  const segment = leadingSlice.split(/\b(?:Share|Read|Subscribe|Previous|Next)\b/i).pop() || leadingSlice;
+  const verseText = normalizeVerseText(segment, plainReference);
+  if (!verseText) return null;
+
+  return {
+    reference: plainReference,
+    text: verseText,
+  };
+};
+
+const buildFallbackVerse = (dayKey) => {
+  let hash = 0;
+  const key = String(dayKey || new Date().toISOString().slice(0, 10));
+  for (let index = 0; index < key.length; index += 1) {
+    hash = (hash * 31 + key.charCodeAt(index)) % 2147483647;
+  }
+  return DAILY_VERSE_FALLBACKS[hash % DAILY_VERSE_FALLBACKS.length];
+};
+
+const buildYouVersionHeaders = () => {
+  const headers = {
+    Accept: "application/json, text/html;q=0.9, */*;q=0.8",
+  };
+  if (YOUVERSION_API_KEY) headers["x-api-key"] = YOUVERSION_API_KEY;
+  if (YOUVERSION_APP_ID) headers["x-youversion-app-id"] = YOUVERSION_APP_ID;
+  if (YOUVERSION_BEARER_TOKEN) headers.Authorization = `Bearer ${YOUVERSION_BEARER_TOKEN}`;
+  return headers;
+};
+
+const fetchYouVersionVerseOfDay = async () => {
+  const endpoint = String(YOUVERSION_VERSE_ENDPOINT || "").trim();
+  if (!endpoint) {
+    throw new Error("Missing YouVersion endpoint");
+  }
+
+  const response = await fetchExternalWithTimeout(endpoint, {
+    method: "GET",
+    headers: buildYouVersionHeaders(),
+    timeoutMs: YOUVERSION_TIMEOUT_MS,
+  });
+
+  if (!response.ok) {
+    throw new Error(`YouVersion request failed with ${response.status}`);
+  }
+
+  const contentType = String(response.headers?.get("content-type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    const payload = await response.json().catch(() => null);
+    const parsed = parseYouVersionJsonResponse(payload);
+    if (parsed) return parsed;
+    throw new Error("YouVersion JSON payload did not include verse text");
+  }
+
+  const html = await response.text();
+  const parsed = parseYouVersionHtmlResponse(html);
+  if (parsed) return parsed;
+  throw new Error("Unable to parse YouVersion verse-of-day response");
+};
+
+const getDashboardVerseOfDayPayload = async () => {
+  const now = Date.now();
+  const dayKey = new Date().toISOString().slice(0, 10);
+
+  if (
+    dashboardVerseCache.payload &&
+    dashboardVerseCache.dayKey === dayKey &&
+    now - dashboardVerseCache.checkedAt < DASHBOARD_VERSE_CACHE_TTL_MS
+  ) {
+    return dashboardVerseCache.payload;
+  }
+
+  try {
+    const verse = await fetchYouVersionVerseOfDay();
+    const payload = {
+      verse: {
+        reference: verse.reference,
+        text: verse.text,
+        source: "youversion",
+      },
+      meta: {
+        source: "youversion",
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    dashboardVerseCache = { dayKey, checkedAt: now, payload };
+    return payload;
+  } catch (error) {
+    console.warn("Unable to load verse of the day from YouVersion", error);
+    const fallback = buildFallbackVerse(dayKey);
+    const payload = {
+      verse: {
+        reference: fallback.reference,
+        text: fallback.text,
+        source: "fallback",
+      },
+      meta: {
+        source: "fallback",
+        warning: "YouVersion verse unavailable; showing fallback verse.",
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    dashboardVerseCache = { dayKey, checkedAt: now, payload };
+    return payload;
+  }
+};
+
+const parseCoordinate = (value, min, max) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < min || parsed > max) return null;
+  return parsed;
+};
+
+const resolveWeatherNumber = (...values) => {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
+
+const resolveWeatherText = (...values) => {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+};
+
+const formatTimeZoneLocation = (timeZoneId) => {
+  const normalized = String(timeZoneId || "").trim();
+  if (!normalized) return "";
+  const lastPart = normalized.split("/").pop() || normalized;
+  return lastPart.replace(/_/g, " ");
+};
+
+const buildWeatherCacheKey = ({ latitude, longitude }) =>
+  `${latitude.toFixed(3)},${longitude.toFixed(3)}|${GOOGLE_WEATHER_UNITS_SYSTEM}|${GOOGLE_WEATHER_LANGUAGE_CODE}`;
+
+const normalizeGoogleWeatherPayload = ({ payload, latitude, longitude }) => {
+  const unitFallback = GOOGLE_WEATHER_UNITS_SYSTEM === "METRIC" ? "CELSIUS" : "FAHRENHEIT";
+  const temperature = resolveWeatherNumber(
+    payload?.temperature?.degrees,
+    payload?.temperature?.value,
+    payload?.currentTemperature?.degrees,
+    payload?.currentTemperature?.value
+  );
+  const feelsLike = resolveWeatherNumber(
+    payload?.feelsLikeTemperature?.degrees,
+    payload?.feelsLikeTemperature?.value,
+    payload?.apparentTemperature?.degrees,
+    payload?.apparentTemperature?.value
+  );
+  const temperatureUnit = resolveWeatherText(
+    payload?.temperature?.unit,
+    payload?.currentTemperature?.unit,
+    unitFallback
+  );
+  const conditionLabel = resolveWeatherText(
+    payload?.weatherCondition?.description?.text,
+    payload?.weatherCondition?.description,
+    payload?.weatherCondition?.type,
+    payload?.summary,
+    "Current conditions"
+  );
+  const locationLabel = resolveWeatherText(
+    payload?.location?.displayName?.text,
+    payload?.location?.name,
+    payload?.place?.displayName?.text,
+    formatTimeZoneLocation(payload?.timeZone?.id),
+    `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`
+  );
+
+  return {
+    weather: {
+      temperature,
+      feelsLike,
+      temperatureUnit,
+      conditionLabel,
+      locationLabel,
+      iconBaseUri: resolveWeatherText(payload?.weatherCondition?.iconBaseUri) || null,
+      isDaytime:
+        typeof payload?.isDaytime === "boolean"
+          ? payload.isDaytime
+          : typeof payload?.daytime === "boolean"
+            ? payload.daytime
+            : null,
+    },
+  };
+};
+
+const fetchGoogleCurrentWeather = async ({ latitude, longitude }) => {
+  if (!GOOGLE_WEATHER_API_KEY) {
+    throw new Error("Google Weather API key is not configured");
+  }
+
+  const endpoint = new URL("https://weather.googleapis.com/v1/currentConditions:lookup");
+  endpoint.searchParams.set("location.latitude", String(latitude));
+  endpoint.searchParams.set("location.longitude", String(longitude));
+  endpoint.searchParams.set("unitsSystem", GOOGLE_WEATHER_UNITS_SYSTEM);
+  endpoint.searchParams.set("languageCode", GOOGLE_WEATHER_LANGUAGE_CODE);
+  endpoint.searchParams.set("key", GOOGLE_WEATHER_API_KEY);
+
+  const response = await fetchExternalWithTimeout(endpoint.toString(), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+    timeoutMs: 12000,
+  });
+  if (!response.ok) {
+    throw new Error(`Google Weather request failed with ${response.status}`);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Google Weather response was not valid JSON");
+  }
+
+  return normalizeGoogleWeatherPayload({ payload, latitude, longitude });
+};
+
+const normalizeJobSearch = (value) => String(value || "").trim().slice(0, 120);
+
+const normalizeJobWorkType = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if (normalized === "full_time" || normalized === "fulltime") return "full_time";
+  if (normalized === "contract") return "contract";
+  if (normalized === "freelance") return "freelance";
+  return null;
+};
+
+const parseJobWorkTypes = (value) => {
+  if (!value) return [];
+  const source = Array.isArray(value) ? value : String(value).split(",");
+  return Array.from(
+    new Set(
+      source
+        .map((item) => normalizeJobWorkType(item))
+        .filter((item) => item && JOB_WORK_TYPES.has(item))
+      )
+  );
+};
+
+const normalizeAiPrompt = (value) => String(value || "").trim().slice(0, AI_PROMPT_MAX_LENGTH);
+
+const toSafeAiNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const sanitizeAiContext = (rawContext) => {
+  const context = rawContext && typeof rawContext === "object" ? rawContext : {};
+  const summary = context.summary && typeof context.summary === "object" ? context.summary : {};
+  const entry = context.entry && typeof context.entry === "object" ? context.entry : {};
+
+  const todos = Array.isArray(context.todos)
+    ? context.todos.slice(0, AI_TODOS_CONTEXT_LIMIT).map((todo) => ({
+        title: String(todo?.title || "").trim().slice(0, 140),
+        isDone: Boolean(todo?.isDone),
+        priority: String(todo?.priority || "").trim().toLowerCase(),
+        dueAt: todo?.dueAt ? String(todo.dueAt).slice(0, 40) : null,
+      }))
+    : [];
+
+  const jobs = Array.isArray(context.jobs)
+    ? context.jobs.slice(0, AI_JOBS_CONTEXT_LIMIT).map((job) => ({
+        title: String(job?.title || "").trim().slice(0, 160),
+        companyName: String(job?.companyName || "").trim().slice(0, 120),
+        workType: normalizeJobWorkType(job?.workType) || "full_time",
+        location: String(job?.location || "").trim().slice(0, 120),
+        publishedAt: job?.publishedAt ? String(job.publishedAt).slice(0, 40) : null,
+      }))
+    : [];
+
+  return {
+    range: String(context.range || "").trim().slice(0, 20) || "14d",
+    summary: {
+      plannedTasks: toSafeAiNumber(summary.plannedTasks, 0),
+      completedTasks: toSafeAiNumber(summary.completedTasks, 0),
+      deepWorkMinutes: toSafeAiNumber(summary.deepWorkMinutes, 0),
+      focusBlocks: toSafeAiNumber(summary.focusBlocks, 0),
+      completionRate: toSafeAiNumber(summary.completionRate, 0),
+      focusScore: toSafeAiNumber(summary.focusScore, 0),
+      streakDays: toSafeAiNumber(summary.streakDays, 0),
+      momentumLabel: String(summary.momentumLabel || "").trim().slice(0, 120),
+      entriesLogged: toSafeAiNumber(summary.entriesLogged, 0),
+    },
+    entry: {
+      entryDate: String(entry.entryDate || "").trim().slice(0, 20),
+      plannedTasks: toSafeAiNumber(entry.plannedTasks, 0),
+      completedTasks: toSafeAiNumber(entry.completedTasks, 0),
+      deepWorkMinutes: toSafeAiNumber(entry.deepWorkMinutes, 0),
+      focusBlocks: toSafeAiNumber(entry.focusBlocks, 0),
+      energyLevel:
+        entry.energyLevel === null || entry.energyLevel === undefined || entry.energyLevel === ""
+          ? null
+          : toSafeAiNumber(entry.energyLevel, null),
+      blockers: String(entry.blockers || "")
+        .trim()
+        .slice(0, AI_ENTRY_BLOCKERS_MAX_LENGTH),
+    },
+    todos,
+    jobs,
+  };
+};
+
+const buildProductivityAiInput = ({ prompt, context }) => {
+  const normalizedPrompt = normalizeAiPrompt(prompt);
+  const safeContext = sanitizeAiContext(context);
+  const contextJson = JSON.stringify(safeContext, null, 2);
+
+  return [
+    `User request: ${normalizedPrompt}`,
+    "Context:",
+    contextJson,
+    "Deliver a practical plan for the current day.",
+  ].join("\n\n");
+};
+
+const extractOpenAiResponseText = (payload) => {
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text.trim();
+  }
+
+  const output = Array.isArray(payload?.output) ? payload.output : [];
+  const chunks = [];
+
+  output.forEach((item) => {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    content.forEach((part) => {
+      if (typeof part?.text === "string" && part.text.trim()) {
+        chunks.push(part.text.trim());
+        return;
+      }
+      if (part?.text && typeof part.text?.value === "string" && part.text.value.trim()) {
+        chunks.push(part.text.value.trim());
+      }
+    });
+  });
+
+  return chunks.join("\n\n").trim();
+};
+
+const inferJobWorkType = (job) => {
+  const haystack = [
+    job?.jobType,
+    job?.employmentType,
+    job?.title,
+    job?.description,
+    ...(Array.isArray(job?.tags) ? job.tags : []),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (haystack.includes("freelance") || haystack.includes("self-employed")) return "freelance";
+  if (
+    haystack.includes("contract") ||
+    haystack.includes("temporary") ||
+    haystack.includes("part time") ||
+    haystack.includes("part-time")
+  ) {
+    return "contract";
+  }
+  return "full_time";
+};
+
+const buildJobRecommendationCacheKey = ({ search, workTypes, limit }) =>
+  `${search || "all"}|${(workTypes || []).slice().sort().join(",")}|${limit}`;
+
+const buildJobSearchTokens = (search) =>
+  String(search || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3)
+    .slice(0, 8);
+
+const scoreRecommendedJob = ({ job, tokens }) => {
+  let score = 0;
+  const title = String(job.title || "").toLowerCase();
+  const company = String(job.companyName || "").toLowerCase();
+  const tags = Array.isArray(job.tags) ? job.tags.join(" ").toLowerCase() : "";
+  const location = String(job.location || "").toLowerCase();
+
+  tokens.forEach((token) => {
+    if (title.includes(token)) score += 6;
+    if (company.includes(token)) score += 3;
+    if (tags.includes(token)) score += 2;
+    if (location.includes(token)) score += 1;
+  });
+
+  const postedAt = job.publishedAt ? new Date(job.publishedAt).getTime() : NaN;
+  if (!Number.isNaN(postedAt)) {
+    const ageHours = (Date.now() - postedAt) / (1000 * 60 * 60);
+    if (ageHours <= 72) score += 8;
+    else if (ageHours <= 24 * 7) score += 5;
+    else if (ageHours <= 24 * 30) score += 2;
+  }
+
+  return score;
+};
+
+const dedupeRecommendedJobs = (jobs) => {
+  const seen = new Set();
+  const deduped = [];
+
+  jobs.forEach((job) => {
+    const key = [
+      String(job.jobUrl || "").trim().toLowerCase(),
+      String(job.title || "").trim().toLowerCase(),
+      String(job.companyName || "").trim().toLowerCase(),
+    ].join("|");
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    deduped.push(job);
+  });
+
+  return deduped;
+};
+
+const fetchRemotiveJobs = async ({ search }) => {
+  const endpoint = new URL("https://remotive.com/api/remote-jobs");
+  if (search) endpoint.searchParams.set("search", search);
+
+  const response = await fetchExternalWithTimeout(endpoint.toString(), {
+    method: "GET",
+    timeoutMs: 12000,
+  });
+  if (!response.ok) {
+    throw new Error(`Remotive request failed with ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  return jobs
+    .map((job) => {
+      const workType = inferJobWorkType({
+        jobType: job?.job_type,
+        title: job?.title,
+        tags: job?.tags,
+      });
+      return {
+        id: `remotive-${job?.id ?? crypto.randomUUID()}`,
+        source: "Remotive",
+        title: job?.title || "Untitled role",
+        companyName: job?.company_name || "Unknown company",
+        location: job?.candidate_required_location || "Remote",
+        workType,
+        jobUrl: job?.url || null,
+        salary: job?.salary || null,
+        publishedAt: job?.publication_date || null,
+        tags: Array.isArray(job?.tags) ? job.tags : [],
+      };
+    })
+    .filter((job) => job.jobUrl);
+};
+
+const fetchArbeitnowJobs = async () => {
+  const pages = Array.from({ length: ARBEITNOW_PAGE_LIMIT }, (_, index) => index + 1);
+  const requests = pages.map(async (page) => {
+    const endpoint = new URL("https://www.arbeitnow.com/api/job-board-api");
+    endpoint.searchParams.set("page", String(page));
+    const response = await fetchExternalWithTimeout(endpoint.toString(), {
+      method: "GET",
+      timeoutMs: 12000,
+    });
+    if (!response.ok) {
+      throw new Error(`Arbeitnow request failed with ${response.status}`);
+    }
+    const payload = await response.json().catch(() => null);
+    return Array.isArray(payload?.data) ? payload.data : [];
+  });
+
+  const pagesResult = await Promise.all(requests);
+  const jobs = pagesResult.flat();
+
+  return jobs
+    .map((job) => {
+      const tags = [
+        ...(Array.isArray(job?.tags) ? job.tags : []),
+        ...(Array.isArray(job?.job_types) ? job.job_types : []),
+      ].filter(Boolean);
+      const workType = inferJobWorkType({
+        title: job?.title,
+        jobType: Array.isArray(job?.job_types) ? job.job_types.join(" ") : "",
+        tags,
+        description: job?.description,
+      });
+      const location = job?.remote
+        ? "Remote"
+        : resolveWeatherText(job?.location, job?.city, job?.country, "Location not specified");
+      const jobUrl =
+        resolveWeatherText(job?.url, job?.job_url, job?.absolute_url) ||
+        (job?.slug ? `https://www.arbeitnow.com/jobs/${job.slug}` : "");
+
+      return {
+        id: `arbeitnow-${job?.slug || crypto.randomUUID()}`,
+        source: "Arbeitnow",
+        title: job?.title || "Untitled role",
+        companyName: job?.company_name || "Unknown company",
+        location,
+        workType,
+        jobUrl: jobUrl || null,
+        salary: null,
+        publishedAt: job?.created_at || job?.published_at || null,
+        tags: tags.map((tag) => String(tag)),
+      };
+    })
+    .filter((job) => job.jobUrl);
+};
+
+const fetchRecommendedJobs = async ({ search, workTypes, limit }) => {
+  const providerDefinitions = [
+    { key: "remotive", fetcher: () => fetchRemotiveJobs({ search }) },
+    { key: "arbeitnow", fetcher: () => fetchArbeitnowJobs() },
+  ];
+  const results = await Promise.allSettled(providerDefinitions.map((provider) => provider.fetcher()));
+  const warnings = [];
+  const liveSources = [];
+
+  const rawJobs = results.flatMap((result, index) => {
+    const provider = providerDefinitions[index];
+    if (result.status === "fulfilled") {
+      liveSources.push(provider.key);
+      return Array.isArray(result.value) ? result.value : [];
+    }
+    warnings.push(`${provider.key} is temporarily unavailable`);
+    return [];
+  });
+
+  const dedupedJobs = dedupeRecommendedJobs(rawJobs);
+  const tokens = buildJobSearchTokens(search);
+  const typeSet = new Set(workTypes || []);
+  const filtered = dedupedJobs.filter((job) => {
+    if (!typeSet.size) return true;
+    return typeSet.has(job.workType);
+  });
+
+  const rankedJobs = filtered
+    .map((job) => ({ ...job, score: scoreRecommendedJob({ job, tokens }) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const left = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+      const right = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+      return right - left;
+    })
+    .slice(0, limit)
+    .map(({ score, ...job }) => job);
+
+  return {
+    jobs: rankedJobs,
+    sources: liveSources,
+    warning: warnings.length ? warnings.join(". ") : "",
+  };
+};
+
+const buildProductivitySummary = (entries = []) => {
+  const totals = entries.reduce(
+    (acc, entry) => {
+      acc.plannedTasks += entry.plannedTasks ?? 0;
+      acc.completedTasks += entry.completedTasks ?? 0;
+      acc.deepWorkMinutes += entry.deepWorkMinutes ?? 0;
+      acc.focusBlocks += entry.focusBlocks ?? 0;
+      return acc;
+    },
+    { plannedTasks: 0, completedTasks: 0, deepWorkMinutes: 0, focusBlocks: 0 }
+  );
+
+  const completionRate = totals.plannedTasks
+    ? Math.round((totals.completedTasks / totals.plannedTasks) * 100)
+    : 0;
+  const focusScore = Math.min(
+    100,
+    Math.round(
+      completionRate * 0.5 + Math.min(totals.deepWorkMinutes, 240) * 0.2 + totals.focusBlocks * 8
+    )
+  );
+
+  const activeDateKeys = new Set(
+    entries
+      .filter(
+        (entry) =>
+          (entry.completedTasks ?? 0) > 0 ||
+          (entry.deepWorkMinutes ?? 0) > 0 ||
+          (entry.focusBlocks ?? 0) > 0
+      )
+      .map((entry) => toDateKeyUtc(entry.entryDate))
+  );
+  const sortedActive = Array.from(activeDateKeys).sort((a, b) => b.localeCompare(a));
+  let streakDays = 0;
+  if (sortedActive.length) {
+    let cursor = new Date(`${sortedActive[0]}T00:00:00.000Z`);
+    while (activeDateKeys.has(toDateKeyUtc(cursor))) {
+      streakDays += 1;
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
+  }
+
+  let momentumLabel = "Start a focus block";
+  if (completionRate >= 80 && totals.deepWorkMinutes >= 90) momentumLabel = "Strong momentum";
+  else if (completionRate >= 60 || totals.deepWorkMinutes >= 60) momentumLabel = "On track";
+
+  return {
+    ...totals,
+    completionRate,
+    focusScore,
+    streakDays,
+    momentumLabel,
+    entriesLogged: entries.length,
+  };
 };
 
 const resolveDecimalAmount = (value) => {
@@ -1921,6 +3366,42 @@ const serializeAccountingEntry = (entry) => ({
   dueAt: entry.dueAt ? entry.dueAt.toISOString() : null,
   createdAt: entry.createdAt ? entry.createdAt.toISOString() : null,
   updatedAt: entry.updatedAt ? entry.updatedAt.toISOString() : null,
+});
+
+const serializeProductivityEntry = (entry) => ({
+  id: entry.id,
+  organizationId: entry.organizationId,
+  userId: entry.userId,
+  user: entry.user
+    ? {
+        id: entry.user.id,
+        fullName: entry.user.fullName,
+        email: entry.user.email,
+      }
+    : null,
+  entryDate: toDateKeyUtc(entry.entryDate),
+  plannedTasks: entry.plannedTasks ?? 0,
+  completedTasks: entry.completedTasks ?? 0,
+  deepWorkMinutes: entry.deepWorkMinutes ?? 0,
+  focusBlocks: entry.focusBlocks ?? 0,
+  blockers: entry.blockers ?? "",
+  energyLevel: entry.energyLevel ?? null,
+  createdAt: entry.createdAt ? entry.createdAt.toISOString() : null,
+  updatedAt: entry.updatedAt ? entry.updatedAt.toISOString() : null,
+});
+
+const serializeProductivityTodo = (todo) => ({
+  id: todo.id,
+  organizationId: todo.organizationId,
+  userId: todo.userId,
+  title: todo.title,
+  notes: todo.notes ?? "",
+  isDone: Boolean(todo.isDone),
+  priority: todo.priority ?? null,
+  dueAt: todo.dueAt ? todo.dueAt.toISOString() : null,
+  completedAt: todo.completedAt ? todo.completedAt.toISOString() : null,
+  createdAt: todo.createdAt ? todo.createdAt.toISOString() : null,
+  updatedAt: todo.updatedAt ? todo.updatedAt.toISOString() : null,
 });
 
 const serializeBooking = (booking) => ({
@@ -2151,6 +3632,12 @@ app.post("/api/public/bookings/:orgSlug", async (req, res) => {
   if (startDay === 0 || startDay === 6) {
     return res.status(400).json({ error: "Weekend bookings are not available." });
   }
+  const holidayLabels = getHolidayLabelsForDate(startDate);
+  if (holidayLabels.length) {
+    return res.status(400).json({
+      error: `Bookings are unavailable on holidays: ${holidayLabels.join(" • ")}.`,
+    });
+  }
 
   let endDate = parseDateValue(endAt);
   if (!endDate) {
@@ -2249,6 +3736,11 @@ app.post("/api/bookings", authMiddleware, requireAdmin, async (req, res) => {
   }
 
   const normalizedStatus = normalizeBookingStatus(status) ?? "CONFIRMED";
+  if (normalizedStatus !== "CANCELED" && isBlockedHolidayDate(startDate)) {
+    return res.status(400).json({
+      error: `Bookings are unavailable on holidays: ${getHolidayLabelsForDate(startDate).join(" • ")}.`,
+    });
+  }
 
   const booking = await prisma.booking.create({
     data: {
@@ -2356,6 +3848,12 @@ app.patch("/api/bookings/:id", authMiddleware, requireAdmin, async (req, res) =>
   const endDate = endAt !== undefined ? parseDateValue(endAt) : booking.endAt;
   if (!startDate || !endDate || endDate <= startDate) {
     return res.status(400).json({ error: "Valid start and end times are required" });
+  }
+  const nextStatus = updates.status ?? booking.status;
+  if (nextStatus !== "CANCELED" && isBlockedHolidayDate(startDate)) {
+    return res.status(400).json({
+      error: `Bookings are unavailable on holidays: ${getHolidayLabelsForDate(startDate).join(" • ")}.`,
+    });
   }
 
   if (startAt !== undefined) {

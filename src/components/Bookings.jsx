@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { formatDateTime } from "../utils/formatters";
 import { buildApiUrl } from "../api-url";
+import { getHolidayLabelsForDate, listUpcomingHolidays } from "../utils/holidays";
 import "./Bookings.css";
 
 const STATUS_MAP = {
@@ -150,6 +151,11 @@ const Bookings = () => {
     const now = new Date();
     return bookings.filter((booking) => isSameDay(new Date(booking.startAt), now));
   }, [bookings]);
+  const todayHolidayLabels = useMemo(() => getHolidayLabelsForDate(new Date()), []);
+  const upcomingHolidayBlocks = useMemo(
+    () => listUpcomingHolidays({ startDate: new Date(), days: 45 }),
+    []
+  );
 
   const handleCopyLink = async () => {
     if (!bookingLinkValue) {
@@ -384,13 +390,19 @@ const Bookings = () => {
               {bookings.length ? (
                 bookings.map((booking) => {
                   const statusConfig = STATUS_MAP[booking.status] || STATUS_MAP.TENTATIVE;
+                  const holidayLabels = getHolidayLabelsForDate(new Date(booking.startAt));
                   return (
                     <div className="table-row is-7" key={booking.id}>
                       <span className="table-strong">
                         {booking.attendeeName || booking.attendeeEmail || "Customer"}
                       </span>
                       <span>{booking.title}</span>
-                      <span>{formatDateTime(booking.startAt)}</span>
+                      <span>
+                        <span>{formatDateTime(booking.startAt)}</span>
+                        {holidayLabels.length ? (
+                          <span className="bookings-holiday-label">{holidayLabels.join(" • ")}</span>
+                        ) : null}
+                      </span>
                       <span>{formatDuration(booking.startAt, booking.endAt)}</span>
                       <span>
                         {booking.meetingLink ? (
@@ -417,7 +429,10 @@ const Bookings = () => {
           <div className="panel-header">
             <div>
               <h3>Today</h3>
-              <p className="muted">Agenda for the next 24 hours.</p>
+              <p className="muted">
+                Agenda for the next 24 hours.
+                {todayHolidayLabels.length ? ` Holiday: ${todayHolidayLabels.join(" • ")}.` : ""}
+              </p>
             </div>
           </div>
           <div className="list">
@@ -436,6 +451,26 @@ const Bookings = () => {
             ) : (
               <p className="muted">No bookings scheduled for today.</p>
             )}
+          </div>
+          <div className="bookings-holiday-blocks">
+            <div className="panel-header">
+              <div>
+                <h4>Holiday blocks (CA/GH)</h4>
+                <p className="muted">New bookings are blocked on these dates.</p>
+              </div>
+            </div>
+            <div className="list">
+              {upcomingHolidayBlocks.length ? (
+                upcomingHolidayBlocks.slice(0, 8).map((holiday) => (
+                  <div className="list-row is-split" key={holiday.key}>
+                    <span className="table-strong">{holiday.dateLabel}</span>
+                    <span className="muted">{holiday.labels.join(" • ")}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="muted">No holiday blocks in the next 45 days.</p>
+              )}
+            </div>
           </div>
         </article>
       </div>

@@ -84,7 +84,26 @@
 }
 
 @media (max-width: 900px) {
+  .auth-page {
+    padding: 1rem 0.85rem 1.5rem;
+    gap: 1rem;
+  }
+
+  .auth-topbar .muted {
+    display: none;
+  }
+
   .auth-layout {
     grid-template-columns: 1fr;
+    max-width: 420px;
+    padding: 0;
+  }
+
+  .auth-hero {
+    display: none;
+  }
+
+  .auth-card {
+    gap: 0.75rem;
   }
 }
