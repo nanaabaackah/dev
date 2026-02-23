@@ -12,7 +12,43 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Resend } from "resend";
 import { google } from "googleapis";
 
+const parsePositiveInt = (
+  value,
+  fallback,
+  { min = 1, max = Number.MAX_SAFE_INTEGER } = {}
+) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const bounded = Math.trunc(parsed);
+  if (bounded < min || bounded > max) return fallback;
+  return bounded;
+};
+
+const parseEnvBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return fallback;
+  return ["true", "1", "yes", "on"].includes(normalized);
+};
+
+const normalizeSameSite = (value, fallback = "lax") => {
+  const normalized = String(value || fallback)
+    .trim()
+    .toLowerCase();
+  if (normalized === "lax" || normalized === "strict" || normalized === "none") {
+    return normalized;
+  }
+  return fallback;
+};
+
 const app = express();
+const trustProxyHops = parsePositiveInt(process.env.TRUST_PROXY_HOPS, 1, {
+  min: 1,
+  max: 10,
+});
+app.set("trust proxy", trustProxyHops);
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -44,9 +80,73 @@ const devOrigins = isProduction
     ];
 const allowedOriginSet = new Set([...allowedOrigins, ...devOrigins]);
 const allowAllOrigins = allowedOriginSet.size === 0;
-const rateLimitWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
-const rateLimitMax = Number(process.env.RATE_LIMIT_MAX ?? 120);
-const requestBuckets = new Map();
+const API_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
+  process.env.API_RATE_LIMIT_WINDOW_MS ?? process.env.RATE_LIMIT_WINDOW_MS,
+  15 * 60 * 1000,
+  {
+    min: 1000,
+    max: 24 * 60 * 60 * 1000,
+  }
+);
+const API_RATE_LIMIT_MAX = parsePositiveInt(
+  process.env.API_RATE_LIMIT_MAX ?? process.env.RATE_LIMIT_MAX,
+  120,
+  {
+    min: 1,
+    max: 5000,
+  }
+);
+const AUTH_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
+  process.env.AUTH_RATE_LIMIT_WINDOW_MS,
+  10 * 60 * 1000,
+  {
+    min: 1000,
+    max: 24 * 60 * 60 * 1000,
+  }
+);
+const AUTH_RATE_LIMIT_MAX = parsePositiveInt(process.env.AUTH_RATE_LIMIT_MAX, 15, {
+  min: 1,
+  max: 500,
+});
+const PUBLIC_BOOKING_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
+  process.env.PUBLIC_BOOKING_RATE_LIMIT_WINDOW_MS,
+  15 * 60 * 1000,
+  {
+    min: 1000,
+    max: 24 * 60 * 60 * 1000,
+  }
+);
+const PUBLIC_BOOKING_RATE_LIMIT_MAX = parsePositiveInt(
+  process.env.PUBLIC_BOOKING_RATE_LIMIT_MAX,
+  30,
+  {
+    min: 1,
+    max: 500,
+  }
+);
+const RATE_LIMIT_BUCKET_LIMIT = parsePositiveInt(
+  process.env.RATE_LIMIT_BUCKET_LIMIT,
+  50000,
+  {
+    min: 1000,
+    max: 2_000_000,
+  }
+);
+const SAFE_EXTERNAL_URL_PROTOCOLS = new Set(["https:", "http:"]);
+const MAX_SAFE_URL_LENGTH = 2048;
+const AUTH_COOKIE_NAME = String(process.env.AUTH_COOKIE_NAME || "dev_kpi_auth").trim() || "dev_kpi_auth";
+const AUTH_CSRF_COOKIE_NAME =
+  String(process.env.AUTH_CSRF_COOKIE_NAME || "dev_kpi_csrf").trim() || "dev_kpi_csrf";
+const AUTH_COOKIE_MAX_AGE_MS = parsePositiveInt(
+  process.env.AUTH_COOKIE_MAX_AGE_MS,
+  12 * 60 * 60 * 1000,
+  {
+    min: 60 * 1000,
+    max: 14 * 24 * 60 * 60 * 1000,
+  }
+);
+const AUTH_COOKIE_SAME_SITE = normalizeSameSite(process.env.AUTH_COOKIE_SAME_SITE, "lax");
+const AUTH_COOKIE_SECURE = parseEnvBoolean(process.env.AUTH_COOKIE_SECURE, isProduction);
 const reebsPool = reebsDatabaseUrl
   ? new Pool({
       connectionString: reebsDatabaseUrl,
@@ -431,10 +531,13 @@ const pickAttendee = (event) => {
   };
 };
 
-const extractMeetingLink = (event) =>
-  event?.hangoutLink ||
-  event?.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === "video")?.uri ||
-  null;
+const extractMeetingLink = (event) => {
+  const candidate =
+    event?.hangoutLink ||
+    event?.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === "video")?.uri ||
+    null;
+  return sanitizeExternalUrl(candidate);
+};
 
 const canAutoCreateMeetLink = (event) => {
   if (!event?.id) return false;
@@ -846,7 +949,6 @@ const REEBS_ORG_SLUG = process.env.REEBS_ORG_SLUG ?? "reebs";
 const FAAKO_ORG_NAME = process.env.FAAKO_ORG_NAME ?? "Faako";
 const FAAKO_ORG_SLUG = process.env.FAAKO_ORG_SLUG ?? "faako";
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ?? "dev@nanaabaackah.com";
-const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD ?? "Th@Tr$$1142!";
 const ALERT_COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS ?? 15 * 60 * 1000);
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
@@ -860,6 +962,92 @@ const coerceBoolean = (value, fallback = false) => {
 };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 12;
+const DEFAULT_ADMIN_PASSWORD = String(process.env.DEFAULT_ADMIN_PASSWORD || "").trim();
+const HAS_DEFAULT_ADMIN_PASSWORD = DEFAULT_ADMIN_PASSWORD.length >= MIN_PASSWORD_LENGTH;
+
+const sanitizeExternalUrl = (value) => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_SAFE_URL_LENGTH) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (!SAFE_EXTERNAL_URL_PROTOCOLS.has(parsed.protocol)) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
+const parseCookieHeader = (value) => {
+  const map = new Map();
+  if (typeof value !== "string" || !value.trim()) return map;
+  value.split(";").forEach((segment) => {
+    const [rawKey, ...rawValueParts] = segment.split("=");
+    let key = "";
+    let decodedValue = "";
+    try {
+      key = decodeURIComponent(String(rawKey || "").trim());
+    } catch {
+      key = String(rawKey || "").trim();
+    }
+    if (!key) return;
+    const rawValue = rawValueParts.join("=");
+    try {
+      decodedValue = decodeURIComponent(String(rawValue || "").trim());
+    } catch {
+      decodedValue = String(rawValue || "").trim();
+    }
+    map.set(key, decodedValue);
+  });
+  return map;
+};
+
+const getCookieValue = (req, name) => {
+  if (!name) return "";
+  const cookies = parseCookieHeader(req?.headers?.cookie);
+  return cookies.get(name) || "";
+};
+
+const readBearerToken = (value) => {
+  const header = String(value || "").trim();
+  if (!header.toLowerCase().startsWith("bearer ")) return "";
+  return header.slice(7).trim();
+};
+
+const timingSafeEqual = (left, right) => {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+};
+
+const authCookieBaseOptions = {
+  secure: AUTH_COOKIE_SECURE,
+  sameSite: AUTH_COOKIE_SAME_SITE,
+  path: "/",
+};
+
+const setAuthCookies = (res, { token, csrfToken }) => {
+  res.cookie(AUTH_COOKIE_NAME, token, {
+    ...authCookieBaseOptions,
+    httpOnly: true,
+    maxAge: AUTH_COOKIE_MAX_AGE_MS,
+  });
+  res.cookie(AUTH_CSRF_COOKIE_NAME, csrfToken, {
+    ...authCookieBaseOptions,
+    httpOnly: false,
+    maxAge: AUTH_COOKIE_MAX_AGE_MS,
+  });
+};
+
+const clearAuthCookies = (res) => {
+  res.clearCookie(AUTH_COOKIE_NAME, authCookieBaseOptions);
+  res.clearCookie(AUTH_CSRF_COOKIE_NAME, authCookieBaseOptions);
+};
 
 const parseRecipients = (value) => {
   if (Array.isArray(value)) {
@@ -1005,23 +1193,146 @@ const maybeSendStatusAlerts = (systemEntries, siteOverview) => {
   );
 };
 
+const createRateLimitMiddleware = ({ scope, windowMs, maxRequests }) => {
+  const buckets = new Map();
+
+  const pruneExpired = (now) => {
+    for (const [key, bucket] of buckets.entries()) {
+      if (now >= bucket.resetAt) {
+        buckets.delete(key);
+      }
+    }
+  };
+
+  return (req, res, next) => {
+    if (req.method === "OPTIONS") {
+      return next();
+    }
+
+    const now = Date.now();
+    const clientKey = req.ip || req.socket?.remoteAddress || "unknown";
+
+    if (!buckets.has(clientKey) && buckets.size >= RATE_LIMIT_BUCKET_LIMIT) {
+      pruneExpired(now);
+      if (!buckets.has(clientKey) && buckets.size >= RATE_LIMIT_BUCKET_LIMIT) {
+        return res.status(429).json({
+          error: "Too many requests",
+          scope,
+        });
+      }
+    }
+
+    const existingBucket = buckets.get(clientKey);
+    const bucket =
+      !existingBucket || now >= existingBucket.resetAt
+        ? { count: 0, resetAt: now + windowMs }
+        : existingBucket;
+
+    bucket.count += 1;
+    buckets.set(clientKey, bucket);
+
+    const remaining = Math.max(maxRequests - bucket.count, 0);
+    const retryAfterSeconds = Math.max(Math.ceil((bucket.resetAt - now) / 1000), 0);
+    const resetAtSeconds = Math.max(Math.ceil(bucket.resetAt / 1000), 0);
+
+    res.setHeader("X-RateLimit-Limit", String(maxRequests));
+    res.setHeader("X-RateLimit-Remaining", String(remaining));
+    res.setHeader("X-RateLimit-Reset", String(resetAtSeconds));
+    res.setHeader("RateLimit-Limit", String(maxRequests));
+    res.setHeader("RateLimit-Remaining", String(remaining));
+    res.setHeader("RateLimit-Reset", String(resetAtSeconds));
+
+    if (bucket.count > maxRequests) {
+      res.setHeader("Retry-After", String(retryAfterSeconds));
+      return res.status(429).json({
+        error: "Too many requests",
+        scope,
+        retryAfterSeconds,
+      });
+    }
+
+    return next();
+  };
+};
+
+const apiRateLimit = createRateLimitMiddleware({
+  scope: "api",
+  windowMs: API_RATE_LIMIT_WINDOW_MS,
+  maxRequests: API_RATE_LIMIT_MAX,
+});
+const authRateLimit = createRateLimitMiddleware({
+  scope: "auth",
+  windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+  maxRequests: AUTH_RATE_LIMIT_MAX,
+});
+const publicBookingRateLimit = createRateLimitMiddleware({
+  scope: "public-bookings",
+  windowMs: PUBLIC_BOOKING_RATE_LIMIT_WINDOW_MS,
+  maxRequests: PUBLIC_BOOKING_RATE_LIMIT_MAX,
+});
+
 if (!jwtSecret) {
   throw new Error("Missing JWT_SECRET in environment config.");
 }
 
-const authMiddleware = (req, res, next) => {
-  const header = (req.headers.authorization || "").trim();
-  if (!header.toLowerCase().startsWith("bearer ")) {
-    return res.status(401).json({ error: "Missing bearer token" });
-  }
-  const token = header.slice(7).trim();
+const verifyTokenPayload = (token) => {
+  if (!token) return null;
   try {
-    const payload = jwt.verify(token, jwtSecret);
-    req.user = payload;
-    next();
+    return jwt.verify(token, jwtSecret);
   } catch {
-    return res.status(401).json({ error: "Invalid or expired token" });
+    return null;
   }
+};
+
+const authMiddleware = (req, res, next) => {
+  const cookieToken = getCookieValue(req, AUTH_COOKIE_NAME);
+  const cookiePayload = verifyTokenPayload(cookieToken);
+  if (cookiePayload) {
+    req.user = cookiePayload;
+    req.authMethod = "cookie";
+    return next();
+  }
+
+  const bearerToken = readBearerToken(req.headers.authorization);
+  const bearerPayload = verifyTokenPayload(bearerToken);
+  if (bearerPayload) {
+    req.user = bearerPayload;
+    req.authMethod = "bearer";
+    return next();
+  }
+
+  return res.status(401).json({ error: "Invalid or expired authentication session" });
+};
+
+const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const CSRF_EXCLUDED_PATHS = [
+  "/auth/login",
+  "/auth/logout",
+  "/auth/forgot-password",
+  "/public/",
+  "/webhooks/",
+];
+
+const csrfMiddleware = (req, res, next) => {
+  if (CSRF_SAFE_METHODS.has(req.method)) {
+    return next();
+  }
+  if (CSRF_EXCLUDED_PATHS.some((path) => req.path.startsWith(path))) {
+    return next();
+  }
+
+  const authCookieToken = getCookieValue(req, AUTH_COOKIE_NAME);
+  if (!authCookieToken) {
+    return next();
+  }
+
+  const csrfCookieToken = getCookieValue(req, AUTH_CSRF_COOKIE_NAME);
+  const csrfHeaderToken = String(req.header("x-csrf-token") || "").trim();
+  if (!csrfCookieToken || !csrfHeaderToken || !timingSafeEqual(csrfCookieToken, csrfHeaderToken)) {
+    return res.status(403).json({ error: "Invalid CSRF token" });
+  }
+
+  return next();
 };
 
 const requireAdmin = (req, res, next) => {
@@ -1031,8 +1342,20 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+const buildToken = (user) => {
+  const payload = {
+    userId: user.id,
+    organizationId: user.organizationId,
+    roleId: user.roleId,
+    roleName: user.role.name,
+    email: user.email,
+  };
+  return jwt.sign(payload, jwtSecret, { expiresIn: "12h" });
+};
+
 app.use(
   cors({
+    credentials: true,
     origin: (origin, callback) => {
       if (!origin || allowAllOrigins) {
         callback(null, true);
@@ -1058,40 +1381,11 @@ app.use((req, res, next) => {
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   next();
 });
-app.use((req, res, next) => {
-  const forwarded = req.headers["x-forwarded-for"];
-  const ip =
-    (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : "") ||
-    req.socket.remoteAddress ||
-    "unknown";
-  const now = Date.now();
-  const bucket = requestBuckets.get(ip) || { count: 0, resetAt: now + rateLimitWindowMs };
-  if (now > bucket.resetAt) {
-    bucket.count = 0;
-    bucket.resetAt = now + rateLimitWindowMs;
-  }
-  bucket.count += 1;
-  requestBuckets.set(ip, bucket);
-  res.setHeader("X-RateLimit-Limit", String(rateLimitMax));
-  res.setHeader("X-RateLimit-Remaining", String(Math.max(rateLimitMax - bucket.count, 0)));
-  res.setHeader("X-RateLimit-Reset", String(bucket.resetAt));
-  if (bucket.count > rateLimitMax) {
-    res.status(429).json({ error: "Too many requests" });
-    return;
-  }
-  next();
-});
-
-const buildToken = (user) => {
-  const payload = {
-    userId: user.id,
-    organizationId: user.organizationId,
-    roleId: user.roleId,
-    roleName: user.role.name,
-    email: user.email,
-  };
-  return jwt.sign(payload, jwtSecret, { expiresIn: "12h" });
-};
+app.use("/api", apiRateLimit);
+app.use("/api/auth/login", authRateLimit);
+app.use("/api/auth/forgot-password", authRateLimit);
+app.use("/api/public/bookings", publicBookingRateLimit);
+app.use("/api", csrfMiddleware);
 
 app.post("/api/auth/login", async (req, res) => {
   const email = (req.body?.email || "").toLowerCase().trim();
@@ -1112,6 +1406,8 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   const token = buildToken(user);
+  const csrfToken = crypto.randomBytes(32).toString("hex");
+  setAuthCookies(res, { token, csrfToken });
   const safeUser = {
     id: user.id,
     email: user.email,
@@ -1121,7 +1417,12 @@ app.post("/api/auth/login", async (req, res) => {
     role: { id: user.role.id, name: user.role.name },
     organizationId: user.organizationId,
   };
-  res.json({ token, user: safeUser });
+  return res.json({ user: safeUser });
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  clearAuthCookies(res);
+  return res.json({ ok: true });
 });
 
 app.post("/api/auth/forgot-password", async (req, res) => {
@@ -1130,7 +1431,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     return res.status(400).json({ error: "Email is required to recover your login." });
   }
   console.info(`Password reset requested for ${email}`);
-  res.json({
+  return res.json({
     message: "If that address exists in our system, we will email you instructions shortly.",
     supportEmail: DEFAULT_ADMIN_EMAIL,
   });
@@ -1185,6 +1486,12 @@ app.post("/api/users", authMiddleware, requireAdmin, async (req, res) => {
   if (!email || !firstName || !lastName || !roleName) {
     return res.status(400).json({ error: "Missing required properties" });
   }
+  const normalizedPassword = typeof password === "string" ? password.trim() : "";
+  if (normalizedPassword.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({
+      error: `password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+    });
+  }
   const normalizedEmail = email.toLowerCase().trim();
   const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
   if (existing) {
@@ -1194,7 +1501,7 @@ app.post("/api/users", authMiddleware, requireAdmin, async (req, res) => {
   if (!role) {
     return res.status(404).json({ error: "Role not found" });
   }
-  const hashed = await bcrypt.hash(password || DEFAULT_ADMIN_PASSWORD, 10);
+  const hashed = await bcrypt.hash(normalizedPassword, 10);
   const user = await prisma.user.create({
     data: {
       email: normalizedEmail,
@@ -3096,6 +3403,7 @@ const fetchRemotiveJobs = async ({ search }) => {
         title: job?.title,
         tags: job?.tags,
       });
+      const safeJobUrl = sanitizeExternalUrl(job?.url);
       return {
         id: `remotive-${job?.id ?? crypto.randomUUID()}`,
         source: "Remotive",
@@ -3103,7 +3411,7 @@ const fetchRemotiveJobs = async ({ search }) => {
         companyName: job?.company_name || "Unknown company",
         location: job?.candidate_required_location || "Remote",
         workType,
-        jobUrl: job?.url || null,
+        jobUrl: safeJobUrl,
         salary: job?.salary || null,
         publishedAt: job?.publication_date || null,
         tags: Array.isArray(job?.tags) ? job.tags : [],
@@ -3146,9 +3454,10 @@ const fetchArbeitnowJobs = async () => {
       const location = job?.remote
         ? "Remote"
         : resolveWeatherText(job?.location, job?.city, job?.country, "Location not specified");
-      const jobUrl =
+      const jobUrlCandidate =
         resolveWeatherText(job?.url, job?.job_url, job?.absolute_url) ||
         (job?.slug ? `https://www.arbeitnow.com/jobs/${job.slug}` : "");
+      const safeJobUrl = sanitizeExternalUrl(jobUrlCandidate);
 
       return {
         id: `arbeitnow-${job?.slug || crypto.randomUUID()}`,
@@ -3157,7 +3466,7 @@ const fetchArbeitnowJobs = async () => {
         companyName: job?.company_name || "Unknown company",
         location,
         workType,
-        jobUrl: jobUrl || null,
+        jobUrl: safeJobUrl,
         salary: null,
         publishedAt: job?.created_at || job?.published_at || null,
         tags: tags.map((tag) => String(tag)),
@@ -3411,7 +3720,7 @@ const serializeBooking = (booking) => ({
   startAt: booking.startAt.toISOString(),
   endAt: booking.endAt.toISOString(),
   location: booking.location,
-  meetingLink: booking.meetingLink,
+  meetingLink: sanitizeExternalUrl(booking.meetingLink),
   status: booking.status,
   source: booking.source,
   attendeeEmail: booking.attendeeEmail,
@@ -3535,7 +3844,7 @@ app.get("/api/public/booking-settings/:orgSlug", async (req, res) => {
   res.json({
     organizationName: organization.name,
     organizationSlug: organization.slug,
-    bookingLink: settings?.bookingLink ?? "",
+    bookingLink: sanitizeExternalUrl(settings?.bookingLink) ?? "",
     defaultLocation: settings?.defaultLocation ?? "",
   });
 });
@@ -3699,7 +4008,7 @@ app.post("/api/public/bookings/:orgSlug", async (req, res) => {
       updatedBooking = await prisma.booking.update({
         where: { id: booking.id },
         data: {
-          meetingLink,
+          meetingLink: sanitizeExternalUrl(meetingLink),
           calendarEventId: eventId,
           calendarProvider: "GOOGLE_CALENDAR",
         },
@@ -3768,7 +4077,7 @@ app.post("/api/bookings", authMiddleware, requireAdmin, async (req, res) => {
         updatedBooking = await prisma.booking.update({
           where: { id: booking.id },
           data: {
-            meetingLink,
+            meetingLink: sanitizeExternalUrl(meetingLink),
             calendarEventId: eventId,
             calendarProvider: "GOOGLE_CALENDAR",
           },
@@ -3883,7 +4192,7 @@ app.patch("/api/bookings/:id", authMiddleware, requireAdmin, async (req, res) =>
         syncedBooking = await prisma.booking.update({
           where: { id: syncedBooking.id },
           data: {
-            meetingLink,
+            meetingLink: sanitizeExternalUrl(meetingLink),
             calendarEventId: eventId,
             calendarProvider: "GOOGLE_CALENDAR",
           },
@@ -3893,7 +4202,7 @@ app.patch("/api/bookings/:id", authMiddleware, requireAdmin, async (req, res) =>
         syncedBooking = await prisma.booking.update({
           where: { id: syncedBooking.id },
           data: {
-            meetingLink,
+            meetingLink: sanitizeExternalUrl(meetingLink),
             calendarEventId: eventId,
             calendarProvider: "GOOGLE_CALENDAR",
           },
@@ -3942,7 +4251,7 @@ app.get("/api/bookings/settings", authMiddleware, requireAdmin, async (req, res)
     where: { organizationId: req.user.organizationId, provider: "GOOGLE_CALENDAR" },
   });
   res.json({
-    bookingLink: settings?.bookingLink ?? "",
+    bookingLink: sanitizeExternalUrl(settings?.bookingLink) ?? "",
     calendarEmail: settings?.calendarEmail ?? "",
     defaultLocation: settings?.defaultLocation ?? "",
     googleConnected: Boolean(integration),
@@ -3952,22 +4261,31 @@ app.get("/api/bookings/settings", authMiddleware, requireAdmin, async (req, res)
 
 app.post("/api/bookings/settings", authMiddleware, requireAdmin, async (req, res) => {
   const { bookingLink, calendarEmail, defaultLocation } = req.body ?? {};
+  const rawBookingLink = typeof bookingLink === "string" ? bookingLink.trim() : "";
+  const normalizedBookingLink = rawBookingLink ? sanitizeExternalUrl(rawBookingLink) : null;
+  const normalizedCalendarEmail =
+    typeof calendarEmail === "string" ? calendarEmail.trim() : "";
+  const normalizedDefaultLocation =
+    typeof defaultLocation === "string" ? defaultLocation.trim() : "";
+  if (rawBookingLink && !normalizedBookingLink) {
+    return res.status(400).json({ error: "bookingLink must be a valid http(s) URL" });
+  }
   const settings = await prisma.bookingSettings.upsert({
     where: { organizationId: req.user.organizationId },
     update: {
-      bookingLink: bookingLink?.trim() || null,
-      calendarEmail: calendarEmail?.trim() || null,
-      defaultLocation: defaultLocation?.trim() || null,
+      bookingLink: normalizedBookingLink,
+      calendarEmail: normalizedCalendarEmail || null,
+      defaultLocation: normalizedDefaultLocation || null,
     },
     create: {
       organizationId: req.user.organizationId,
-      bookingLink: bookingLink?.trim() || null,
-      calendarEmail: calendarEmail?.trim() || null,
-      defaultLocation: defaultLocation?.trim() || null,
+      bookingLink: normalizedBookingLink,
+      calendarEmail: normalizedCalendarEmail || null,
+      defaultLocation: normalizedDefaultLocation || null,
     },
   });
   res.json({
-    bookingLink: settings.bookingLink ?? "",
+    bookingLink: sanitizeExternalUrl(settings.bookingLink) ?? "",
     calendarEmail: settings.calendarEmail ?? "",
     defaultLocation: settings.defaultLocation ?? "",
   });
@@ -4167,9 +4485,11 @@ app.post("/api/webhooks/google-calendar", async (req, res) => {
     return;
   }
 
-  if (integration.channelToken && channelToken && integration.channelToken !== channelToken) {
-    res.status(403).end();
-    return;
+  if (integration.channelToken) {
+    if (!channelToken || integration.channelToken !== channelToken) {
+      res.status(403).end();
+      return;
+    }
   }
 
   res.status(200).end();
@@ -4238,6 +4558,12 @@ const ensureDefaults = async () => {
     where: { organizationId: adminOrganization.id, name: "Admin" },
   });
   if (!adminRole) return;
+  if (!HAS_DEFAULT_ADMIN_PASSWORD) {
+    console.warn(
+      `Skipping default admin seed: DEFAULT_ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters.`
+    );
+    return;
+  }
 
   const adminEmail = DEFAULT_ADMIN_EMAIL.toLowerCase();
   const existingAdmin = await prisma.user.findUnique({ where: { email: adminEmail } });

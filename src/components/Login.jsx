@@ -32,7 +32,10 @@ const Login = ({ theme, onToggleTheme }) => {
       const data = await response.json();
 
       if (response.ok) {
-        localStorage.setItem("token", data.token);
+        if (!data?.user) {
+          throw new Error("Login succeeded but user details were missing.");
+        }
+        localStorage.setItem("token", "cookie-session");
         localStorage.setItem("user", JSON.stringify(data.user));
         navigate("/dashboard");
       } else {
@@ -106,7 +109,7 @@ const Login = ({ theme, onToggleTheme }) => {
           <div className="auth-card__header">
             <h2>Sign in</h2>
             <p className="muted">
-              Use the seeded admin credentials to unlock the KPI dashboard.
+              Use your admin credentials to access the KPI dashboard.
             </p>
           </div>
           {error ? (

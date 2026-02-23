@@ -11,6 +11,7 @@ import {
 import { buildApiUrl } from "../api-url";
 import { formatDateTime } from "../utils/formatters";
 import { getApiErrorMessage, readJsonResponse } from "../utils/http";
+import { getSafeExternalUrl } from "../utils/safeUrl";
 import "./Productivity.css";
 
 const RANGE_OPTIONS = [
@@ -1047,28 +1048,40 @@ const Productivity = () => {
             ) : (
               <div className="productivity-jobs__list">
                 {jobs.length ? (
-                  jobs.map((job) => (
-                    <article className="productivity-job-card" key={job.id}>
-                      <div className="productivity-job-card__meta">
-                        <span className="status-pill is-info">{formatWorkType(job.workType)}</span>
-                        <span className="muted">{job.source}</span>
-                      </div>
-                      <div className="table-strong">{job.title}</div>
-                      <div className="muted">
-                        {job.companyName} • {job.location}
-                      </div>
-                      {job.salary ? <div className="muted">{job.salary}</div> : null}
-                      <div className="productivity-job-card__footer">
-                        <span className="muted">
-                          {job.publishedAt ? formatDateTime(job.publishedAt) : "Recent listing"}
-                        </span>
-                        <a className="button button-ghost" href={job.jobUrl} target="_blank" rel="noreferrer">
-                          <FiExternalLink />
-                          Apply
-                        </a>
-                      </div>
-                    </article>
-                  ))
+                  jobs.map((job) => {
+                    const safeJobUrl = getSafeExternalUrl(job.jobUrl);
+                    return (
+                      <article className="productivity-job-card" key={job.id}>
+                        <div className="productivity-job-card__meta">
+                          <span className="status-pill is-info">{formatWorkType(job.workType)}</span>
+                          <span className="muted">{job.source}</span>
+                        </div>
+                        <div className="table-strong">{job.title}</div>
+                        <div className="muted">
+                          {job.companyName} • {job.location}
+                        </div>
+                        {job.salary ? <div className="muted">{job.salary}</div> : null}
+                        <div className="productivity-job-card__footer">
+                          <span className="muted">
+                            {job.publishedAt ? formatDateTime(job.publishedAt) : "Recent listing"}
+                          </span>
+                          {safeJobUrl ? (
+                            <a
+                              className="button button-ghost"
+                              href={safeJobUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <FiExternalLink />
+                              Apply
+                            </a>
+                          ) : (
+                            <span className="muted">Apply link unavailable</span>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })
                 ) : (
                   <p className="muted">No roles found for this filter yet.</p>
                 )}

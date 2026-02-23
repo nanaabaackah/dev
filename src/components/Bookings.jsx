@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { formatDateTime } from "../utils/formatters";
 import { buildApiUrl } from "../api-url";
 import { getHolidayLabelsForDate, listUpcomingHolidays } from "../utils/holidays";
+import { getSafeExternalUrl } from "../utils/safeUrl";
 import "./Bookings.css";
 
 const STATUS_MAP = {
@@ -109,14 +110,15 @@ const Bookings = () => {
   }, []);
 
   const bookingLinkValue = settings.bookingLink.trim();
+  const safeBookingLink = getSafeExternalUrl(bookingLinkValue);
   const bookingEmailValue = settings.calendarEmail.trim();
   const bookingLocationValue = settings.defaultLocation.trim() || "Location shared after booking";
-  const hasBookingLink = Boolean(bookingLinkValue);
+  const hasBookingLink = Boolean(safeBookingLink);
   const syncStatus = googleConnected ? "Connected" : "Not connected";
   const syncTone = googleConnected ? "success" : "warning";
   const mailSubject = "Book an appointment";
   const mailBody = `Pick a time that works for you: ${
-    bookingLinkValue || "Add your booking link"
+    safeBookingLink || "Add your booking link"
   }\nLocation: ${bookingLocationValue}`;
   const mailtoLink = `mailto:?subject=${encodeURIComponent(
     mailSubject
@@ -158,13 +160,13 @@ const Bookings = () => {
   );
 
   const handleCopyLink = async () => {
-    if (!bookingLinkValue) {
+    if (!safeBookingLink) {
       setCopyLabel("Add link");
       window.setTimeout(() => setCopyLabel("Copy link"), 1600);
       return;
     }
     try {
-      await navigator.clipboard.writeText(bookingLinkValue);
+      await navigator.clipboard.writeText(safeBookingLink);
       setCopyLabel("Copied");
       window.setTimeout(() => setCopyLabel("Copy link"), 1600);
     } catch {
@@ -222,7 +224,11 @@ const Bookings = () => {
       if (!response.ok) {
         throw new Error(payload?.error || "Unable to start Google Calendar setup");
       }
-      window.location.assign(payload.url);
+      const safeOAuthUrl = getSafeExternalUrl(payload?.url);
+      if (!safeOAuthUrl) {
+        throw new Error("Received an invalid Google authorization URL.");
+      }
+      window.location.assign(safeOAuthUrl);
     } catch (error) {
       setStatus({ tone: "error", message: error.message });
     }
@@ -391,6 +397,7 @@ const Bookings = () => {
                 bookings.map((booking) => {
                   const statusConfig = STATUS_MAP[booking.status] || STATUS_MAP.TENTATIVE;
                   const holidayLabels = getHolidayLabelsForDate(new Date(booking.startAt));
+                  const safeMeetingLink = getSafeExternalUrl(booking.meetingLink);
                   return (
                     <div className="table-row is-7" key={booking.id}>
                       <span className="table-strong">
@@ -405,8 +412,8 @@ const Bookings = () => {
                       </span>
                       <span>{formatDuration(booking.startAt, booking.endAt)}</span>
                       <span>
-                        {booking.meetingLink ? (
-                          <a href={booking.meetingLink} target="_blank" rel="noreferrer">
+                        {safeMeetingLink ? (
+                          <a href={safeMeetingLink} target="_blank" rel="noreferrer">
                             Meeting link
                           </a>
                         ) : (
@@ -510,7 +517,7 @@ const Bookings = () => {
             <div className="booking-actions">
               <a
                 className="button button-primary"
-                href={hasBookingLink ? bookingLinkValue : "#"}
+                href={hasBookingLink ? safeBookingLink : "#"}
                 target={hasBookingLink ? "_blank" : undefined}
                 rel={hasBookingLink ? "noreferrer" : undefined}
                 aria-disabled={!hasBookingLink}

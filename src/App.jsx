@@ -38,6 +38,7 @@ import ThemeToggle from "./components/ThemeToggle";
 import Accounting from "./components/Accounting";
 import Productivity from "./components/Productivity";
 import useScrollAnimations from "./hooks/useScrollAnimations";
+import { buildApiUrl } from "./api-url";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", Icon: Category },
@@ -63,7 +64,8 @@ const MOBILE_TAB_ITEMS = [
 
 const PrivateRoute = ({ children }) => {
   const token = localStorage.getItem("token");
-  return token ? children : <Navigate to="/login" />;
+  const user = localStorage.getItem("user");
+  return token && user ? children : <Navigate to="/login" />;
 };
 
 const getInitialTheme = () => {
@@ -137,7 +139,14 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
     };
   }, []);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    try {
+      await fetch(buildApiUrl("/api/auth/logout"), {
+        method: "POST",
+      });
+    } catch {
+      // local cleanup still happens even if network logout fails
+    }
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     navigate("/login");

@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { buildApiUrl } from "../api-url";
 import { formatDateTime } from "../utils/formatters";
 import { buildHolidayMapForDays, getHolidayLabelsForDate, toDateKey } from "../utils/holidays";
+import { getSafeExternalUrl } from "../utils/safeUrl";
 import "./PublicBooking.css";
 
 const DEFAULT_ORG_SLUG = import.meta.env.VITE_DEFAULT_ORG_SLUG || "bynana-portfolio";
@@ -240,6 +241,7 @@ const PublicBooking = () => {
   }, [form.date, days]);
 
   const locationLabel = settings.defaultLocation || "Meeting link sent after booking";
+  const safeMeetingLink = getSafeExternalUrl(confirmation?.meetingLink);
   const isReadyToSubmit = useMemo(() => {
     return (
       form.name.trim() &&
@@ -384,9 +386,9 @@ const PublicBooking = () => {
           <p className="muted">
             {confirmation.title || "Appointment"} · {formatDateTime(confirmation.startAt)}
           </p>
-          <p className="muted">Location: {confirmation.meetingLink || locationLabel}</p>
-          {confirmation.meetingLink ? (
-            <a className="button button-primary" href={confirmation.meetingLink} target="_blank" rel="noreferrer">
+          <p className="muted">Location: {safeMeetingLink || locationLabel}</p>
+          {safeMeetingLink ? (
+            <a className="button button-primary" href={safeMeetingLink} target="_blank" rel="noreferrer">
               Join meeting
             </a>
           ) : null}
