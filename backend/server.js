@@ -1417,7 +1417,7 @@ app.post("/api/auth/login", async (req, res) => {
     role: { id: user.role.id, name: user.role.name },
     organizationId: user.organizationId,
   };
-  return res.json({ user: safeUser });
+  return res.json({ user: safeUser, token });
 });
 
 app.post("/api/auth/logout", (_req, res) => {

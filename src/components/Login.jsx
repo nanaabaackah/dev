@@ -35,7 +35,7 @@ const Login = ({ theme, onToggleTheme }) => {
         if (!data?.user) {
           throw new Error("Login succeeded but user details were missing.");
         }
-        localStorage.setItem("token", "cookie-session");
+        localStorage.setItem("token", data.token);
         localStorage.setItem("user", JSON.stringify(data.user));
         navigate("/dashboard");
       } else {
