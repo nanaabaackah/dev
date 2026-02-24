@@ -106,7 +106,7 @@ const AUTH_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
 );
 const AUTH_RATE_LIMIT_MAX = parsePositiveInt(process.env.AUTH_RATE_LIMIT_MAX, 15, {
   min: 1,
-  max: 1500,
+  max: 500,
 });
 const PUBLIC_BOOKING_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
   process.env.PUBLIC_BOOKING_RATE_LIMIT_WINDOW_MS,
@@ -121,7 +121,7 @@ const PUBLIC_BOOKING_RATE_LIMIT_MAX = parsePositiveInt(
   30,
   {
     min: 1,
-    max: 1500,
+    max: 500,
   }
 );
 const RATE_LIMIT_BUCKET_LIMIT = parsePositiveInt(
