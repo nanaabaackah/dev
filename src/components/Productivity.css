@@ -233,33 +233,23 @@
   }
 
   .productivity-page__columns {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
+    width: 100%;
+    min-width: 0;
   }
 
   .productivity-page__column {
-    display: contents;
+    display: grid;
+    gap: 1rem;
+    width: 100%;
+    min-width: 0;
   }
 
-  .productivity-overview {
-    order: 1;
-  }
-
-  .productivity-todos {
-    order: 2;
-  }
-
-  .productivity-editor {
-    order: 3;
-  }
-
-  .productivity-jobs {
-    order: 4;
-  }
-
-  .productivity-ai {
-    order: 5;
+  .productivity-page__column > .panel {
+    width: 100%;
+    min-width: 0;
   }
 
   .productivity-overview {
