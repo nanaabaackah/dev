@@ -115,16 +115,6 @@ const DEFAULT_PRODUCTIVITY_SUMMARY = {
   entriesLogged: 0,
 };
 
-const buildProductivityState = (entry) => ({
-  entryDate: entry?.entryDate || buildTodayDate(),
-  plannedTasks: String(entry?.plannedTasks ?? DEFAULT_PRODUCTIVITY_STATE.plannedTasks),
-  completedTasks: String(entry?.completedTasks ?? DEFAULT_PRODUCTIVITY_STATE.completedTasks),
-  deepWorkMinutes: String(entry?.deepWorkMinutes ?? DEFAULT_PRODUCTIVITY_STATE.deepWorkMinutes),
-  focusBlocks: String(entry?.focusBlocks ?? DEFAULT_PRODUCTIVITY_STATE.focusBlocks),
-  blockers: String(entry?.blockers ?? DEFAULT_PRODUCTIVITY_STATE.blockers),
-  updatedAt: entry?.updatedAt ?? null,
-});
-
 const buildInvoiceFormFromEntry = (entry = null) => ({
   clientName: entry?.organization?.name || "",
   clientEmail: "",
@@ -167,11 +157,7 @@ const Accounting = () => {
   const [actionNotice, setActionNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState("");
-  const [productivityState, setProductivityState] = useState(() => buildProductivityState());
-  const [productivitySummary, setProductivitySummary] = useState(DEFAULT_PRODUCTIVITY_SUMMARY);
   const [productivityNotice, setProductivityNotice] = useState("");
-  const [productivityError, setProductivityError] = useState("");
-  const [isProductivitySaving, setIsProductivitySaving] = useState(false);
   const [invoiceComposer, setInvoiceComposer] = useState(null);
   const [invoiceForm, setInvoiceForm] = useState(() => buildInvoiceFormFromEntry());
   const [invoiceError, setInvoiceError] = useState("");
@@ -378,42 +364,6 @@ const Accounting = () => {
     loadEntries();
   }, [loadEntries]);
 
-  const loadProductivity = useCallback(
-    async ({ silent = false } = {}) => {
-      const token = localStorage.getItem("token");
-      if (!token) {
-        if (!silent) {
-          setProductivityError("Missing session. Please sign in again.");
-        }
-        return;
-      }
-
-      if (!silent) {
-        setProductivityError("");
-      }
-
-      try {
-        const query = new URLSearchParams({ range: "14d" });
-        const response = await fetch(buildApiUrl(`/api/productivity/entries?${query.toString()}`), {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.error || "Unable to load productivity data");
-        }
-        setProductivitySummary(payload?.summary || DEFAULT_PRODUCTIVITY_SUMMARY);
-        setProductivityState(buildProductivityState(payload?.activeEntry));
-      } catch (productivityLoadError) {
-        setProductivityError(productivityLoadError.message || "Unable to load productivity data");
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    loadProductivity();
-  }, [loadProductivity]);
-
   useEffect(() => {
     if (!productivityNotice) return undefined;
     const timeout = window.setTimeout(() => {
@@ -462,32 +412,6 @@ const Accounting = () => {
     [summary]
   );
 
-  const productivityMetrics = useMemo(() => {
-    const plannedTasks = Math.max(Number(productivityState.plannedTasks) || 0, 0);
-    const completedTasks = Math.max(Number(productivityState.completedTasks) || 0, 0);
-    const deepWorkMinutes = Math.max(Number(productivityState.deepWorkMinutes) || 0, 0);
-    const focusBlocks = Math.max(Number(productivityState.focusBlocks) || 0, 0);
-    const completionRate = plannedTasks ? Math.round((completedTasks / plannedTasks) * 100) : 0;
-    const focusScore = Math.min(
-      100,
-      Math.round(completionRate * 0.5 + Math.min(deepWorkMinutes, 240) * 0.2 + focusBlocks * 8)
-    );
-
-    let momentumLabel = "Start a focus block";
-    if (completionRate >= 80 && deepWorkMinutes >= 90) momentumLabel = "Strong momentum";
-    else if (completionRate >= 60 || deepWorkMinutes >= 60) momentumLabel = "On track";
-
-    return {
-      plannedTasks,
-      completedTasks,
-      deepWorkMinutes,
-      focusBlocks,
-      completionRate,
-      focusScore,
-      momentumLabel,
-    };
-  }, [productivityState]);
-
   const invoiceTotals = useMemo(
     () =>
       calculateInvoiceTotals({
@@ -497,66 +421,6 @@ const Accounting = () => {
       }),
     [invoiceForm.lineItems, invoiceForm.taxRate, invoiceForm.discount]
   );
-
-  const handleProductivityField = (field, value) => {
-    setProductivityState((prev) => ({
-      ...prev,
-      [field]: value,
-      updatedAt: prev.updatedAt,
-    }));
-  };
-
-  const bumpProductivityMetric = (field, amount) => {
-    setProductivityState((prev) => {
-      const current = Math.max(Number(prev[field]) || 0, 0);
-      return {
-        ...prev,
-        [field]: String(Math.max(current + amount, 0)),
-      };
-    });
-  };
-
-  const handleSaveProductivity = async () => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setProductivityError("Missing session. Please sign in again.");
-      return;
-    }
-
-    const payload = {
-      entryDate: productivityState.entryDate || buildTodayDate(),
-      plannedTasks: Number(productivityState.plannedTasks || 0),
-      completedTasks: Number(productivityState.completedTasks || 0),
-      deepWorkMinutes: Number(productivityState.deepWorkMinutes || 0),
-      focusBlocks: Number(productivityState.focusBlocks || 0),
-      blockers: productivityState.blockers,
-    };
-
-    setIsProductivitySaving(true);
-    setProductivityError("");
-
-    try {
-      const response = await fetch(buildApiUrl("/api/productivity/entries"), {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result?.error || "Unable to save productivity data");
-      }
-      setProductivityState(buildProductivityState(result));
-      setProductivityNotice("Productivity tracker saved.");
-      loadProductivity({ silent: true });
-    } catch (saveError) {
-      setProductivityError(saveError.message || "Unable to save productivity data");
-    } finally {
-      setIsProductivitySaving(false);
-    }
-  };
 
   const updateInvoiceField = (field, value) => {
     setInvoiceForm((prev) => ({ ...prev, [field]: value }));
@@ -814,15 +678,6 @@ const Accounting = () => {
     });
     return base;
   }, [sortedEntries]);
-
-  const productivitySavedLabel = productivityState.updatedAt
-    ? new Date(productivityState.updatedAt).toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      })
-    : "Not saved yet";
 
   const renderLedgerRow = (entry) => {
     const dateLabel = entry.status === "PAID" ? "Paid date" : "Due date";
@@ -1410,162 +1265,6 @@ const Accounting = () => {
           </article>
         </div>
       ) : null}
-
-      <article className="panel">
-        <div className="panel-header">
-          <div>
-            <h3>Productivity tracker</h3>
-            <p className="muted">Track daily execution alongside accounting output.</p>
-          </div>
-          <div className="header-actions">
-            <span className="status-pill is-info">
-              {productivitySummary.momentumLabel || productivityMetrics.momentumLabel}
-            </span>
-            <Link className="button button-ghost" to="/productivity">
-              Open module
-            </Link>
-          </div>
-        </div>
-
-        {productivityError ? (
-          <div className="notice is-error" role="alert">
-            {productivityError}
-          </div>
-        ) : null}
-
-        <div className="productivity-grid">
-          <div className="productivity-card">
-            <span className="productivity-card__meta">
-              <TaskSquare size={14} variant="Linear" />
-              Completion rate
-            </span>
-            <div className="kpi-value">{productivityMetrics.completionRate}%</div>
-            <span className="muted">
-              {productivityMetrics.completedTasks}/{productivityMetrics.plannedTasks} tasks
-            </span>
-          </div>
-          <div className="productivity-card">
-            <span className="productivity-card__meta">
-              <Timer1 size={14} variant="Linear" />
-              Deep work
-            </span>
-            <div className="kpi-value">{productivityMetrics.deepWorkMinutes} min</div>
-            <span className="muted">{productivityMetrics.focusBlocks} focus blocks</span>
-          </div>
-          <div className="productivity-card">
-            <span className="productivity-card__meta">
-              <ReceiptItem size={14} variant="Linear" />
-              Focus score
-            </span>
-            <div className="kpi-value">{productivityMetrics.focusScore}</div>
-            <span className="muted">
-              Last saved {productivitySavedLabel} • {productivitySummary.streakDays || 0} day streak
-            </span>
-          </div>
-        </div>
-
-        <div className="page-grid">
-          <div className="stack">
-            <label className="form-field">
-              <span>Planned tasks</span>
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={productivityState.plannedTasks}
-                onChange={(event) => handleProductivityField("plannedTasks", event.target.value)}
-              />
-            </label>
-            <label className="form-field">
-              <span>Completed tasks</span>
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={productivityState.completedTasks}
-                onChange={(event) => handleProductivityField("completedTasks", event.target.value)}
-              />
-            </label>
-            <label className="form-field">
-              <span>Deep work minutes</span>
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={productivityState.deepWorkMinutes}
-                onChange={(event) => handleProductivityField("deepWorkMinutes", event.target.value)}
-              />
-            </label>
-            <label className="form-field">
-              <span>Blockers / notes</span>
-              <textarea
-                className="input"
-                value={productivityState.blockers}
-                onChange={(event) => handleProductivityField("blockers", event.target.value)}
-                placeholder="Capture blockers, follow-ups, and context"
-              />
-            </label>
-          </div>
-
-          <div className="stack">
-            <div className="invoice-summary">
-              <div className="invoice-summary__row">
-                <span>Tasks remaining</span>
-                <span>
-                  {Math.max(
-                    productivityMetrics.plannedTasks - productivityMetrics.completedTasks,
-                    0
-                  )}
-                </span>
-              </div>
-              <div className="invoice-summary__row">
-                <span>Focus blocks</span>
-                <span>{productivityMetrics.focusBlocks}</span>
-              </div>
-              <div className="invoice-summary__row is-total">
-                <span>Execution score</span>
-                <span>{productivityMetrics.focusScore}/100</span>
-              </div>
-            </div>
-            <div className="productivity-quick-actions">
-              <button
-                className="button button-ghost"
-                type="button"
-                onClick={() => bumpProductivityMetric("deepWorkMinutes", 25)}
-              >
-                +25 min focus
-              </button>
-              <button
-                className="button button-ghost"
-                type="button"
-                onClick={() => bumpProductivityMetric("completedTasks", 1)}
-              >
-                +1 task done
-              </button>
-              <button
-                className="button button-ghost"
-                type="button"
-                onClick={() => bumpProductivityMetric("focusBlocks", 1)}
-              >
-                +1 focus block
-              </button>
-            </div>
-            <button
-              className="button button-primary"
-              type="button"
-              onClick={handleSaveProductivity}
-              disabled={isProductivitySaving}
-            >
-              {isProductivitySaving ? "Saving..." : "Save productivity update"}
-            </button>
-            {productivityNotice ? (
-              <div className="notice is-success" role="status">
-                {productivityNotice}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </article>
 
       <div className="panel-grid">
         <article className="panel">
