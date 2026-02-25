@@ -688,7 +688,10 @@ const Accounting = () => {
     const organizationLabel = entry.organization?.name ? `Org: ${entry.organization.name}` : null;
     const canManage = entry.source === "MANUAL";
     return (
-      <div className="table-row is-7" key={entry.id}>
+      <div
+        className={`table-row is-7${openActionId === entry.id ? " is-menu-open" : ""}`}
+        key={entry.id}
+      >
         <span className="table-strong">{entry.id}</span>
         <div>
           <div className="table-strong">{entry.serviceName}</div>

@@ -753,6 +753,11 @@ body.nav-open .mobile-tabbar {
   padding: 0.7rem 0;
   border-bottom: 1px solid var(--border);
   font-size: 0.9rem;
+  position: relative;
+}
+
+.table-row.is-menu-open {
+  z-index: 8;
 }
 
 .table-row.is-7 {
@@ -767,6 +772,18 @@ body.nav-open .mobile-tabbar {
 
 .table-row.is-7 > .row-actions {
   justify-self: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  row-gap: 0.45rem;
+}
+
+.table-row.is-7 > .row-actions .row-actions__menu {
+  position: static;
+  right: auto;
+  top: auto;
+  min-width: min(220px, 100%);
+  width: min(240px, 100%);
+  flex-basis: 100%;
 }
 
 .table-row.is-7.table-head > span:nth-child(5),
