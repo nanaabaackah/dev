@@ -43,6 +43,10 @@ const normalizeSameSite = (value, fallback = "lax") => {
   return fallback;
 };
 
+const isHttpStatusCode = (value) => Number.isInteger(value) && value >= 400 && value <= 599;
+const PRISMA_DB_UNAVAILABLE_CODES = new Set(["P1001", "P1002", "P1008", "P1017"]);
+const PRISMA_SCHEMA_MISMATCH_CODES = new Set(["P2021", "P2022"]);
+
 const app = express();
 const trustProxyHops = parsePositiveInt(process.env.TRUST_PROXY_HOPS, 1, {
   min: 1,
@@ -60,6 +64,10 @@ const reebsDatabaseUrl = process.env.REEBS_DATABASE_URL;
 const faakoDatabaseUrl = process.env.FAAKO_DATABASE_URL;
 const normalizeOrigin = (origin) => origin.replace(/\/$/, "");
 const isProduction = process.env.NODE_ENV === "production";
+const ALLOW_START_WITHOUT_DATABASE = parseEnvBoolean(
+  process.env.ALLOW_START_WITHOUT_DATABASE,
+  !isProduction
+);
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map((origin) => normalizeOrigin(origin.trim()))
@@ -1690,6 +1698,74 @@ const buildToken = (user) => {
     email: user.email,
   };
   return jwt.sign(payload, jwtSecret, { expiresIn: "12h" });
+};
+
+const isPrismaErrorInstance = (error, className) => {
+  if (!error || !className) return false;
+  const ErrorClass = prismaPkg?.[className];
+  return Boolean(ErrorClass && error instanceof ErrorClass);
+};
+
+const classifyApiError = (error) => {
+  if (error?.message === "Not allowed by CORS") {
+    return { status: 403, message: "Not allowed by CORS", code: "CORS_DENIED" };
+  }
+
+  if (error?.type === "entity.parse.failed") {
+    return { status: 400, message: "Malformed JSON body.", code: "BAD_JSON" };
+  }
+
+  const prismaCode = typeof error?.code === "string" ? error.code : null;
+
+  if (
+    prismaCode &&
+    (PRISMA_DB_UNAVAILABLE_CODES.has(prismaCode) ||
+      isPrismaErrorInstance(error, "PrismaClientInitializationError"))
+  ) {
+    return {
+      status: 503,
+      message: "Database is unavailable. Check DATABASE_URL/network and try again.",
+      code: prismaCode || "PRISMA_INIT",
+    };
+  }
+
+  if (prismaCode && PRISMA_SCHEMA_MISMATCH_CODES.has(prismaCode)) {
+    return {
+      status: 503,
+      message: "Database schema is out of date. Run `prisma migrate deploy` and restart the API.",
+      code: prismaCode,
+    };
+  }
+
+  if (prismaCode === "P2002") {
+    return {
+      status: 409,
+      message: "That record conflicts with an existing unique value.",
+      code: prismaCode,
+    };
+  }
+
+  if (isPrismaErrorInstance(error, "PrismaClientValidationError")) {
+    return {
+      status: 400,
+      message: "Invalid request payload for this operation.",
+      code: "PRISMA_VALIDATION",
+    };
+  }
+
+  const status = isHttpStatusCode(error?.status)
+    ? error.status
+    : isHttpStatusCode(error?.statusCode)
+      ? error.statusCode
+      : 500;
+  const message =
+    status >= 500
+      ? "Unexpected server error."
+      : typeof error?.message === "string" && error.message.trim()
+        ? error.message.trim()
+        : "Request failed.";
+
+  return { status, message, code: prismaCode || null };
 };
 
 app.use(
@@ -5368,12 +5444,26 @@ app.use("/api", (req, res) => {
   });
 });
 
-app.use((err, _req, res, next) => {
-  if (err?.message === "Not allowed by CORS") {
-    res.status(403).json({ error: "Not allowed by CORS" });
+app.use((err, req, res, _next) => {
+  if (res.headersSent) return;
+
+  const isApiRequest = String(req?.originalUrl || "").startsWith("/api");
+  const { status, message, code } = classifyApiError(err);
+
+  if (status >= 500) {
+    console.error(`Unhandled API error: ${req.method} ${req.originalUrl}`, err);
+  }
+
+  if (isApiRequest) {
+    const payload = { error: message };
+    if (!isProduction && code) {
+      payload.code = code;
+    }
+    res.status(status).json(payload);
     return;
   }
-  next(err);
+
+  res.status(status).send(status >= 500 ? "Internal Server Error" : message);
 });
 
 const ensureDefaults = async () => {
@@ -5453,12 +5543,30 @@ const ensureDefaults = async () => {
 };
 
 const start = async () => {
-  await ensureDefaults();
+  let databaseReady = true;
+  try {
+    await ensureDefaults();
+  } catch (error) {
+    const { status, message, code } = classifyApiError(error);
+    const codeSuffix = code ? ` (${code})` : "";
+    if (ALLOW_START_WITHOUT_DATABASE && status === 503) {
+      databaseReady = false;
+      console.error(`Startup seed skipped: ${message}${codeSuffix}`);
+    } else {
+      throw error;
+    }
+  }
+
   app.listen(port, () => {
     console.log(`API server listening on http://localhost:${port}`);
   });
-  scheduleNightlyGoogleSync();
-  scheduleWeeklyReportEmail();
+
+  if (databaseReady) {
+    scheduleNightlyGoogleSync();
+    scheduleWeeklyReportEmail();
+  } else {
+    console.warn("Background jobs are disabled until database connectivity is restored.");
+  }
 };
 
 start().catch((error) => {
