@@ -232,7 +232,6 @@ const SITE_PAGES = [
     baseUrl: "https://portal.reebspartythemes.com",
     pages: [
       { label: "Admin dashboard", path: "/admin" },
-      { label: "Inventory", path: "/admin/inventory" },
       { label: "CRM", path: "/admin/crm" },
       { label: "Customers", path: "/admin/customers" },
       { label: "Orders", path: "/admin/orders" },
@@ -874,29 +873,19 @@ const fetchErpMetrics = async (poolInstance, label) => {
   if (!poolInstance) {
     return {
       organizations: 0,
-      users: 0,
-      inventoryItems: 0,
       status: "not_configured",
     };
   }
   try {
-    const [orgsResult, usersResult, inventoryResult] = await Promise.all([
-      poolInstance.query('SELECT COUNT(*)::int AS count FROM "organization"'),
-      poolInstance.query('SELECT COUNT(*)::int AS count FROM "user"'),
-      poolInstance.query('SELECT COUNT(*)::int AS count FROM "product"'),
-    ]);
+    const orgsResult = await poolInstance.query('SELECT COUNT(*)::int AS count FROM "organization"');
     return {
       organizations: orgsResult.rows[0]?.count ?? 0,
-      users: usersResult.rows[0]?.count ?? 0,
-      inventoryItems: inventoryResult.rows[0]?.count ?? 0,
       status: "ok",
     };
   } catch (error) {
     console.warn(`${label} KPI query failed`, error);
     return {
       organizations: 0,
-      users: 0,
-      inventoryItems: 0,
       status: "error",
     };
   }
@@ -950,6 +939,40 @@ const FAAKO_ORG_NAME = process.env.FAAKO_ORG_NAME ?? "Faako";
 const FAAKO_ORG_SLUG = process.env.FAAKO_ORG_SLUG ?? "faako";
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ?? "dev@nanaabaackah.com";
 const ALERT_COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS ?? 15 * 60 * 1000);
+const WEEKLY_REPORT_EMAIL_ENABLED = parseEnvBoolean(
+  process.env.WEEKLY_REPORT_EMAIL_ENABLED,
+  true
+);
+const WEEKLY_REPORT_DAY_UTC = parsePositiveInt(
+  process.env.WEEKLY_REPORT_DAY_UTC ?? process.env.WEEKLY_REPORT_DAY,
+  1,
+  {
+    min: 0,
+    max: 6,
+  }
+);
+const WEEKLY_REPORT_HOUR_UTC = parsePositiveInt(
+  process.env.WEEKLY_REPORT_HOUR_UTC ?? process.env.WEEKLY_REPORT_HOUR,
+  9,
+  {
+    min: 0,
+    max: 23,
+  }
+);
+const WEEKLY_REPORT_MINUTE_UTC = parsePositiveInt(
+  process.env.WEEKLY_REPORT_MINUTE_UTC ?? process.env.WEEKLY_REPORT_MINUTE,
+  0,
+  {
+    min: 0,
+    max: 59,
+  }
+);
+const WEEKLY_REPORT_EMAIL_RECIPIENTS_RAW =
+  process.env.WEEKLY_REPORT_EMAIL_RECIPIENTS ?? DEFAULT_ADMIN_EMAIL;
+const WEEKLY_REPORT_FROM_EMAIL_RAW =
+  process.env.WEEKLY_REPORT_FROM_EMAIL ??
+  process.env.ALERT_FROM_EMAIL ??
+  DEFAULT_ADMIN_EMAIL;
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 const coerceBoolean = (value, fallback = false) => {
@@ -1061,6 +1084,30 @@ const parseRecipients = (value) => {
     .filter((item) => EMAIL_PATTERN.test(item));
 };
 
+const WEEKDAY_LABELS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+const weeklyReportRecipients = (() => {
+  const recipients = parseRecipients(WEEKLY_REPORT_EMAIL_RECIPIENTS_RAW);
+  return recipients.length ? recipients : parseRecipients(DEFAULT_ADMIN_EMAIL);
+})();
+
+const weeklyReportFromEmail =
+  String(WEEKLY_REPORT_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+
+const weeklyReportScheduleLabel = `Every ${
+  WEEKDAY_LABELS[WEEKLY_REPORT_DAY_UTC]
+} at ${String(WEEKLY_REPORT_HOUR_UTC).padStart(2, "0")}:${String(
+  WEEKLY_REPORT_MINUTE_UTC
+).padStart(2, "0")} UTC`;
+
 const normalizeAlertPreferences = (input = {}, base = {}) => {
   const emailRecipients = parseRecipients(
     input.emailRecipients ?? base.emailRecipients ?? DEFAULT_ADMIN_EMAIL
@@ -1143,13 +1190,27 @@ const buildAlertEmailContent = (changes) => {
   return { text, html };
 };
 
-const sendAlertEmail = async ({ subject, text, html, recipients }) => {
+const sendEmail = async ({ fromEmail, recipients, subject, text, html }) => {
   if (!resend) {
     throw new Error("RESEND_API_KEY is not configured");
   }
-  const result = await resend.emails.send({
-    from: alertPreferences.fromEmail,
-    to: recipients,
+  const normalizedRecipients = parseRecipients(recipients);
+  if (!normalizedRecipients.length) {
+    throw new Error("No valid email recipients configured");
+  }
+  return resend.emails.send({
+    from: String(fromEmail || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL,
+    to: normalizedRecipients,
+    subject,
+    text,
+    html,
+  });
+};
+
+const sendAlertEmail = async ({ subject, text, html, recipients }) => {
+  const result = await sendEmail({
+    fromEmail: alertPreferences.fromEmail,
+    recipients,
     subject,
     text,
     html,
@@ -1191,6 +1252,284 @@ const maybeSendStatusAlerts = (systemEntries, siteOverview) => {
       console.error("Alert email failed", error);
     }
   );
+};
+
+const weeklyReportState = {
+  lastSentAt: null,
+  lastScheduledFor: null,
+};
+
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const formatReportNumber = (value) => {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount)) return "0";
+  return amount.toLocaleString("en-US");
+};
+
+const buildWeeklyReportSnapshot = async () => {
+  const now = new Date();
+  const portfolioOrgs = await prisma.organization.count();
+
+  const reebsMetrics = await fetchErpMetrics(reebsPool, "Reebs");
+
+  let faakoOrgs = 0;
+  let faakoStatus = faakoPool ? "ok" : "not_configured";
+  if (faakoPool) {
+    try {
+      const orgsResult = await resolveTableCount(faakoPool, ["Organization", "organization"]);
+      faakoOrgs = orgsResult.count ?? 0;
+      if (!orgsResult.qualifiedName) {
+        faakoStatus = "error";
+      }
+    } catch (error) {
+      console.warn("Faako KPI query failed", error);
+      faakoStatus = "error";
+    }
+  }
+
+  let siteStatusPayload = null;
+  try {
+    const siteStatus = await getSiteStatus();
+    siteStatusPayload = siteStatus?.data ?? buildSiteStatusFallback("unknown");
+  } catch (error) {
+    console.warn("Weekly report site status check failed", error);
+    siteStatusPayload = buildSiteStatusFallback("unknown");
+  }
+
+  const siteOverview = (siteStatusPayload ?? []).map((site) => ({
+    id: site.id,
+    title: site.title,
+    aggregateStatus: getAggregateStatus(site.pages ?? []),
+  }));
+  const totalSites = siteOverview.length;
+  const onlineSites = siteOverview.filter((site) => site.aggregateStatus === "online").length;
+  const degradedSites = siteOverview.filter((site) => site.aggregateStatus === "degraded").length;
+  const offlineSites = siteOverview.filter((site) => site.aggregateStatus === "offline").length;
+
+  const weekAhead = new Date(now);
+  weekAhead.setDate(weekAhead.getDate() + 7);
+
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const endOfToday = new Date(startOfToday);
+  endOfToday.setDate(endOfToday.getDate() + 1);
+
+  const weekRange = buildRollingRange(7);
+  const [
+    appointmentsToday,
+    appointmentsNext7Days,
+    pendingPayables,
+    overduePayables,
+    paidRevenueGhs,
+  ] = await Promise.all([
+    prisma.booking.count({
+      where: {
+        status: { not: "CANCELED" },
+        startAt: { gte: startOfToday, lt: endOfToday },
+      },
+    }),
+    prisma.booking.count({
+      where: {
+        status: { not: "CANCELED" },
+        startAt: { gte: now, lte: weekAhead },
+      },
+    }),
+    prisma.accountingEntry.count({
+      where: {
+        status: { in: ["PENDING", "SCHEDULED"] },
+        archivedAt: null,
+      },
+    }),
+    prisma.accountingEntry.count({
+      where: {
+        status: "OVERDUE",
+        archivedAt: null,
+      },
+    }),
+    sumPaidRevenueGhs({ start: weekRange.start, end: weekRange.end }),
+  ]);
+
+  return {
+    generatedAt: now.toISOString(),
+    schedule: weeklyReportScheduleLabel,
+    recipients: weeklyReportRecipients,
+    totals: {
+      organizations: portfolioOrgs + reebsMetrics.organizations + faakoOrgs,
+    },
+    portfolio: {
+      organizations: portfolioOrgs,
+    },
+    reebs: {
+      organizations: reebsMetrics.organizations,
+      status: reebsMetrics.status,
+    },
+    faako: {
+      organizations: faakoOrgs,
+      status: faakoStatus,
+    },
+    appointments: {
+      today: appointmentsToday,
+      next7Days: appointmentsNext7Days,
+    },
+    accounting: {
+      pendingPayables,
+      overduePayables,
+      paidRevenueGhsLast7Days: Math.round((paidRevenueGhs || 0) * 100) / 100,
+    },
+    siteHealth: {
+      totalSites,
+      onlineSites,
+      degradedSites,
+      offlineSites,
+    },
+  };
+};
+
+const buildWeeklyReportEmailContent = (snapshot) => {
+  const rows = [
+    ["Generated at", snapshot.generatedAt],
+    ["Schedule", snapshot.schedule],
+    ["Total organizations", formatReportNumber(snapshot.totals.organizations)],
+    ["By Nana organizations", formatReportNumber(snapshot.portfolio.organizations)],
+    ["Reebs organizations", formatReportNumber(snapshot.reebs.organizations)],
+    ["Faako organizations", formatReportNumber(snapshot.faako.organizations)],
+    ["Appointments today", formatReportNumber(snapshot.appointments.today)],
+    ["Upcoming appointments (7 days)", formatReportNumber(snapshot.appointments.next7Days)],
+    ["Pending payables", formatReportNumber(snapshot.accounting.pendingPayables)],
+    ["Overdue payables", formatReportNumber(snapshot.accounting.overduePayables)],
+    [
+      "Paid revenue (GHS, last 7 days)",
+      Number(snapshot.accounting.paidRevenueGhsLast7Days || 0).toFixed(2),
+    ],
+    [
+      "Site health",
+      `${snapshot.siteHealth.onlineSites}/${snapshot.siteHealth.totalSites} online • ${snapshot.siteHealth.degradedSites} degraded • ${snapshot.siteHealth.offlineSites} offline`,
+    ],
+  ];
+
+  const text = [
+    "Dev KPI weekly report",
+    `Recipients: ${snapshot.recipients.join(", ")}`,
+    "",
+    ...rows.map(([label, value]) => `${label}: ${value}`),
+    "",
+    `Generated at ${snapshot.generatedAt}`,
+  ].join("\n");
+
+  const htmlRows = rows
+    .map(
+      ([label, value]) =>
+        `<tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>${escapeHtml(
+          label
+        )}</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(
+          value
+        )}</td></tr>`
+    )
+    .join("");
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#2d2d2d;">
+      <p><strong>Dev KPI weekly report</strong></p>
+      <p>Recipients: ${escapeHtml(snapshot.recipients.join(", "))}</p>
+      <table style="border-collapse:collapse;border:1px solid #d0d0c8;">
+        <tbody>
+          ${htmlRows}
+        </tbody>
+      </table>
+      <p style="margin-top:14px;">Generated at ${escapeHtml(snapshot.generatedAt)}</p>
+    </div>
+  `.trim();
+
+  const subjectDate = snapshot.generatedAt.slice(0, 10);
+  return {
+    subject: `Weekly KPI rollup • ${subjectDate}`,
+    text,
+    html,
+  };
+};
+
+const runWeeklyReportEmail = async () => {
+  if (!WEEKLY_REPORT_EMAIL_ENABLED) return;
+  if (!weeklyReportRecipients.length) {
+    console.warn("Weekly KPI report email skipped: no recipients configured.");
+    return;
+  }
+  if (!EMAIL_PATTERN.test(weeklyReportFromEmail)) {
+    console.warn("Weekly KPI report email skipped: invalid from email configuration.");
+    return;
+  }
+
+  try {
+    const snapshot = await buildWeeklyReportSnapshot();
+    const { subject, text, html } = buildWeeklyReportEmailContent(snapshot);
+    await sendEmail({
+      fromEmail: weeklyReportFromEmail,
+      recipients: weeklyReportRecipients,
+      subject,
+      text,
+      html,
+    });
+    weeklyReportState.lastSentAt = new Date().toISOString();
+    console.info(
+      `Weekly KPI report sent (${weeklyReportScheduleLabel}) -> ${weeklyReportRecipients.join(
+        ", "
+      )}`
+    );
+  } catch (error) {
+    console.error("Weekly KPI report email failed", error);
+  }
+};
+
+const getNextWeeklyReportDateUtc = (fromDate = new Date()) => {
+  const now = new Date(fromDate);
+  const next = new Date(now);
+  next.setUTCHours(WEEKLY_REPORT_HOUR_UTC, WEEKLY_REPORT_MINUTE_UTC, 0, 0);
+
+  const dayOffset = (WEEKLY_REPORT_DAY_UTC - next.getUTCDay() + 7) % 7;
+  next.setUTCDate(next.getUTCDate() + dayOffset);
+
+  if (next <= now) {
+    next.setUTCDate(next.getUTCDate() + 7);
+  }
+
+  return next;
+};
+
+const scheduleWeeklyReportEmail = () => {
+  if (!WEEKLY_REPORT_EMAIL_ENABLED) return;
+  if (!resend) {
+    console.warn("Weekly KPI report scheduler skipped: RESEND_API_KEY is not configured.");
+    return;
+  }
+  if (!weeklyReportRecipients.length) {
+    console.warn("Weekly KPI report scheduler skipped: no recipients configured.");
+    return;
+  }
+
+  const scheduleNext = () => {
+    const nextRun = getNextWeeklyReportDateUtc();
+    const delay = Math.max(nextRun.getTime() - Date.now(), 0);
+    weeklyReportState.lastScheduledFor = nextRun.toISOString();
+
+    setTimeout(async () => {
+      await runWeeklyReportEmail();
+      scheduleNext();
+    }, delay);
+  };
+
+  console.info(
+    `Weekly KPI report scheduler active: ${weeklyReportScheduleLabel} -> ${weeklyReportRecipients.join(
+      ", "
+    )}`
+  );
+  scheduleNext();
 };
 
 const createRateLimitMiddleware = ({ scope, windowMs, maxRequests }) => {
@@ -1456,21 +1795,48 @@ app.get("/api/users/me", authMiddleware, async (req, res) => {
   });
 });
 
-app.get("/api/users", authMiddleware, requireAdmin, async (req, res) => {
-  const users = await prisma.user.findMany({
+app.patch("/api/users/me", authMiddleware, async (req, res) => {
+  const hasFirstName = req.body?.firstName !== undefined;
+  const hasLastName = req.body?.lastName !== undefined;
+  if (!hasFirstName && !hasLastName) {
+    return res.status(400).json({ error: "Provide firstName or lastName to update profile." });
+  }
+
+  const normalizeName = (value) => (typeof value === "string" ? value.trim() : "");
+
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.userId },
     include: { role: true },
-    orderBy: { createdAt: "desc" },
   });
-  res.json(
-    users.map((user) => ({
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      fullName: user.fullName,
-      role: { id: user.role.id, name: user.role.name },
-    }))
-  );
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  const nextFirstName = hasFirstName ? normalizeName(req.body.firstName) : user.firstName;
+  const nextLastName = hasLastName ? normalizeName(req.body.lastName) : user.lastName;
+  if (!nextFirstName || !nextLastName) {
+    return res.status(400).json({ error: "First name and last name are required." });
+  }
+
+  const nextFullName = `${nextFirstName} ${nextLastName}`.trim();
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      firstName: nextFirstName,
+      lastName: nextLastName,
+      fullName: nextFullName,
+    },
+    include: { role: true },
+  });
+
+  return res.json({
+    id: updated.id,
+    firstName: updated.firstName,
+    lastName: updated.lastName,
+    fullName: updated.fullName,
+    email: updated.email,
+    role: { id: updated.role.id, name: updated.role.name },
+  });
 });
 
 app.get("/api/organizations", authMiddleware, requireAdmin, async (req, res) => {
@@ -1479,46 +1845,6 @@ app.get("/api/organizations", authMiddleware, requireAdmin, async (req, res) => 
     orderBy: { name: "asc" },
   });
   res.json(organizations);
-});
-
-app.post("/api/users", authMiddleware, requireAdmin, async (req, res) => {
-  const { email, firstName, lastName, roleName, password } = req.body;
-  if (!email || !firstName || !lastName || !roleName) {
-    return res.status(400).json({ error: "Missing required properties" });
-  }
-  const normalizedPassword = typeof password === "string" ? password.trim() : "";
-  if (normalizedPassword.length < MIN_PASSWORD_LENGTH) {
-    return res.status(400).json({
-      error: `password must be at least ${MIN_PASSWORD_LENGTH} characters`,
-    });
-  }
-  const normalizedEmail = email.toLowerCase().trim();
-  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  if (existing) {
-    return res.status(400).json({ error: "Email is already registered" });
-  }
-  const role = await prisma.role.findFirst({ where: { name: roleName } });
-  if (!role) {
-    return res.status(404).json({ error: "Role not found" });
-  }
-  const hashed = await bcrypt.hash(normalizedPassword, 10);
-  const user = await prisma.user.create({
-    data: {
-      email: normalizedEmail,
-      firstName,
-      lastName,
-      fullName: `${firstName} ${lastName}`,
-      password: hashed,
-      roleId: role.id,
-      organizationId: req.user.organizationId,
-    },
-    include: { role: true },
-  });
-  res.status(201).json({
-    id: user.id,
-    email: user.email,
-    role: { id: user.role.id, name: user.role.name },
-  });
 });
 
 app.get("/api/roles", authMiddleware, async (req, res) => {
@@ -1561,26 +1887,15 @@ app.post("/api/alerts/test-email", authMiddleware, requireAdmin, async (req, res
 });
 
 app.get("/api/dashboard", authMiddleware, async (req, res) => {
-  const [portfolioUsers, portfolioOrgs] = await Promise.all([
-    prisma.user.count({ where: { organizationId: req.user.organizationId } }),
-    prisma.organization.count(),
-  ]);
+  const portfolioOrgs = await prisma.organization.count();
 
   let reebsOrgs = 0;
-  let reebsUsers = 0;
-  let reebsInventory = 0;
   let reebsStatus = reebsPool ? "ok" : "not_configured";
 
   if (reebsPool) {
     try {
-      const [orgsResult, usersResult, inventoryResult] = await Promise.all([
-        reebsPool.query('SELECT COUNT(*)::int AS count FROM "organization"'),
-        reebsPool.query('SELECT COUNT(*)::int AS count FROM "user"'),
-        reebsPool.query('SELECT COUNT(*)::int AS count FROM "product"'),
-      ]);
+      const orgsResult = await reebsPool.query('SELECT COUNT(*)::int AS count FROM "organization"');
       reebsOrgs = orgsResult.rows[0]?.count ?? 0;
-      reebsUsers = usersResult.rows[0]?.count ?? 0;
-      reebsInventory = inventoryResult.rows[0]?.count ?? 0;
     } catch (error) {
       console.warn("Reebs KPI query failed", error);
       reebsStatus = "error";
@@ -1588,17 +1903,12 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
   }
 
   let faakoOrgs = 0;
-  let faakoUsers = 0;
   let faakoStatus = faakoPool ? "ok" : "not_configured";
   if (faakoPool) {
     try {
-      const [orgsResult, usersResult] = await Promise.all([
-        resolveTableCount(faakoPool, ["Organization", "organization"]),
-        resolveTableCount(faakoPool, ["User", "user"]),
-      ]);
+      const orgsResult = await resolveTableCount(faakoPool, ["Organization", "organization"]);
       faakoOrgs = orgsResult.count ?? 0;
-      faakoUsers = usersResult.count ?? 0;
-      if (!orgsResult.qualifiedName || !usersResult.qualifiedName) {
+      if (!orgsResult.qualifiedName) {
         faakoStatus = "error";
       }
     } catch (error) {
@@ -1607,35 +1917,11 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
     }
   }
 
-  const [roleBreakdown, userStatusBreakdown, organizationStatusBreakdown] =
-    await Promise.all([
-      prisma.role.findMany({
-        where: { organizationId: req.user.organizationId },
-        select: {
-          name: true,
-          _count: {
-            select: {
-              users: true,
-            },
-          },
-        },
-        orderBy: { name: "asc" },
-      }),
-      prisma.user.groupBy({
-        by: ["status"],
-        where: { organizationId: req.user.organizationId },
-        _count: { _all: true },
-        orderBy: { status: "asc" },
-      }),
-      prisma.organization.groupBy({
-        by: ["status"],
-        _count: { _all: true },
-        orderBy: { status: "asc" },
-      }),
-    ]);
-
-  const averageUsersPerOrg = portfolioOrgs > 0 ? Number((portfolioUsers / portfolioOrgs).toFixed(1)) : 0;
-  const inventoryPerReebsUser = reebsUsers > 0 ? Number((reebsInventory / reebsUsers).toFixed(1)) : 0;
+  const organizationStatusBreakdown = await prisma.organization.groupBy({
+    by: ["status"],
+    _count: { _all: true },
+    orderBy: { status: "asc" },
+  });
 
   let siteStatusPayload = null;
   let siteStatusCheckedAt = null;
@@ -1652,9 +1938,9 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
 
   const systemEntries = [
     { id: "api", label: "API", status: "ok", note: "Auth + metrics" },
-    { id: "portfolio", label: "Portfolio DB", status: "ok", note: "Primary org data" },
-    { id: "reebs", label: "Reebs DB", status: reebsStatus, note: "Products and inventory" },
-    { id: "faako", label: "Faako DB", status: faakoStatus, note: "ERP users" },
+    { id: "portfolio", label: "By Nana DB", status: "ok", note: "Primary org data" },
+    { id: "reebs", label: "Reebs DB", status: reebsStatus, note: "Operational data" },
+    { id: "faako", label: "Faako DB", status: faakoStatus, note: "ERP members" },
   ];
 
   const siteOverview = (siteStatusPayload ?? []).map((site) => ({
@@ -1668,20 +1954,14 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
 
   res.json({
     totalOrganizations: portfolioOrgs + reebsOrgs + faakoOrgs,
-    totalUsers: portfolioUsers + reebsUsers + faakoUsers,
-    totalInventoryItems: reebsInventory,
     portfolio: {
       organizations: portfolioOrgs,
-      users: portfolioUsers,
     },
     reebs: {
       organizations: reebsOrgs,
-      users: reebsUsers,
-      inventoryItems: reebsInventory,
     },
     faako: {
       organizations: faakoOrgs,
-      users: faakoUsers,
     },
     lastSyncedAt: new Date().toISOString(),
     status: {
@@ -1694,22 +1974,10 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
       checkedAt: siteStatusCheckedAt,
       sites: siteStatusPayload,
     },
-    roleBreakdown: roleBreakdown.map((role) => ({
-      name: role.name,
-      users: role._count?.users ?? 0,
-    })),
-    userStatusBreakdown: userStatusBreakdown.map((group) => ({
-      status: group.status,
-      count: group._count._all,
-    })),
     organizationStatusBreakdown: organizationStatusBreakdown.map((group) => ({
       status: group.status,
       count: group._count._all,
     })),
-    insights: {
-      averageUsersPerOrg,
-      inventoryPerReebsUser,
-    },
   });
 });
 
@@ -1770,9 +2038,8 @@ app.get("/api/public/trust-stats", async (req, res) => {
   const range = buildRollingRange(30);
 
   try {
-    const [manualRevenue, inventoryUnits, managedOrgs, faakoResult] = await Promise.all([
+    const [manualRevenue, managedOrgs, faakoResult] = await Promise.all([
       sumPaidRevenueGhs(range),
-      sumInventoryUnits(),
       resolveManagedOrganizationCount(),
       fetchFaakoSubscriptionEntries({ start: range.start, end: range.end }),
     ]);
@@ -1796,7 +2063,6 @@ app.get("/api/public/trust-stats", async (req, res) => {
         amount: monthlyTransactions,
         currency: "GHS",
       },
-      inventoryUnits,
       organizations: managedOrgs,
     };
 
@@ -2169,6 +2435,565 @@ app.post(
     res.json({ invoiceNumber, entry: serializeAccountingEntry(updatedEntry) });
   }
 );
+
+const parseInvoiceId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+};
+
+const roundCurrencyAmount = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return NaN;
+  return Math.round((parsed + Number.EPSILON) * 100) / 100;
+};
+
+const toCurrencyDecimal = (value) =>
+  new prismaPkg.Prisma.Decimal(roundCurrencyAmount(value).toFixed(2));
+
+const normalizeInvoiceNumber = (value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim().toUpperCase();
+  if (!normalized) return null;
+  if (normalized.length > 80) return null;
+  return normalized;
+};
+
+const parseInvoiceLineItems = (value) => {
+  if (!Array.isArray(value) || !value.length) {
+    return { error: "lineItems must include at least one item." };
+  }
+
+  const lineItems = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const row = value[index] || {};
+    const description = typeof row.description === "string" ? row.description.trim() : "";
+    if (!description) {
+      return { error: `lineItems[${index}] description is required.` };
+    }
+
+    const quantityRaw = Number(row.quantity);
+    if (!Number.isFinite(quantityRaw) || quantityRaw <= 0) {
+      return { error: `lineItems[${index}] quantity must be greater than 0.` };
+    }
+
+    const unitPriceRaw = Number(row.unitPrice ?? row.rate);
+    if (!Number.isFinite(unitPriceRaw) || unitPriceRaw < 0) {
+      return { error: `lineItems[${index}] unitPrice must be 0 or greater.` };
+    }
+
+    const quantity = roundCurrencyAmount(quantityRaw);
+    const unitPrice = roundCurrencyAmount(unitPriceRaw);
+    const amount = roundCurrencyAmount(quantity * unitPrice);
+
+    if (!Number.isFinite(quantity) || !Number.isFinite(unitPrice) || !Number.isFinite(amount)) {
+      return { error: `lineItems[${index}] contains an invalid number.` };
+    }
+
+    lineItems.push({
+      description,
+      quantity,
+      unitPrice,
+      amount,
+      sortOrder: index,
+    });
+  }
+
+  return { lineItems };
+};
+
+const calculateInvoiceTotals = ({ lineItems, taxRate = 0, discount = 0 }) => {
+  const subtotal = roundCurrencyAmount(
+    lineItems.reduce((total, item) => total + Number(item.amount || 0), 0)
+  );
+  if (!Number.isFinite(subtotal)) {
+    return { error: "Unable to calculate invoice subtotal." };
+  }
+
+  const normalizedTaxRate = Number(taxRate ?? 0);
+  if (!Number.isFinite(normalizedTaxRate) || normalizedTaxRate < 0 || normalizedTaxRate > 100) {
+    return { error: "taxRate must be between 0 and 100." };
+  }
+
+  const normalizedDiscount = Number(discount ?? 0);
+  if (!Number.isFinite(normalizedDiscount) || normalizedDiscount < 0) {
+    return { error: "discount must be 0 or greater." };
+  }
+
+  const taxAmount = roundCurrencyAmount(subtotal * (normalizedTaxRate / 100));
+  const discountAmount = roundCurrencyAmount(normalizedDiscount);
+  const total = roundCurrencyAmount(subtotal + taxAmount - discountAmount);
+
+  if (total < 0) {
+    return { error: "Invoice total cannot be negative." };
+  }
+
+  return {
+    subtotal,
+    taxRate: roundCurrencyAmount(normalizedTaxRate),
+    taxAmount,
+    discount: discountAmount,
+    total,
+  };
+};
+
+const buildNextInvoiceNumber = async (organizationId) => {
+  const now = new Date();
+  const stamp = `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const prefix = `INV-${stamp}-${String(organizationId).padStart(3, "0")}`;
+  const count = await prisma.invoice.count({
+    where: {
+      organizationId,
+      invoiceNumber: {
+        startsWith: prefix,
+      },
+    },
+  });
+  return `${prefix}-${String(count + 1).padStart(4, "0")}`;
+};
+
+app.get("/api/invoices", authMiddleware, async (req, res) => {
+  const isAdmin = req.user?.roleName === "Admin";
+  const organizationParam = req.query?.organizationId;
+  const statusParam = String(req.query?.status || "").trim();
+  let organizationFilter = { organizationId: req.user.organizationId };
+
+  if (isAdmin && organizationParam) {
+    if (String(organizationParam).toLowerCase() === "all") {
+      organizationFilter = {};
+    } else {
+      const parsedOrganizationId = parseOrganizationId(organizationParam);
+      if (!parsedOrganizationId) {
+        return res.status(400).json({ error: "organizationId must be a valid id or 'all'" });
+      }
+      const organization = await prisma.organization.findUnique({
+        where: { id: parsedOrganizationId },
+        select: { id: true },
+      });
+      if (!organization) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
+      organizationFilter = { organizationId: organization.id };
+    }
+  }
+
+  const status =
+    statusParam && statusParam.toLowerCase() !== "all"
+      ? normalizeInvoiceStatus(statusParam)
+      : null;
+  if (statusParam && statusParam.toLowerCase() !== "all" && !status) {
+    return res.status(400).json({ error: "status must be DRAFT, SENT, PAID, OVERDUE, or VOID" });
+  }
+
+  const invoices = await prisma.invoice.findMany({
+    where: {
+      ...organizationFilter,
+      ...(status ? { status } : {}),
+    },
+    include: {
+      organization: { select: { id: true, name: true, slug: true } },
+      lineItems: { orderBy: { sortOrder: "asc" } },
+    },
+    orderBy: [{ issueDate: "desc" }, { id: "desc" }],
+  });
+
+  res.json({
+    invoices: invoices.map(serializeInvoice),
+  });
+});
+
+app.post("/api/invoices", authMiddleware, requireAdmin, async (req, res) => {
+  let organizationId = req.user.organizationId;
+  if (req.body?.organizationId !== undefined) {
+    const parsedOrganizationId = parseOrganizationId(req.body.organizationId);
+    if (!parsedOrganizationId) {
+      return res.status(400).json({ error: "organizationId must be a valid id" });
+    }
+    const organization = await prisma.organization.findUnique({
+      where: { id: parsedOrganizationId },
+      select: { id: true },
+    });
+    if (!organization) {
+      return res.status(404).json({ error: "Organization not found" });
+    }
+    organizationId = organization.id;
+  }
+
+  const currency = normalizeAccountingCurrency(req.body?.currency || "CAD");
+  if (!currency) {
+    return res.status(400).json({ error: "currency must be CAD or GHS" });
+  }
+
+  const status =
+    req.body?.status !== undefined
+      ? normalizeInvoiceStatus(req.body.status)
+      : "DRAFT";
+  if (!status) {
+    return res.status(400).json({ error: "status must be DRAFT, SENT, PAID, OVERDUE, or VOID" });
+  }
+
+  const issueDate = parseDateValue(req.body?.issueDate);
+  if (!issueDate) {
+    return res.status(400).json({ error: "issueDate is required" });
+  }
+
+  let dueDate = null;
+  if (req.body?.dueDate !== undefined && req.body?.dueDate !== null && String(req.body?.dueDate).trim()) {
+    dueDate = parseDateValue(req.body.dueDate);
+    if (!dueDate) {
+      return res.status(400).json({ error: "dueDate must be a valid date" });
+    }
+  }
+  if (dueDate && dueDate < issueDate) {
+    return res.status(400).json({ error: "dueDate cannot be earlier than issueDate" });
+  }
+
+  let paidAt = null;
+  if (req.body?.paidAt !== undefined && req.body?.paidAt !== null && String(req.body?.paidAt).trim()) {
+    paidAt = parseDateValue(req.body.paidAt);
+    if (!paidAt) {
+      return res.status(400).json({ error: "paidAt must be a valid date" });
+    }
+  }
+  if (status === "PAID" && !paidAt) {
+    paidAt = new Date();
+  }
+  if (status !== "PAID") {
+    paidAt = null;
+  }
+
+  const clientName = typeof req.body?.clientName === "string" ? req.body.clientName.trim() : "";
+  if (!clientName) {
+    return res.status(400).json({ error: "clientName is required" });
+  }
+
+  const clientEmail =
+    typeof req.body?.clientEmail === "string" && req.body.clientEmail.trim()
+      ? req.body.clientEmail.trim()
+      : null;
+  if (clientEmail && !EMAIL_PATTERN.test(clientEmail)) {
+    return res.status(400).json({ error: "clientEmail must be a valid email" });
+  }
+
+  const clientAddress =
+    typeof req.body?.clientAddress === "string" && req.body.clientAddress.trim()
+      ? req.body.clientAddress.trim()
+      : null;
+  const notes = typeof req.body?.notes === "string" && req.body.notes.trim() ? req.body.notes.trim() : null;
+
+  const parsedLineItems = parseInvoiceLineItems(req.body?.lineItems);
+  if (parsedLineItems.error) {
+    return res.status(400).json({ error: parsedLineItems.error });
+  }
+
+  const totals = calculateInvoiceTotals({
+    lineItems: parsedLineItems.lineItems,
+    taxRate: req.body?.taxRate,
+    discount: req.body?.discount,
+  });
+  if (totals.error) {
+    return res.status(400).json({ error: totals.error });
+  }
+
+  const requestedInvoiceNumber = normalizeInvoiceNumber(req.body?.invoiceNumber);
+  let invoiceNumber = requestedInvoiceNumber;
+
+  if (invoiceNumber) {
+    const existing = await prisma.invoice.findFirst({
+      where: {
+        organizationId,
+        invoiceNumber,
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      return res.status(409).json({ error: "Invoice number already exists for this organization." });
+    }
+  } else {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = await buildNextInvoiceNumber(organizationId);
+      const existing = await prisma.invoice.findFirst({
+        where: {
+          organizationId,
+          invoiceNumber: candidate,
+        },
+        select: { id: true },
+      });
+      if (!existing) {
+        invoiceNumber = candidate;
+        break;
+      }
+    }
+
+    if (!invoiceNumber) {
+      return res.status(500).json({ error: "Unable to generate invoice number." });
+    }
+  }
+
+  const invoice = await prisma.invoice.create({
+    data: {
+      organizationId,
+      invoiceNumber,
+      status,
+      currency,
+      issueDate,
+      dueDate,
+      paidAt,
+      clientName,
+      clientEmail,
+      clientAddress,
+      notes,
+      subtotal: toCurrencyDecimal(totals.subtotal),
+      taxRate: toCurrencyDecimal(totals.taxRate),
+      taxAmount: toCurrencyDecimal(totals.taxAmount),
+      discount: toCurrencyDecimal(totals.discount),
+      total: toCurrencyDecimal(totals.total),
+      lineItems: {
+        create: parsedLineItems.lineItems.map((lineItem) => ({
+          description: lineItem.description,
+          quantity: toCurrencyDecimal(lineItem.quantity),
+          unitPrice: toCurrencyDecimal(lineItem.unitPrice),
+          amount: toCurrencyDecimal(lineItem.amount),
+          sortOrder: lineItem.sortOrder,
+        })),
+      },
+    },
+    include: {
+      organization: { select: { id: true, name: true, slug: true } },
+      lineItems: { orderBy: { sortOrder: "asc" } },
+    },
+  });
+
+  res.status(201).json(serializeInvoice(invoice));
+});
+
+app.patch("/api/invoices/:id", authMiddleware, requireAdmin, async (req, res) => {
+  const invoiceId = parseInvoiceId(req.params.id);
+  if (!invoiceId) {
+    return res.status(400).json({ error: "Invoice id must be a valid number." });
+  }
+
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    include: {
+      organization: { select: { id: true, name: true, slug: true } },
+      lineItems: { orderBy: { sortOrder: "asc" } },
+    },
+  });
+
+  if (!invoice) {
+    return res.status(404).json({ error: "Invoice not found." });
+  }
+
+  const updateData = {};
+
+  if (req.body?.organizationId !== undefined) {
+    const parsedOrganizationId = parseOrganizationId(req.body.organizationId);
+    if (!parsedOrganizationId) {
+      return res.status(400).json({ error: "organizationId must be a valid id" });
+    }
+    const organization = await prisma.organization.findUnique({
+      where: { id: parsedOrganizationId },
+      select: { id: true },
+    });
+    if (!organization) {
+      return res.status(404).json({ error: "Organization not found" });
+    }
+    updateData.organizationId = organization.id;
+  }
+
+  if (req.body?.invoiceNumber !== undefined) {
+    const invoiceNumber = normalizeInvoiceNumber(req.body.invoiceNumber);
+    if (!invoiceNumber) {
+      return res.status(400).json({ error: "invoiceNumber must be a non-empty value." });
+    }
+    updateData.invoiceNumber = invoiceNumber;
+  }
+
+  if (req.body?.status !== undefined) {
+    const status = normalizeInvoiceStatus(req.body.status);
+    if (!status) {
+      return res.status(400).json({ error: "status must be DRAFT, SENT, PAID, OVERDUE, or VOID" });
+    }
+    updateData.status = status;
+  }
+
+  if (req.body?.currency !== undefined) {
+    const currency = normalizeAccountingCurrency(req.body.currency);
+    if (!currency) {
+      return res.status(400).json({ error: "currency must be CAD or GHS" });
+    }
+    updateData.currency = currency;
+  }
+
+  if (req.body?.issueDate !== undefined) {
+    const issueDate = parseDateValue(req.body.issueDate);
+    if (!issueDate) {
+      return res.status(400).json({ error: "issueDate must be a valid date" });
+    }
+    updateData.issueDate = issueDate;
+  }
+
+  if (req.body?.dueDate !== undefined) {
+    if (req.body.dueDate === null || String(req.body.dueDate).trim() === "") {
+      updateData.dueDate = null;
+    } else {
+      const dueDate = parseDateValue(req.body.dueDate);
+      if (!dueDate) {
+        return res.status(400).json({ error: "dueDate must be a valid date" });
+      }
+      updateData.dueDate = dueDate;
+    }
+  }
+
+  if (req.body?.paidAt !== undefined) {
+    if (req.body.paidAt === null || String(req.body.paidAt).trim() === "") {
+      updateData.paidAt = null;
+    } else {
+      const paidAt = parseDateValue(req.body.paidAt);
+      if (!paidAt) {
+        return res.status(400).json({ error: "paidAt must be a valid date" });
+      }
+      updateData.paidAt = paidAt;
+    }
+  }
+
+  if (req.body?.clientName !== undefined) {
+    const clientName = typeof req.body.clientName === "string" ? req.body.clientName.trim() : "";
+    if (!clientName) {
+      return res.status(400).json({ error: "clientName is required" });
+    }
+    updateData.clientName = clientName;
+  }
+
+  if (req.body?.clientEmail !== undefined) {
+    const clientEmail =
+      typeof req.body.clientEmail === "string" && req.body.clientEmail.trim()
+        ? req.body.clientEmail.trim()
+        : null;
+    if (clientEmail && !EMAIL_PATTERN.test(clientEmail)) {
+      return res.status(400).json({ error: "clientEmail must be a valid email" });
+    }
+    updateData.clientEmail = clientEmail;
+  }
+
+  if (req.body?.clientAddress !== undefined) {
+    updateData.clientAddress =
+      typeof req.body.clientAddress === "string" && req.body.clientAddress.trim()
+        ? req.body.clientAddress.trim()
+        : null;
+  }
+
+  if (req.body?.notes !== undefined) {
+    updateData.notes =
+      typeof req.body.notes === "string" && req.body.notes.trim()
+        ? req.body.notes.trim()
+        : null;
+  }
+
+  let lineItems = null;
+  if (req.body?.lineItems !== undefined) {
+    const parsedLineItems = parseInvoiceLineItems(req.body.lineItems);
+    if (parsedLineItems.error) {
+      return res.status(400).json({ error: parsedLineItems.error });
+    }
+    lineItems = parsedLineItems.lineItems;
+  }
+
+  const shouldRecalculateTotals =
+    Boolean(lineItems) || req.body?.taxRate !== undefined || req.body?.discount !== undefined;
+
+  if (shouldRecalculateTotals) {
+    const sourceLineItems =
+      lineItems ||
+      invoice.lineItems.map((lineItem) => ({
+        description: lineItem.description,
+        quantity: Number(lineItem.quantity),
+        unitPrice: Number(lineItem.unitPrice),
+        amount: Number(lineItem.amount),
+        sortOrder: lineItem.sortOrder,
+      }));
+
+    const totals = calculateInvoiceTotals({
+      lineItems: sourceLineItems,
+      taxRate:
+        req.body?.taxRate !== undefined ? req.body.taxRate : Number(invoice.taxRate),
+      discount:
+        req.body?.discount !== undefined ? req.body.discount : Number(invoice.discount),
+    });
+
+    if (totals.error) {
+      return res.status(400).json({ error: totals.error });
+    }
+
+    updateData.subtotal = toCurrencyDecimal(totals.subtotal);
+    updateData.taxRate = toCurrencyDecimal(totals.taxRate);
+    updateData.taxAmount = toCurrencyDecimal(totals.taxAmount);
+    updateData.discount = toCurrencyDecimal(totals.discount);
+    updateData.total = toCurrencyDecimal(totals.total);
+  }
+
+  const nextIssueDate = updateData.issueDate ?? invoice.issueDate;
+  const nextDueDate = Object.prototype.hasOwnProperty.call(updateData, "dueDate")
+    ? updateData.dueDate
+    : invoice.dueDate;
+  if (nextDueDate && nextIssueDate && nextDueDate < nextIssueDate) {
+    return res.status(400).json({ error: "dueDate cannot be earlier than issueDate" });
+  }
+
+  const nextStatus = updateData.status ?? invoice.status;
+  if (nextStatus === "PAID") {
+    updateData.paidAt = updateData.paidAt ?? invoice.paidAt ?? new Date();
+  } else if (updateData.status !== undefined && req.body?.paidAt === undefined) {
+    updateData.paidAt = null;
+  }
+
+  const nextOrganizationId = updateData.organizationId ?? invoice.organizationId;
+  const nextInvoiceNumber = updateData.invoiceNumber ?? invoice.invoiceNumber;
+  if (
+    nextOrganizationId !== invoice.organizationId ||
+    nextInvoiceNumber !== invoice.invoiceNumber
+  ) {
+    const existing = await prisma.invoice.findFirst({
+      where: {
+        organizationId: nextOrganizationId,
+        invoiceNumber: nextInvoiceNumber,
+        id: { not: invoice.id },
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      return res.status(409).json({ error: "Invoice number already exists for this organization." });
+    }
+  }
+
+  const updatedInvoice = await prisma.invoice.update({
+    where: { id: invoice.id },
+    data: {
+      ...updateData,
+      ...(lineItems
+        ? {
+            lineItems: {
+              deleteMany: {},
+              create: lineItems.map((lineItem) => ({
+                description: lineItem.description,
+                quantity: toCurrencyDecimal(lineItem.quantity),
+                unitPrice: toCurrencyDecimal(lineItem.unitPrice),
+                amount: toCurrencyDecimal(lineItem.amount),
+                sortOrder: lineItem.sortOrder,
+              })),
+            },
+          }
+        : {}),
+    },
+    include: {
+      organization: { select: { id: true, name: true, slug: true } },
+      lineItems: { orderBy: { sortOrder: "asc" } },
+    },
+  });
+
+  res.json(serializeInvoice(updatedInvoice));
+});
 
 app.get("/api/productivity/entries", authMiddleware, async (req, res) => {
   const isAdmin = req.user?.roleName === "Admin";
@@ -2598,6 +3423,7 @@ const ACCOUNTING_TYPE_VALUES = new Set(["REVENUE", "EXPENSE"]);
 const ACCOUNTING_STATUS_VALUES = new Set(["PAID", "PENDING", "SCHEDULED", "OVERDUE"]);
 const ACCOUNTING_CURRENCY_VALUES = new Set(["CAD", "GHS"]);
 const ACCOUNTING_INTERVAL_VALUES = new Set(["MONTHLY", "QUARTERLY", "YEARLY"]);
+const INVOICE_STATUS_VALUES = new Set(["DRAFT", "SENT", "PAID", "OVERDUE", "VOID"]);
 const PRODUCTIVITY_TODO_PRIORITY_VALUES = new Set(["low", "medium", "high"]);
 const PRODUCTIVITY_RANGE_DAYS = {
   "7d": 7,
@@ -2659,6 +3485,11 @@ const normalizeAccountingType = (value) =>
 
 const normalizeAccountingStatus = (value) =>
   ACCOUNTING_STATUS_VALUES.has(value) ? value : null;
+
+const normalizeInvoiceStatus = (value) => {
+  const normalized = String(value || "").trim().toUpperCase();
+  return INVOICE_STATUS_VALUES.has(normalized) ? normalized : null;
+};
 
 const normalizeAccountingCurrency = (value) => {
   const normalized = String(value || "").trim().toUpperCase();
@@ -3601,40 +4432,6 @@ const sumPaidRevenueGhs = async ({ start, end }) => {
   return Number.isFinite(sum) ? sum : 0;
 };
 
-const sumInventoryUnits = async () => {
-  if (!reebsPool) return 0;
-  try {
-    const inventoryTable = await resolveTableName(reebsPool, ["inventory", "Inventory"]);
-    if (inventoryTable) {
-      const result = await reebsPool.query(
-        `SELECT COALESCE(SUM(quantity), 0)::int AS total FROM ${inventoryTable}`
-      );
-      return result.rows[0]?.total ?? 0;
-    }
-
-    const productTable = await resolveTableName(reebsPool, ["product", "Product"]);
-    if (!productTable) return 0;
-
-    try {
-      const result = await reebsPool.query(
-        `SELECT COALESCE(SUM(stock), 0)::int AS total
-         FROM ${productTable}
-         WHERE ("isArchived" IS NULL OR "isArchived" = false)
-           AND ("isDeleted" IS NULL OR "isDeleted" = false)`
-      );
-      return result.rows[0]?.total ?? 0;
-    } catch {
-      const result = await reebsPool.query(
-        `SELECT COALESCE(SUM(stock), 0)::int AS total FROM ${productTable}`
-      );
-      return result.rows[0]?.total ?? 0;
-    }
-  } catch (error) {
-    console.warn("Inventory units KPI query failed", error);
-    return 0;
-  }
-};
-
 const resolveManagedOrganizationCount = async () => {
   const portfolioActive = await prisma.organization.count({ where: { status: "ACTIVE" } });
   const [reebsOrgs, faakoOrgs] = await Promise.all([
@@ -3675,6 +4472,72 @@ const serializeAccountingEntry = (entry) => ({
   dueAt: entry.dueAt ? entry.dueAt.toISOString() : null,
   createdAt: entry.createdAt ? entry.createdAt.toISOString() : null,
   updatedAt: entry.updatedAt ? entry.updatedAt.toISOString() : null,
+});
+
+const serializeInvoiceLineItem = (lineItem) => ({
+  id: lineItem.id,
+  invoiceId: lineItem.invoiceId,
+  description: lineItem.description,
+  quantity:
+    typeof lineItem.quantity?.toNumber === "function"
+      ? lineItem.quantity.toNumber()
+      : Number(lineItem.quantity),
+  unitPrice:
+    typeof lineItem.unitPrice?.toNumber === "function"
+      ? lineItem.unitPrice.toNumber()
+      : Number(lineItem.unitPrice),
+  amount:
+    typeof lineItem.amount?.toNumber === "function"
+      ? lineItem.amount.toNumber()
+      : Number(lineItem.amount),
+  sortOrder: lineItem.sortOrder ?? 0,
+  createdAt: lineItem.createdAt ? lineItem.createdAt.toISOString() : null,
+  updatedAt: lineItem.updatedAt ? lineItem.updatedAt.toISOString() : null,
+});
+
+const serializeInvoice = (invoice) => ({
+  id: invoice.id,
+  organizationId: invoice.organizationId,
+  organization: invoice.organization
+    ? {
+        id: invoice.organization.id,
+        name: invoice.organization.name,
+        slug: invoice.organization.slug,
+      }
+    : null,
+  invoiceNumber: invoice.invoiceNumber,
+  status: invoice.status,
+  currency: invoice.currency,
+  issueDate: invoice.issueDate ? invoice.issueDate.toISOString() : null,
+  dueDate: invoice.dueDate ? invoice.dueDate.toISOString() : null,
+  paidAt: invoice.paidAt ? invoice.paidAt.toISOString() : null,
+  clientName: invoice.clientName,
+  clientEmail: invoice.clientEmail ?? null,
+  clientAddress: invoice.clientAddress ?? null,
+  notes: invoice.notes ?? null,
+  subtotal:
+    typeof invoice.subtotal?.toNumber === "function"
+      ? invoice.subtotal.toNumber()
+      : Number(invoice.subtotal),
+  taxRate:
+    typeof invoice.taxRate?.toNumber === "function"
+      ? invoice.taxRate.toNumber()
+      : Number(invoice.taxRate),
+  taxAmount:
+    typeof invoice.taxAmount?.toNumber === "function"
+      ? invoice.taxAmount.toNumber()
+      : Number(invoice.taxAmount),
+  discount:
+    typeof invoice.discount?.toNumber === "function"
+      ? invoice.discount.toNumber()
+      : Number(invoice.discount),
+  total:
+    typeof invoice.total?.toNumber === "function"
+      ? invoice.total.toNumber()
+      : Number(invoice.total),
+  createdAt: invoice.createdAt ? invoice.createdAt.toISOString() : null,
+  updatedAt: invoice.updatedAt ? invoice.updatedAt.toISOString() : null,
+  lineItems: Array.isArray(invoice.lineItems) ? invoice.lineItems.map(serializeInvoiceLineItem) : [],
 });
 
 const serializeProductivityEntry = (entry) => ({
@@ -4499,6 +5362,12 @@ app.post("/api/webhooks/google-calendar", async (req, res) => {
   });
 });
 
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    error: `API route not found: ${req.method} ${req.originalUrl}`,
+  });
+});
+
 app.use((err, _req, res, next) => {
   if (err?.message === "Not allowed by CORS") {
     res.status(403).json({ error: "Not allowed by CORS" });
@@ -4589,6 +5458,7 @@ const start = async () => {
     console.log(`API server listening on http://localhost:${port}`);
   });
   scheduleNightlyGoogleSync();
+  scheduleWeeklyReportEmail();
 };
 
 start().catch((error) => {

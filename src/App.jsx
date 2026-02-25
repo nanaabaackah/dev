@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -11,10 +11,10 @@ import {
 import {
   Category,
   WalletMoney,
+  ReceiptItem,
   CalendarTick,
   TaskSquare,
   Buildings2,
-  Box,
   Monitor,
   DocumentText,
   ClipboardTick,
@@ -28,29 +28,30 @@ import Dashboard from "./components/Dashboard";
 import Bookings from "./components/Bookings";
 import PublicBooking from "./components/PublicBooking";
 import Organizations from "./components/Organizations";
-import Users from "./components/Users";
-import Inventory from "./components/Inventory";
+import Profile from "./components/Profile";
 import SystemHealth from "./components/SystemHealth";
 import Reports from "./components/Reports";
 import Settings from "./components/Settings";
 import AuditLogs from "./components/AuditLogs";
 import ThemeToggle from "./components/ThemeToggle";
 import Accounting from "./components/Accounting";
+import Invoicing from "./components/Invoicing";
 import Productivity from "./components/Productivity";
 import useScrollAnimations from "./hooks/useScrollAnimations";
 import { buildApiUrl } from "./api-url";
+import { readJsonResponse } from "./utils/http";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", Icon: Category },
   { to: "/productivity", label: "Productivity", Icon: TaskSquare },
   { to: "/accounting", label: "Accounting", Icon: WalletMoney },
-  { to: "/bookings", label: "Bookings", Icon: CalendarTick },
+  { to: "/invoicing", label: "Invoicing", Icon: ReceiptItem },
+  { to: "/bookings", label: "Appointments", Icon: CalendarTick },
   { to: "/organizations", label: "Organizations", Icon: Buildings2 },
-  { to: "/inventory", label: "Inventory", Icon: Box },
   { to: "/system-health", label: "System Health", Icon: Monitor },
   { to: "/reports", label: "Reports", Icon: DocumentText },
   { to: "/audit-logs", label: "Audit Logs", Icon: ClipboardTick },
-  { to: "/users", label: "Users", Icon: Profile2User },
+  { to: "/profile", label: "Profile", Icon: Profile2User },
   { to: "/settings", label: "Settings", Icon: Setting2 },
 ];
 
@@ -58,9 +59,57 @@ const MOBILE_TAB_ITEMS = [
   { to: "/dashboard", label: "Home", Icon: Category },
   { to: "/productivity", label: "Focus", Icon: TaskSquare },
   { to: "/accounting", label: "Finance", Icon: WalletMoney },
-  { to: "/bookings", label: "Bookings", Icon: CalendarTick },
+  { to: "/bookings", label: "Appointments", Icon: CalendarTick },
   { to: "/settings", label: "Settings", Icon: Setting2 },
 ];
+
+const isHealthyStatus = (status) => status === "ok" || status === "online";
+
+const getSiteAggregateStatus = (pages = []) => {
+  if (!Array.isArray(pages) || !pages.length) return "unknown";
+  if (pages.some((page) => page?.status === "offline")) return "offline";
+  if (pages.some((page) => page?.status === "degraded")) return "degraded";
+  if (pages.every((page) => page?.status === "online")) return "online";
+  return "unknown";
+};
+
+const getAlertNotificationCount = (dashboardPayload) => {
+  const systemStatus = dashboardPayload?.status ?? {};
+  const systemEntries = [systemStatus.api, systemStatus.portfolioDb, systemStatus.reebsDb, systemStatus.faakoDb];
+  const systemAlerts = systemEntries.filter((status) => status && !isHealthyStatus(status)).length;
+
+  const siteStatuses = Array.isArray(dashboardPayload?.siteStatus?.sites)
+    ? dashboardPayload.siteStatus.sites
+    : [];
+  const siteAlerts = siteStatuses.filter((site) => {
+    const aggregateStatus = getSiteAggregateStatus(site?.pages ?? []);
+    return aggregateStatus === "offline" || aggregateStatus === "degraded";
+  }).length;
+
+  return systemAlerts + siteAlerts;
+};
+
+const getAppointmentsNotificationCount = (bookingsPayload) => {
+  if (!Array.isArray(bookingsPayload)) return 0;
+  return bookingsPayload.filter((booking) => String(booking?.status || "").toUpperCase() !== "CANCELED").length;
+};
+
+const getOverdueInvoicesCount = (invoicesPayload) => {
+  if (Array.isArray(invoicesPayload?.invoices)) {
+    return invoicesPayload.invoices.length;
+  }
+  return 0;
+};
+
+const getOverdueAccountingCount = (accountingPayload) => {
+  const entries = Array.isArray(accountingPayload?.entries) ? accountingPayload.entries : [];
+  return entries.filter((entry) => String(entry?.status || "").toUpperCase() === "OVERDUE").length;
+};
+
+const formatNotificationCount = (count) => (count > 99 ? "99+" : String(count));
+const NAV_SWIPE_CLOSE_THRESHOLD = 72;
+const NAV_SWIPE_VERTICAL_TOLERANCE = 72;
+const NAV_SWIPE_MIN_HORIZONTAL_DELTA = 12;
 
 const PrivateRoute = ({ children }) => {
   const token = localStorage.getItem("token");
@@ -78,7 +127,7 @@ const getInitialTheme = () => {
 };
 
 const getTopbarLabel = (pathname) => {
-  if (pathname.startsWith("/book")) return "Booking";
+  if (pathname.startsWith("/book")) return "Appointment";
   switch (pathname) {
     case "/dashboard":
       return "Dashboard";
@@ -87,13 +136,13 @@ const getTopbarLabel = (pathname) => {
     case "/productivity":
       return "Productivity";
     case "/bookings":
-      return "Bookings";
+      return "Appointments";
+    case "/invoicing":
+      return "Invoicing";
     case "/organizations":
       return "Organizations";
-    case "/users":
-      return "Users";
-    case "/inventory":
-      return "Inventory";
+    case "/profile":
+      return "Profile";
     case "/system-health":
       return "System Health";
     case "/reports":
@@ -111,9 +160,32 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [isNavOpen, setIsNavOpen] = useState(false);
+  const [navSwipeOffset, setNavSwipeOffset] = useState(0);
+  const [isNavDragging, setIsNavDragging] = useState(false);
+  const [navNotifications, setNavNotifications] = useState({});
   const [isOffline, setIsOffline] = useState(
     typeof navigator !== "undefined" ? !navigator.onLine : false
   );
+  const navSwipeRef = useRef({
+    active: false,
+    horizontal: false,
+    startX: 0,
+    startY: 0,
+  });
+
+  const isMobileViewport = () =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 1024px)").matches;
+
+  const resetNavSwipe = () => {
+    navSwipeRef.current = {
+      active: false,
+      horizontal: false,
+      startX: 0,
+      startY: 0,
+    };
+    setIsNavDragging(false);
+    setNavSwipeOffset(0);
+  };
 
   useEffect(() => {
     setIsNavOpen(false);
@@ -123,6 +195,11 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
     if (typeof document === "undefined") return undefined;
     document.body.classList.toggle("nav-open", isNavOpen);
     return () => document.body.classList.remove("nav-open");
+  }, [isNavOpen]);
+
+  useEffect(() => {
+    if (isNavOpen) return;
+    resetNavSwipe();
   }, [isNavOpen]);
 
   useEffect(() => {
@@ -139,6 +216,87 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (isOffline) return undefined;
+
+    let isCanceled = false;
+
+    const loadNavNotifications = async () => {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        if (!isCanceled) setNavNotifications({});
+        return;
+      }
+
+      const now = new Date();
+      const end = new Date(now);
+      end.setDate(end.getDate() + 7);
+      const query = new URLSearchParams({
+        from: now.toISOString(),
+        to: end.toISOString(),
+      });
+      const accountingQuery = new URLSearchParams({
+        range: "all",
+      });
+
+      try {
+        const [dashboardResponse, bookingsResponse, invoicesResponse, accountingResponse] =
+          await Promise.all([
+            fetch(buildApiUrl("/api/dashboard"), {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+            fetch(buildApiUrl(`/api/bookings?${query.toString()}`), {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+            fetch(buildApiUrl("/api/invoices?status=OVERDUE"), {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+            fetch(buildApiUrl(`/api/accounting/entries?${accountingQuery.toString()}`), {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+          ]);
+
+        const [dashboardPayload, bookingsPayload, invoicesPayload, accountingPayload] =
+          await Promise.all([
+            readJsonResponse(dashboardResponse),
+            readJsonResponse(bookingsResponse),
+            readJsonResponse(invoicesResponse),
+            readJsonResponse(accountingResponse),
+          ]);
+
+        if (
+          !dashboardResponse.ok ||
+          !bookingsResponse.ok ||
+          !invoicesResponse.ok ||
+          !accountingResponse.ok
+        ) {
+          return;
+        }
+
+        if (!isCanceled) {
+          setNavNotifications({
+            "/bookings": getAppointmentsNotificationCount(bookingsPayload),
+            "/system-health": getAlertNotificationCount(dashboardPayload),
+            "/invoicing": getOverdueInvoicesCount(invoicesPayload),
+            "/accounting": getOverdueAccountingCount(accountingPayload),
+          });
+        }
+      } catch {
+        if (!isCanceled) {
+          setNavNotifications({});
+        }
+      }
+    };
+
+    loadNavNotifications();
+    const intervalId = window.setInterval(loadNavNotifications, 60_000);
+
+    return () => {
+      isCanceled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isOffline, location.pathname]);
+
   const handleSignOut = async () => {
     try {
       await fetch(buildApiUrl("/api/auth/logout"), {
@@ -152,9 +310,84 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
     navigate("/login");
   };
 
+  const handleSidebarTouchStart = (event) => {
+    if (!isNavOpen || !isMobileViewport()) return;
+    const touch = event.touches?.[0];
+    if (!touch) return;
+
+    navSwipeRef.current = {
+      active: true,
+      horizontal: false,
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+    setIsNavDragging(false);
+    setNavSwipeOffset(0);
+  };
+
+  const handleSidebarTouchMove = (event) => {
+    if (!isNavOpen || !isMobileViewport()) return;
+    const touch = event.touches?.[0];
+    if (!touch || !navSwipeRef.current.active) return;
+
+    const deltaX = touch.clientX - navSwipeRef.current.startX;
+    const deltaY = touch.clientY - navSwipeRef.current.startY;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+
+    if (!navSwipeRef.current.horizontal) {
+      if (absY > NAV_SWIPE_VERTICAL_TOLERANCE && absY > absX) {
+        resetNavSwipe();
+        return;
+      }
+
+      if (absX < NAV_SWIPE_MIN_HORIZONTAL_DELTA || absX < absY) {
+        return;
+      }
+
+      navSwipeRef.current.horizontal = true;
+    }
+
+    if (deltaX >= 0) {
+      setNavSwipeOffset(0);
+      return;
+    }
+
+    setIsNavDragging(true);
+    setNavSwipeOffset(Math.max(deltaX, -320));
+    event.preventDefault();
+  };
+
+  const handleSidebarTouchEnd = () => {
+    if (!isNavOpen || !isMobileViewport()) return;
+    const shouldClose = navSwipeOffset <= -NAV_SWIPE_CLOSE_THRESHOLD;
+    resetNavSwipe();
+    if (shouldClose) {
+      setIsNavOpen(false);
+    }
+  };
+
+  const sidebarClassName = [
+    "erp-sidebar",
+    isNavOpen ? "is-open" : "",
+    isNavDragging ? "is-dragging" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const sidebarStyle =
+    isNavOpen && navSwipeOffset !== 0 ? { transform: `translateX(${navSwipeOffset}px)` } : undefined;
+
   return (
     <div className={`erp-shell ${isOffline ? "is-offline" : ""}`}>
-      <aside className={`erp-sidebar ${isNavOpen ? "is-open" : ""}`} id="erp-sidebar">
+      <aside
+        className={sidebarClassName}
+        id="erp-sidebar"
+        style={sidebarStyle}
+        onTouchStart={handleSidebarTouchStart}
+        onTouchMove={handleSidebarTouchMove}
+        onTouchEnd={handleSidebarTouchEnd}
+        onTouchCancel={handleSidebarTouchEnd}
+      >
         <div className="sidebar-header">
           <div className="brand">
             <FiActivity aria-hidden="true" />
@@ -170,21 +403,32 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           </button>
         </div>
         <nav className="erp-nav">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === "/dashboard"}
-              className={({ isActive }) => (isActive ? "active" : "")}
-            >
-              {React.createElement(item.Icon, {
-                size: 16,
-                variant: "Linear",
-                className: "nav-icon",
-              })}
-              <span>{item.label}</span>
-            </NavLink>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const count = Number(navNotifications[item.to] || 0);
+            const hasNotification = count > 0;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to === "/dashboard"}
+                className={({ isActive }) => (isActive ? "active" : "")}
+              >
+                <span className="nav-link-main">
+                  {React.createElement(item.Icon, {
+                    size: 16,
+                    variant: "Linear",
+                    className: "nav-icon",
+                  })}
+                  <span>{item.label}</span>
+                </span>
+                {hasNotification ? (
+                  <span className="nav-badge" aria-label={`${count} new ${item.label.toLowerCase()}`}>
+                    {formatNotificationCount(count)}
+                  </span>
+                ) : null}
+              </NavLink>
+            );
+          })}
         </nav>
       </aside>
       <button
@@ -224,28 +468,39 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
         <main className="erp-content">{children}</main>
       </div>
       <nav className="mobile-tabbar" aria-label="Primary mobile navigation">
-        {MOBILE_TAB_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === "/dashboard"}
-            className={({ isActive }) => (isActive ? "active" : "")}
-          >
-            {React.createElement(item.Icon, {
-              size: 18,
-              variant: "Linear",
-              className: "mobile-tabbar__icon",
-            })}
-            <span>{item.label}</span>
-          </NavLink>
-        ))}
+        {MOBILE_TAB_ITEMS.map((item) => {
+          const count = Number(navNotifications[item.to] || 0);
+          const hasNotification = count > 0;
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === "/dashboard"}
+              className={({ isActive }) => (isActive ? "active" : "")}
+            >
+              <span className="mobile-tabbar__icon-wrap">
+                {React.createElement(item.Icon, {
+                  size: 18,
+                  variant: "Linear",
+                  className: "mobile-tabbar__icon",
+                })}
+                {hasNotification ? (
+                  <span className="mobile-tabbar__badge" aria-hidden="true">
+                    {formatNotificationCount(count)}
+                  </span>
+                ) : null}
+              </span>
+              <span>{item.label}</span>
+            </NavLink>
+          );
+        })}
       </nav>
     </div>
   );
 };
 
 const getTitleForPath = (pathname) => {
-  if (pathname.startsWith("/book")) return "Booking | Dev";
+  if (pathname.startsWith("/book")) return "Appointment | Dev";
   switch (pathname) {
     case "/":
     case "/dashboard":
@@ -253,19 +508,19 @@ const getTitleForPath = (pathname) => {
     case "/login":
       return "Login | Dev";
     case "/bookings":
-      return "Bookings | Dev";
+      return "Appointments | Dev";
     case "/organizations":
       return "Organizations | Dev";
-    case "/users":
-      return "Users | Dev";
-    case "/inventory":
-      return "Inventory | Dev";
+    case "/profile":
+      return "Profile | Dev";
     case "/system-health":
       return "System Health | Dev";
     case "/reports":
       return "Reports | Dev";
     case "/accounting":
       return "Accounting | Dev";
+    case "/invoicing":
+      return "Invoicing | Dev";
     case "/productivity":
       return "Productivity | Dev";
     case "/settings":
@@ -347,21 +602,14 @@ function App() {
           }
         />
         <Route
-          path="/users"
+          path="/profile"
           element={
             <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
-              <Users />
+              <Profile />
             </ShellPage>
           }
         />
-        <Route
-          path="/inventory"
-          element={
-            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
-              <Inventory />
-            </ShellPage>
-          }
-        />
+        <Route path="/users" element={<Navigate to="/profile" replace />} />
         <Route
           path="/system-health"
           element={
@@ -383,6 +631,14 @@ function App() {
           element={
             <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
               <Accounting />
+            </ShellPage>
+          }
+        />
+        <Route
+          path="/invoicing"
+          element={
+            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
+              <Invoicing />
             </ShellPage>
           }
         />

@@ -160,7 +160,7 @@ const PublicBooking = () => {
         const response = await fetch(buildApiUrl(`/api/public/booking-settings/${orgSlug}`));
         const payload = await response.json();
         if (!response.ok) {
-          throw new Error(payload?.error || "Unable to load booking details.");
+          throw new Error(payload?.error || "Unable to load appointment details.");
         }
         if (isMounted) {
           setSettings({
@@ -240,7 +240,7 @@ const PublicBooking = () => {
     }
   }, [form.date, days]);
 
-  const locationLabel = settings.defaultLocation || "Meeting link sent after booking";
+  const locationLabel = settings.defaultLocation || "Meeting link sent after appointment";
   const safeMeetingLink = getSafeExternalUrl(confirmation?.meetingLink);
   const isReadyToSubmit = useMemo(() => {
     return (
@@ -310,7 +310,7 @@ const PublicBooking = () => {
       setConfirmation(payload);
       setStatus({
         tone: "success",
-        message: "Booking confirmed. Check your email for updates.",
+        message: "Appointment confirmed. Check your email for updates.",
       });
       if (availabilityRange) {
         try {
@@ -366,7 +366,7 @@ const PublicBooking = () => {
   return (
     <section className="page public-booking">
       <header className="public-booking__hero">
-        <p className="eyebrow">Appointment booking</p>
+        <p className="eyebrow">Appointments</p>
         <h1>Dev Dashboard</h1>
         <h2>Book an Appointment</h2>
         <p className="muted">
@@ -689,7 +689,7 @@ const PublicBooking = () => {
 
             <div className="public-booking__actions">
               <button className="button button-primary" type="submit" disabled={!isReadyToSubmit}>
-                {isSubmitting ? "Booking..." : "Confirm booking"}
+                {isSubmitting ? "Submitting..." : "Confirm appointment"}
               </button>
               <span className="muted">Timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
             </div>

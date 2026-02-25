@@ -27,20 +27,20 @@
 }
 
 .bookings-page .button-danger {
-  border-color: rgba(248, 113, 113, 0.4);
-  color: #b91c1c;
-  background: rgba(248, 113, 113, 0.08);
+  border-color: color-mix(in oklab, var(--danger), var(--border) 40%);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .bookings-page .button-danger:hover {
-  box-shadow: 0 8px 20px rgba(185, 28, 28, 0.18);
+  box-shadow: 0 8px 20px rgba(114, 47, 55, 0.22);
 }
 
 .bookings-holiday-label {
   display: block;
   margin-top: 0.2rem;
   font-size: 0.74rem;
-  color: #92400e;
+  color: var(--warning);
 }
 
 .bookings-holiday-blocks {

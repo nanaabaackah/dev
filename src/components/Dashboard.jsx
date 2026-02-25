@@ -493,9 +493,9 @@ const Dashboard = () => {
       });
       const result = await readJsonResponse(response);
       if (!response.ok) {
-        throw new Error(getApiErrorMessage(result, "Unable to save booking."));
+        throw new Error(getApiErrorMessage(result, "Unable to save appointment."));
       }
-      setSlotStatus({ tone: "success", message: "Booking saved." });
+      setSlotStatus({ tone: "success", message: "Appointment saved." });
       await loadAvailability();
       closeSlotModal();
     } catch (saveError) {
@@ -877,10 +877,7 @@ const Dashboard = () => {
     return "unknown";
   };
 
-  const roleBreakdown = kpiData?.roleBreakdown ?? [];
-  const userStatusBreakdown = kpiData?.userStatusBreakdown ?? [];
   const organizationStatusBreakdown = kpiData?.organizationStatusBreakdown ?? [];
-  const insights = kpiData?.insights ?? {};
 
   const siteStatuses = kpiData?.siteStatus?.sites ?? [];
   const systemStatus = kpiData?.status ?? {};
@@ -893,7 +890,7 @@ const Dashboard = () => {
     { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
     {
       id: "portfolio",
-      label: "Portfolio DB",
+      label: "By Nana DB",
       status: systemStatus.portfolioDb,
       note: "Primary org data",
     },
@@ -901,13 +898,13 @@ const Dashboard = () => {
       id: "reebs",
       label: "Reebs DB",
       status: systemStatus.reebsDb,
-      note: "Products and inventory",
+      note: "Operational data",
     },
     {
       id: "faako",
       label: "Faako DB",
       status: systemStatus.faakoDb,
-      note: "ERP users",
+      note: "ERP members",
     },
   ];
 
@@ -1094,9 +1091,7 @@ const Dashboard = () => {
           id: "sync",
           timestamp: kpiData.lastSyncedAt,
           title: "KPI ingestion completed",
-          detail: `Orgs ${kpiData.totalOrganizations ?? 0} | Users ${
-            kpiData.totalUsers ?? 0
-          } | Inventory ${kpiData.totalInventoryItems ?? 0}`,
+          detail: `Orgs ${kpiData.totalOrganizations ?? 0} | Sites ${onlineSites}/${totalSites} online`,
           badge: "Sync",
           priority: "normal",
         }
@@ -1125,7 +1120,7 @@ const Dashboard = () => {
     ? slotModal.booking.source !== "MANUAL"
     : false;
   const isSlotBlocked = Boolean(slotModal && slotModal.status === "blocked" && !slotModal.booking);
-  const slotTitle = slotModal?.booking ? "Edit booking" : "Add booking";
+  const slotTitle = slotModal?.booking ? "Edit appointment" : "Add appointment";
   const slotDateLabel = slotModal
     ? `${slotModal.day.dateLabel} • ${slotModal.slot.label}`
     : "";
@@ -1154,9 +1149,9 @@ const Dashboard = () => {
               <span className="kpi-delta">{weatherFeelsLikeLabel}</span>
             </article>
             <article className="dashboard-brief-card">
-              <span className="kpi-label">Bookings today</span>
+              <span className="kpi-label">Appointments today</span>
               <div className="kpi-value">{todayBookingsCount}</div>
-              <span className="muted">Scheduled bookings</span>
+              <span className="muted">Scheduled appointments</span>
               <span className="kpi-delta">Availability {availableSlots}/{totalSlots}</span>
             </article>
             <article className="dashboard-brief-card">
@@ -1198,7 +1193,7 @@ const Dashboard = () => {
               {isRefreshing ? "Refreshing..." : "Refresh metrics"}
             </button>
             <Link className="button button-ghost" to="/bookings">
-              Bookings
+              Appointments
             </Link>
             <a className="button button-ghost" href="#site-status">
               Site status
@@ -1515,7 +1510,7 @@ const Dashboard = () => {
           <div className="slot-modal__card">
             <div className="slot-modal__header">
               <div>
-                <p className="eyebrow">Booking</p>
+                <p className="eyebrow">Appointment</p>
                 <h3 id="slot-modal-title">{slotTitle}</h3>
                 <p className="muted">{slotDateLabel}</p>
               </div>
@@ -1543,7 +1538,7 @@ const Dashboard = () => {
 
             {isExternalBooking ? (
               <div className="notice">
-                This booking is synced from Google Calendar and can only be edited there.
+                This appointment is synced from Google Calendar and can only be edited there.
               </div>
             ) : null}
 
@@ -1569,7 +1564,7 @@ const Dashboard = () => {
                   onChange={(event) =>
                     setSlotForm((prev) => ({ ...prev, title: event.target.value }))
                   }
-                  placeholder="Customer booking"
+                  placeholder="Customer appointment"
                   disabled={isExternalBooking || isSlotBlocked || isSlotSaving}
                 />
               </label>
@@ -1637,7 +1632,7 @@ const Dashboard = () => {
                   onChange={(event) =>
                     setSlotForm((prev) => ({ ...prev, description: event.target.value }))
                   }
-                  placeholder="Add any notes for this booking"
+                  placeholder="Add any notes for this appointment"
                   disabled={isExternalBooking || isSlotBlocked || isSlotSaving}
                 />
               </label>
@@ -1650,7 +1645,7 @@ const Dashboard = () => {
                   type="submit"
                   disabled={isExternalBooking || isSlotBlocked || isSlotSaving}
                 >
-                  {isSlotSaving ? "Saving..." : "Save booking"}
+                  {isSlotSaving ? "Saving..." : "Save appointment"}
                 </button>
               </div>
             </form>
@@ -1732,24 +1727,27 @@ const Dashboard = () => {
                 id: "orgs",
                 label: "Organizations",
                 value: kpiData.totalOrganizations,
-                delta: `Portfolio ${kpiData.portfolio?.organizations ?? 0} | Reebs ${
+                delta: `By Nana ${kpiData.portfolio?.organizations ?? 0} | Reebs ${
                   kpiData.reebs?.organizations ?? 0
                 } | Faako ${kpiData.faako?.organizations ?? 0}`,
               },
               {
-                id: "users",
-                label: "Users",
-                value: kpiData.totalUsers,
-                delta: `Portfolio ${kpiData.portfolio?.users ?? 0} | Reebs ${
-                  kpiData.reebs?.users ?? 0
-                } | Faako ${kpiData.faako?.users ?? 0}`,
+                id: "services",
+                label: "Services healthy",
+                value: formatRatio(healthyServices, totalServices),
+                delta: `${serviceHealthPercent}% healthy`,
               },
               {
-                id: "inventory",
-                label: "Inventory items",
-                value: kpiData.totalInventoryItems,
-                delta: "Reebs inventory tracked",
-                tone: "warning",
+                id: "sites",
+                label: "Sites online",
+                value: formatRatio(onlineSites, totalSites),
+                delta: `${siteHealthPercent}% uptime`,
+              },
+              {
+                id: "pages",
+                label: "Pages online",
+                value: formatRatio(onlinePages, totalPages),
+                delta: `${pageHealthPercent}% uptime`,
               },
             ].map((card) => (
               <article className="panel kpi-card" key={card.id}>
@@ -1765,16 +1763,22 @@ const Dashboard = () => {
           <div className="panel-grid">
             {[
               {
-                id: "avg-users",
-                label: "Avg users per org",
-                value: insights.averageUsersPerOrg ?? "N/A",
-                hint: "Portfolio data",
+                id: "service-health",
+                label: "Service health",
+                value: serviceHealthPercent,
+                hint: `${healthyServices}/${totalServices} services healthy`,
               },
               {
-                id: "inventory-per-user",
-                label: "Inventory per Reebs user",
-                value: insights.inventoryPerReebsUser ?? "N/A",
-                hint: "Reebs ops signal",
+                id: "site-health",
+                label: "Site health",
+                value: siteHealthPercent,
+                hint: `${onlineSites}/${totalSites} sites online`,
+              },
+              {
+                id: "tracked-organizations",
+                label: "Tracked organizations",
+                value: kpiData.totalOrganizations ?? 0,
+                hint: "By Nana + ERP sources",
               },
             ].map((insight) => (
               <article className="panel metric-card" key={insight.id}>
@@ -1790,44 +1794,39 @@ const Dashboard = () => {
               <div className="panel-header">
                 <div>
                   <h3>Data sources</h3>
-                  <p className="muted">Portfolio, Reebs, and Faako totals.</p>
+                  <p className="muted">By Nana, Reebs, and Faako totals.</p>
                 </div>
               </div>
               <div className="data-table">
-                <div className="table-row table-head is-4">
+                <div className="table-row table-head is-3">
                   <span>Source</span>
                   <span>Orgs</span>
-                  <span>Users</span>
-                  <span>Inventory</span>
+                  <span>Status</span>
                 </div>
                 {[
                   {
                     id: "portfolio",
-                    label: "Portfolio",
+                    label: "By Nana",
                     orgs: kpiData.portfolio?.organizations ?? 0,
-                    users: kpiData.portfolio?.users ?? 0,
-                    inventory: "N/A",
+                    status: systemStatus.portfolioDb,
                   },
                   {
                     id: "reebs",
                     label: "Reebs",
                     orgs: kpiData.reebs?.organizations ?? 0,
-                    users: kpiData.reebs?.users ?? 0,
-                    inventory: kpiData.reebs?.inventoryItems ?? 0,
+                    status: systemStatus.reebsDb,
                   },
                   {
                     id: "faako",
                     label: "Faako",
                     orgs: kpiData.faako?.organizations ?? 0,
-                    users: kpiData.faako?.users ?? 0,
-                    inventory: "N/A",
+                    status: systemStatus.faakoDb,
                   },
                 ].map((row) => (
-                  <div className="table-row is-4" key={row.id}>
+                  <div className="table-row is-3" key={row.id}>
                     <span className="table-strong">{row.label}</span>
                     <span>{row.orgs}</span>
-                    <span>{row.users}</span>
-                    <span>{row.inventory}</span>
+                    {renderStatusPill(row.status)}
                   </div>
                 ))}
               </div>
@@ -1894,7 +1893,7 @@ const Dashboard = () => {
               </div>
             </article>
 
-            <article className="panel panel-span-2">
+            <article className="panel">
               <div className="panel-header">
                 <div>
                   <h3>Attention required</h3>
@@ -1918,7 +1917,28 @@ const Dashboard = () => {
               </div>
             </article>
 
-            <article className="panel panel-span-2">
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <h3>Organization statuses</h3>
+                  <p className="muted">All orgs tracked.</p>
+                </div>
+              </div>
+              <div className="list">
+                {organizationStatusBreakdown.length ? (
+                  organizationStatusBreakdown.map((item) => (
+                    <div className="list-row is-split" key={item.status}>
+                      <span className="table-strong">{formatStatusLabel(item.status)}</span>
+                      {renderStatusCount(item.status, item.count)}
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No org statuses yet.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="panel panel-span-3">
               <div className="panel-header">
                 <div>
                   <h3>Activity timeline</h3>
@@ -1939,69 +1959,6 @@ const Dashboard = () => {
                   ))
                 ) : (
                   <p className="muted">No activity logged in this window.</p>
-                )}
-              </div>
-            </article>
-
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <h3>Role distribution</h3>
-                  <p className="muted">Portfolio org users.</p>
-                </div>
-              </div>
-              <div className="list">
-                {roleBreakdown.length ? (
-                  roleBreakdown.map((role) => (
-                    <div className="list-row is-split" key={role.name}>
-                      <span className="table-strong">{role.name}</span>
-                      <span>{role.users ?? 0}</span>
-                    </div>
-                  ))
-                ) : (
-                  <p className="muted">No roles yet.</p>
-                )}
-              </div>
-            </article>
-
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <h3>User statuses</h3>
-                  <p className="muted">Active, pending, suspended.</p>
-                </div>
-              </div>
-              <div className="list">
-                {userStatusBreakdown.length ? (
-                  userStatusBreakdown.map((item) => (
-                    <div className="list-row is-split" key={item.status}>
-                      <span className="table-strong">{formatStatusLabel(item.status)}</span>
-                      {renderStatusCount(item.status, item.count)}
-                    </div>
-                  ))
-                ) : (
-                  <p className="muted">No user statuses yet.</p>
-                )}
-              </div>
-            </article>
-
-            <article className="panel panel-span-2">
-              <div className="panel-header">
-                <div>
-                  <h3>Organization statuses</h3>
-                  <p className="muted">All orgs tracked.</p>
-                </div>
-              </div>
-              <div className="list">
-                {organizationStatusBreakdown.length ? (
-                  organizationStatusBreakdown.map((item) => (
-                    <div className="list-row is-split" key={item.status}>
-                      <span className="table-strong">{formatStatusLabel(item.status)}</span>
-                      {renderStatusCount(item.status, item.count)}
-                    </div>
-                  ))
-                ) : (
-                  <p className="muted">No org statuses yet.</p>
                 )}
               </div>
             </article>

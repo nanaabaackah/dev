@@ -75,10 +75,10 @@ const Bookings = () => {
       const settingsPayload = await settingsResponse.json();
 
       if (!bookingsResponse.ok) {
-        throw new Error(bookingsPayload?.error || "Unable to load bookings");
+        throw new Error(bookingsPayload?.error || "Unable to load appointments");
       }
       if (!settingsResponse.ok) {
-        throw new Error(settingsPayload?.error || "Unable to load booking settings");
+        throw new Error(settingsPayload?.error || "Unable to load appointment settings");
       }
 
       setBookings(Array.isArray(bookingsPayload) ? bookingsPayload : []);
@@ -112,13 +112,13 @@ const Bookings = () => {
   const bookingLinkValue = settings.bookingLink.trim();
   const safeBookingLink = getSafeExternalUrl(bookingLinkValue);
   const bookingEmailValue = settings.calendarEmail.trim();
-  const bookingLocationValue = settings.defaultLocation.trim() || "Location shared after booking";
+  const bookingLocationValue = settings.defaultLocation.trim() || "Location shared after appointment";
   const hasBookingLink = Boolean(safeBookingLink);
   const syncStatus = googleConnected ? "Connected" : "Not connected";
   const syncTone = googleConnected ? "success" : "warning";
   const mailSubject = "Book an appointment";
   const mailBody = `Pick a time that works for you: ${
-    safeBookingLink || "Add your booking link"
+    safeBookingLink || "Add your appointment link"
   }\nLocation: ${bookingLocationValue}`;
   const mailtoLink = `mailto:?subject=${encodeURIComponent(
     mailSubject
@@ -152,6 +152,16 @@ const Bookings = () => {
   const todayBookings = useMemo(() => {
     const now = new Date();
     return bookings.filter((booking) => isSameDay(new Date(booking.startAt), now));
+  }, [bookings]);
+  const upcomingBookings = useMemo(() => {
+    const now = new Date();
+    return bookings
+      .filter((booking) => {
+        const endAt = booking?.endAt ? new Date(booking.endAt) : new Date(booking.startAt);
+        if (Number.isNaN(endAt.getTime())) return false;
+        return endAt >= now;
+      })
+      .sort((left, right) => new Date(left.startAt) - new Date(right.startAt));
   }, [bookings]);
   const todayHolidayLabels = useMemo(() => getHolidayLabelsForDate(new Date()), []);
   const upcomingHolidayBlocks = useMemo(
@@ -194,13 +204,13 @@ const Bookings = () => {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.error || "Unable to save booking settings");
+        throw new Error(payload?.error || "Unable to save appointment settings");
       }
       setSettings({
         bookingLink: payload.bookingLink ?? "",
         defaultLocation: payload.defaultLocation ?? "",
       });
-      setStatus({ tone: "success", message: "Booking settings saved." });
+      setStatus({ tone: "success", message: "Appointment settings saved." });
     } catch (error) {
       setStatus({ tone: "error", message: error.message });
     } finally {
@@ -264,7 +274,7 @@ const Bookings = () => {
     const token = localStorage.getItem("token");
     if (!token) return;
     const confirmed = window.confirm(
-      "Disconnect Google Calendar and remove all synced bookings? This cannot be undone."
+      "Disconnect Google Calendar and remove all synced appointments? This cannot be undone."
     );
     if (!confirmed) return;
     setIsDisconnecting(true);
@@ -289,7 +299,7 @@ const Bookings = () => {
       setStatus({
         tone: "success",
         message: deletedCount
-          ? `Google Calendar disconnected. Removed ${deletedCount} synced booking${
+          ? `Google Calendar disconnected. Removed ${deletedCount} synced appointment${
               deletedCount === 1 ? "" : "s"
             }.`
           : "Google Calendar disconnected.",
@@ -305,7 +315,7 @@ const Bookings = () => {
     <section className="page bookings-page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Bookings</p>
+          <p className="eyebrow">Appointments</p>
           <h1>Appointment details</h1>
           <p className="muted">Manage requests, calendar sync, and upcoming sessions.</p>
         </div>
@@ -380,7 +390,7 @@ const Bookings = () => {
           {isLoading ? (
             <div className="loading-card" role="status" aria-live="polite">
               <span className="spinner" aria-hidden="true" />
-              <span>Loading bookings...</span>
+              <span>Loading appointments...</span>
             </div>
           ) : (
             <div className="data-table bookings-table">
@@ -393,8 +403,8 @@ const Bookings = () => {
                 <span>Status</span>
                 <span>Source</span>
               </div>
-              {bookings.length ? (
-                bookings.map((booking) => {
+              {upcomingBookings.length ? (
+                upcomingBookings.map((booking) => {
                   const statusConfig = STATUS_MAP[booking.status] || STATUS_MAP.TENTATIVE;
                   const holidayLabels = getHolidayLabelsForDate(new Date(booking.startAt));
                   const safeMeetingLink = getSafeExternalUrl(booking.meetingLink);
@@ -426,7 +436,7 @@ const Bookings = () => {
                   );
                 })
               ) : (
-                <p className="muted">No bookings yet.</p>
+                <p className="muted">No appointments yet.</p>
               )}
             </div>
           )}
@@ -456,14 +466,14 @@ const Bookings = () => {
                 </div>
               ))
             ) : (
-              <p className="muted">No bookings scheduled for today.</p>
+              <p className="muted">No appointments scheduled for today.</p>
             )}
           </div>
           <div className="bookings-holiday-blocks">
             <div className="panel-header">
               <div>
                 <h4>Holiday blocks (CA/GH)</h4>
-                <p className="muted">New bookings are blocked on these dates.</p>
+                <p className="muted">New appointments are blocked on these dates.</p>
               </div>
             </div>
             <div className="list">
@@ -485,7 +495,7 @@ const Bookings = () => {
       <section className="panel booking-panel" id="booking">
         <div className="panel-header">
           <div>
-            <h3>Booking link & calendar sync</h3>
+            <h3>Appointment link & calendar sync</h3>
             <p className="muted">
               Share a link so customers can pick a time that syncs to your email calendar.
             </p>
@@ -498,7 +508,7 @@ const Bookings = () => {
         <div className="booking-grid">
           <div className="stack">
             <label className="form-field">
-              <span>Booking link</span>
+              <span>Appointment link</span>
               <div className="input-group">
                 <input
                   className="input"
@@ -527,7 +537,7 @@ const Bookings = () => {
                   }
                 }}
               >
-                Open booking page
+                Open appointment page
               </a>
               <a
                 className="button button-ghost"

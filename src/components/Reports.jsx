@@ -13,14 +13,9 @@ const Reports = () => {
     const rows = [
       ["Metric", "Value"],
       ["Total organizations", kpiData.totalOrganizations ?? 0],
-      ["Total users", kpiData.totalUsers ?? 0],
-      ["Total inventory items", kpiData.totalInventoryItems ?? 0],
-      ["Portfolio organizations", kpiData.portfolio?.organizations ?? 0],
+      ["By Nana organizations", kpiData.portfolio?.organizations ?? 0],
       ["Reebs organizations", kpiData.reebs?.organizations ?? 0],
       ["Faako organizations", kpiData.faako?.organizations ?? 0],
-      ["Portfolio users", kpiData.portfolio?.users ?? 0],
-      ["Reebs users", kpiData.reebs?.users ?? 0],
-      ["Faako users", kpiData.faako?.users ?? 0],
     ];
     downloadCsv("dashboard_snapshot.csv", rows);
   };
@@ -100,14 +95,14 @@ const Reports = () => {
             <div className="list">
               <div className="list-row is-split">
                 <span className="table-strong">Weekly KPI rollup</span>
+                <span className="muted">Mondays at 09:00 UTC • dev@nanaabaackah.com</span>
+              </div>
+              <div className="list-row is-split">
+                <span className="table-strong">Accounting audit</span>
                 <span className="muted">Not scheduled</span>
               </div>
               <div className="list-row is-split">
-                <span className="table-strong">Inventory audit</span>
-                <span className="muted">Not scheduled</span>
-              </div>
-              <div className="list-row is-split">
-                <span className="table-strong">User access review</span>
+                <span className="table-strong">Access review</span>
                 <span className="muted">Not scheduled</span>
               </div>
             </div>

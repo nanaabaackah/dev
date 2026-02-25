@@ -47,7 +47,7 @@ const SystemHealth = () => {
     { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
     {
       id: "portfolio",
-      label: "Portfolio DB",
+      label: "By Nana DB",
       status: systemStatus.portfolioDb,
       note: "Primary org data",
     },
@@ -55,13 +55,13 @@ const SystemHealth = () => {
       id: "reebs",
       label: "Reebs DB",
       status: systemStatus.reebsDb,
-      note: "Products and inventory",
+      note: "Operational data",
     },
     {
       id: "faako",
       label: "Faako DB",
       status: systemStatus.faakoDb,
-      note: "ERP users",
+      note: "ERP members",
     },
   ];
 

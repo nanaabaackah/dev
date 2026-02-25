@@ -268,19 +268,21 @@
   }
 
   .productivity-overview__cards {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0.48rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.52rem;
   }
 
   .productivity-overview .productivity-card {
     border-radius: 12px;
     padding: 0.62rem;
     min-height: auto;
+    min-width: 0;
   }
 
   .productivity-overview .productivity-card__meta {
     font-size: 0.66rem;
     gap: 0.3rem;
+    flex-wrap: wrap;
   }
 
   .productivity-overview .productivity-card .kpi-value {
@@ -290,6 +292,7 @@
 
   .productivity-overview .productivity-card .muted {
     font-size: 0.62rem;
+    min-width: 0;
   }
 
   .productivity-editor,
@@ -429,5 +432,11 @@
   .productivity-history .button {
     padding: 0.4rem 0.75rem;
     font-size: 0.75rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .productivity-overview__cards {
+    grid-template-columns: 1fr;
   }
 }

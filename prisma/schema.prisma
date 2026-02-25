@@ -20,6 +20,7 @@ model Organization {
   bookingSettings BookingSettings?
   calendarIntegrations CalendarIntegration[]
   accountingEntries AccountingEntry[]
+  invoices Invoice[]
   productivityEntries ProductivityEntry[]
   productivityTodos ProductivityTodo[]
 }
@@ -181,6 +182,51 @@ model ProductivityTodo {
   @@index([userId, dueAt])
 }
 
+model Invoice {
+  id             Int           @id @default(autoincrement())
+  organizationId Int
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  invoiceNumber  String
+  status         InvoiceStatus @default(DRAFT)
+  currency       CurrencyCode
+  issueDate      DateTime      @db.Date
+  dueDate        DateTime?     @db.Date
+  paidAt         DateTime?
+  clientName     String
+  clientEmail    String?
+  clientAddress  String?
+  notes          String?
+  subtotal       Decimal       @db.Decimal(14, 2)
+  taxRate        Decimal       @default(0) @db.Decimal(5, 2)
+  taxAmount      Decimal       @default(0) @db.Decimal(14, 2)
+  discount       Decimal       @default(0) @db.Decimal(14, 2)
+  total          Decimal       @db.Decimal(14, 2)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  lineItems InvoiceLineItem[]
+
+  @@unique([organizationId, invoiceNumber])
+  @@index([organizationId, status])
+  @@index([organizationId, dueDate])
+  @@index([organizationId, issueDate])
+}
+
+model InvoiceLineItem {
+  id          Int      @id @default(autoincrement())
+  invoiceId   Int
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id])
+  description String
+  quantity    Decimal  @db.Decimal(10, 2)
+  unitPrice   Decimal  @db.Decimal(14, 2)
+  amount      Decimal  @db.Decimal(14, 2)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([invoiceId, sortOrder])
+}
+
 enum OrgStatus {
   ACTIVE
   INACTIVE
@@ -234,4 +280,12 @@ enum AccountingInterval {
 enum CurrencyCode {
   CAD
   GHS
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  VOID
 }

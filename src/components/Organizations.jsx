@@ -10,7 +10,7 @@ const Organizations = () => {
   const sources = [
     {
       id: "portfolio",
-      label: "Portfolio",
+      label: "By Nana",
       count: kpiData?.portfolio?.organizations ?? 0,
       note: "Primary org data",
     },
@@ -56,7 +56,7 @@ const Organizations = () => {
     <section className="page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Portfolio coverage</p>
+          <p className="eyebrow">By Nana coverage</p>
           <h1>Organizations</h1>
           <p className="muted">Last synced {lastSyncedLabel}</p>
         </div>

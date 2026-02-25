@@ -1,15 +1,23 @@
-const inferLocalApiBase = () => {
-  if (typeof window === "undefined") return "";
-  const { hostname, port, protocol } = window.location;
-  const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
-  if (!isLocalHost || !port || port === "8080") return "";
-  return `${protocol}//${hostname}:8080`;
+const normalizeApiBase = (value) => {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return trimmed ? trimmed.replace(/\/$/, "") : "";
 };
 
-const ENV_API_BASE = import.meta.env.VITE_API_BASE;
-const RAW_API_BASE =
-  typeof ENV_API_BASE === "string" && ENV_API_BASE.trim() ? ENV_API_BASE : inferLocalApiBase();
-const API_BASE = RAW_API_BASE.replace(/\/$/, "");
+const ENV_API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE);
+
+const resolveApiBase = () => {
+  if (!ENV_API_BASE) return "";
+  if (typeof window === "undefined") return ENV_API_BASE;
+  try {
+    const parsed = new URL(ENV_API_BASE, window.location.origin);
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/$/, "");
+  } catch {
+    return ENV_API_BASE;
+  }
+};
+
+const API_BASE = resolveApiBase();
 
 const ensureLeadingSlash = (value) => (value.startsWith('/') ? value : `/${value}`);
 
