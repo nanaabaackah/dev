@@ -104,6 +104,18 @@ const API_RATE_LIMIT_MAX = parsePositiveInt(
     max: 5000,
   }
 );
+const AI_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
+  process.env.AI_RATE_LIMIT_WINDOW_MS,
+  10 * 60 * 1000,
+  {
+    min: 1000,
+    max: 24 * 60 * 60 * 1000,
+  }
+);
+const AI_RATE_LIMIT_MAX = parsePositiveInt(process.env.AI_RATE_LIMIT_MAX, 20, {
+  min: 1,
+  max: 500,
+});
 const AUTH_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
   process.env.AUTH_RATE_LIMIT_WINDOW_MS,
   10 * 60 * 1000,
@@ -1092,6 +1104,21 @@ const parseRecipients = (value) => {
     .filter((item) => EMAIL_PATTERN.test(item));
 };
 
+const globalAdminEmailSet = new Set(
+  parseRecipients(process.env.GLOBAL_ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAIL).map((email) =>
+    email.toLowerCase()
+  )
+);
+
+const isGlobalAdmin = (user) => {
+  if (!user || user.roleName !== "Admin") return false;
+  const email = String(user.email || "")
+    .trim()
+    .toLowerCase();
+  if (!email) return false;
+  return globalAdminEmailSet.has(email);
+};
+
 const WEEKDAY_LABELS = [
   "Sunday",
   "Monday",
@@ -1617,6 +1644,11 @@ const publicBookingRateLimit = createRateLimitMiddleware({
   windowMs: PUBLIC_BOOKING_RATE_LIMIT_WINDOW_MS,
   maxRequests: PUBLIC_BOOKING_RATE_LIMIT_MAX,
 });
+const aiRateLimit = createRateLimitMiddleware({
+  scope: "ai-productivity-coach",
+  windowMs: AI_RATE_LIMIT_WINDOW_MS,
+  maxRequests: AI_RATE_LIMIT_MAX,
+});
 
 if (!jwtSecret) {
   throw new Error("Missing JWT_SECRET in environment config.");
@@ -1800,6 +1832,7 @@ app.use("/api", apiRateLimit);
 app.use("/api/auth/login", authRateLimit);
 app.use("/api/auth/forgot-password", authRateLimit);
 app.use("/api/public/bookings", publicBookingRateLimit);
+app.use("/api/ai/productivity-coach", aiRateLimit);
 app.use("/api", csrfMiddleware);
 
 app.post("/api/auth/login", async (req, res) => {
@@ -2156,6 +2189,7 @@ app.get("/api/public/trust-stats", async (req, res) => {
 app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
   const { start, end } = buildAccountingRange(req.query?.range);
   const isAdmin = req.user?.roleName === "Admin";
+  const requesterIsGlobalAdmin = isGlobalAdmin(req.user);
   const organizationParam = req.query?.organizationId;
   const includeArchived = String(req.query?.includeArchived || "").toLowerCase() === "true";
   let organizationFilter = { organizationId: req.user.organizationId };
@@ -2164,12 +2198,22 @@ app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
 
   if (isAdmin && organizationParam) {
     if (String(organizationParam).toLowerCase() === "all") {
+      if (!requesterIsGlobalAdmin) {
+        return res.status(403).json({
+          error: "Global admin access is required for organizationId=all.",
+        });
+      }
       organizationFilter = {};
       includeAllOrganizations = true;
     } else {
       const parsedOrgId = parseOrganizationId(organizationParam);
       if (!parsedOrgId) {
         return res.status(400).json({ error: "organizationId must be a valid id or 'all'" });
+      }
+      if (!requesterIsGlobalAdmin && parsedOrgId !== req.user.organizationId) {
+        return res.status(403).json({
+          error: "You can only access accounting entries for your own organization.",
+        });
       }
       selectedOrganization = await prisma.organization.findUnique({
         where: { id: parsedOrgId },
@@ -2250,6 +2294,7 @@ app.get("/api/accounting/entries", authMiddleware, async (req, res) => {
 });
 
 app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, res) => {
+  const requesterIsGlobalAdmin = isGlobalAdmin(req.user);
   const type = normalizeAccountingType(req.body?.type);
   if (!type) {
     return res.status(400).json({ error: "type must be REVENUE or EXPENSE" });
@@ -2272,6 +2317,11 @@ app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, re
     const parsedOrganizationId = parseOrganizationId(req.body.organizationId);
     if (!parsedOrganizationId) {
       return res.status(400).json({ error: "organizationId must be a valid id" });
+    }
+    if (!requesterIsGlobalAdmin && parsedOrganizationId !== req.user.organizationId) {
+      return res.status(403).json({
+        error: "You can only create accounting entries for your own organization.",
+      });
     }
     const organization = await prisma.organization.findUnique({
       where: { id: parsedOrganizationId },
@@ -2334,13 +2384,17 @@ const parseAccountingEntryId = (value) => {
   return parsed;
 };
 
-const pickAccountingEntry = async (id) => {
+const pickAccountingEntry = async (id, { user } = {}) => {
   const entryId = parseAccountingEntryId(id);
   if (!entryId) {
     return { error: "Entry id must be a valid number." };
   }
-  const entry = await prisma.accountingEntry.findUnique({
-    where: { id: entryId },
+  const where = { id: entryId };
+  if (user && !isGlobalAdmin(user)) {
+    where.organizationId = user.organizationId;
+  }
+  const entry = await prisma.accountingEntry.findFirst({
+    where,
     include: { organization: { select: { id: true, name: true, slug: true } } },
   });
   if (!entry) {
@@ -2356,7 +2410,8 @@ const buildInvoiceNumber = (entryId) => {
 };
 
 app.patch("/api/accounting/entries/:id", authMiddleware, requireAdmin, async (req, res) => {
-  const { entry, error } = await pickAccountingEntry(req.params.id);
+  const requesterIsGlobalAdmin = isGlobalAdmin(req.user);
+  const { entry, error } = await pickAccountingEntry(req.params.id, { user: req.user });
   if (error) {
     return res.status(404).json({ error });
   }
@@ -2421,6 +2476,11 @@ app.patch("/api/accounting/entries/:id", authMiddleware, requireAdmin, async (re
     if (!parsedOrganizationId) {
       return res.status(400).json({ error: "organizationId must be a valid id" });
     }
+    if (!requesterIsGlobalAdmin && parsedOrganizationId !== req.user.organizationId) {
+      return res.status(403).json({
+        error: "You can only move entries within your own organization.",
+      });
+    }
     const organization = await prisma.organization.findUnique({
       where: { id: parsedOrganizationId },
       select: { id: true },
@@ -2459,7 +2519,7 @@ app.patch("/api/accounting/entries/:id", authMiddleware, requireAdmin, async (re
 });
 
 app.post("/api/accounting/entries/:id/mark-paid", authMiddleware, requireAdmin, async (req, res) => {
-  const { entry, error } = await pickAccountingEntry(req.params.id);
+  const { entry, error } = await pickAccountingEntry(req.params.id, { user: req.user });
   if (error) {
     return res.status(404).json({ error });
   }
@@ -2475,7 +2535,7 @@ app.post("/api/accounting/entries/:id/mark-paid", authMiddleware, requireAdmin, 
 });
 
 app.post("/api/accounting/entries/:id/archive", authMiddleware, requireAdmin, async (req, res) => {
-  const { entry, error } = await pickAccountingEntry(req.params.id);
+  const { entry, error } = await pickAccountingEntry(req.params.id, { user: req.user });
   if (error) {
     return res.status(404).json({ error });
   }
@@ -2495,7 +2555,7 @@ app.post(
   authMiddleware,
   requireAdmin,
   async (req, res) => {
-    const { entry, error } = await pickAccountingEntry(req.params.id);
+    const { entry, error } = await pickAccountingEntry(req.params.id, { user: req.user });
     if (error) {
       return res.status(404).json({ error });
     }
@@ -2630,17 +2690,28 @@ const buildNextInvoiceNumber = async (organizationId) => {
 
 app.get("/api/invoices", authMiddleware, async (req, res) => {
   const isAdmin = req.user?.roleName === "Admin";
+  const requesterIsGlobalAdmin = isGlobalAdmin(req.user);
   const organizationParam = req.query?.organizationId;
   const statusParam = String(req.query?.status || "").trim();
   let organizationFilter = { organizationId: req.user.organizationId };
 
   if (isAdmin && organizationParam) {
     if (String(organizationParam).toLowerCase() === "all") {
+      if (!requesterIsGlobalAdmin) {
+        return res.status(403).json({
+          error: "Global admin access is required for organizationId=all.",
+        });
+      }
       organizationFilter = {};
     } else {
       const parsedOrganizationId = parseOrganizationId(organizationParam);
       if (!parsedOrganizationId) {
         return res.status(400).json({ error: "organizationId must be a valid id or 'all'" });
+      }
+      if (!requesterIsGlobalAdmin && parsedOrganizationId !== req.user.organizationId) {
+        return res.status(403).json({
+          error: "You can only access invoices for your own organization.",
+        });
       }
       const organization = await prisma.organization.findUnique({
         where: { id: parsedOrganizationId },
@@ -2679,11 +2750,17 @@ app.get("/api/invoices", authMiddleware, async (req, res) => {
 });
 
 app.post("/api/invoices", authMiddleware, requireAdmin, async (req, res) => {
+  const requesterIsGlobalAdmin = isGlobalAdmin(req.user);
   let organizationId = req.user.organizationId;
   if (req.body?.organizationId !== undefined) {
     const parsedOrganizationId = parseOrganizationId(req.body.organizationId);
     if (!parsedOrganizationId) {
       return res.status(400).json({ error: "organizationId must be a valid id" });
+    }
+    if (!requesterIsGlobalAdmin && parsedOrganizationId !== req.user.organizationId) {
+      return res.status(403).json({
+        error: "You can only create invoices for your own organization.",
+      });
     }
     const organization = await prisma.organization.findUnique({
       where: { id: parsedOrganizationId },
@@ -2844,13 +2921,16 @@ app.post("/api/invoices", authMiddleware, requireAdmin, async (req, res) => {
 });
 
 app.patch("/api/invoices/:id", authMiddleware, requireAdmin, async (req, res) => {
+  const requesterIsGlobalAdmin = isGlobalAdmin(req.user);
   const invoiceId = parseInvoiceId(req.params.id);
   if (!invoiceId) {
     return res.status(400).json({ error: "Invoice id must be a valid number." });
   }
 
-  const invoice = await prisma.invoice.findUnique({
-    where: { id: invoiceId },
+  const invoice = await prisma.invoice.findFirst({
+    where: requesterIsGlobalAdmin
+      ? { id: invoiceId }
+      : { id: invoiceId, organizationId: req.user.organizationId },
     include: {
       organization: { select: { id: true, name: true, slug: true } },
       lineItems: { orderBy: { sortOrder: "asc" } },
@@ -2867,6 +2947,11 @@ app.patch("/api/invoices/:id", authMiddleware, requireAdmin, async (req, res) =>
     const parsedOrganizationId = parseOrganizationId(req.body.organizationId);
     if (!parsedOrganizationId) {
       return res.status(400).json({ error: "organizationId must be a valid id" });
+    }
+    if (!requesterIsGlobalAdmin && parsedOrganizationId !== req.user.organizationId) {
+      return res.status(403).json({
+        error: "You can only move invoices within your own organization.",
+      });
     }
     const organization = await prisma.organization.findUnique({
       where: { id: parsedOrganizationId },
