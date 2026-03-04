@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { defineConfig, env } from "@prisma/config";
+import { defineConfig } from "@prisma/config";
 
 const normalizeEnvironmentName = (value) => {
   const normalized = String(value || "").trim().toLowerCase();
@@ -26,9 +26,18 @@ const resolveDatabaseUrl = () => {
   const environment = loadEnvironmentConfig();
   const runtimeUrl =
     environment === "production"
-      ? env("DATABASE_URL_PRODUCTION")
-      : env("DATABASE_URL_DEVELOPMENT");
-  return runtimeUrl || env("DATABASE_URL");
+      ? process.env.DATABASE_URL_PRODUCTION
+      : process.env.DATABASE_URL_DEVELOPMENT;
+  const fallbackUrl = process.env.DATABASE_URL;
+  const resolvedUrl = String(runtimeUrl || fallbackUrl || "").trim();
+  if (!resolvedUrl) {
+    const expectedVar =
+      environment === "production" ? "DATABASE_URL_PRODUCTION" : "DATABASE_URL_DEVELOPMENT";
+    throw new Error(
+      `Missing database URL. Set ${expectedVar} or DATABASE_URL before running Prisma commands.`
+    );
+  }
+  return resolvedUrl;
 };
 
 export default defineConfig({
