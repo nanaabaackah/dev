@@ -4,7 +4,7 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
 
 ## Local setup
 
-- Set `VITE_API_BASE=https://dev.nanaabaackah.com` (or your preferred API host) in `.env` before running `npm run dev` or `npm run build`. The helper in `src/api-url.js` normalizes that base and still falls back to relative `/api/*` calls when the variable is empty.
+- Set `VITE_API_BASE=https://dev.nanaabaackah.com` (or your preferred API host) in `.env` before running `npm run dev` or `npm run build`. The helper in `src/api-url.ts` normalizes that base and still falls back to relative `/api/*` calls when the variable is empty.
 - Auth now uses secure cookies (`HttpOnly` session + CSRF cookie). If you run frontend and backend on different origins, keep CORS origins configured on the API and allow credentials.
 - For AI v1 in Productivity, set `OPENAI_API_KEY` on the backend server environment. Optional: set `OPENAI_MODEL` (defaults to `gpt-4.1-mini`) and `OPENAI_TIMEOUT_MS`.
 - Optional auth cookie env vars:
@@ -25,6 +25,20 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
   - For local work, copy `.env.example` to your untracked `.env.development`, keep `APP_ENV="development"`, and set a local database in `DATABASE_URL_DEVELOPMENT`.
   - In production set `APP_ENV="production"` (or `NODE_ENV=production`) and keep production DB in `DATABASE_URL` or `DATABASE_URL_PRODUCTION`.
   - `ENFORCE_DATABASE_ISOLATION` (default `true` in development) refuses startup if local DB matches `DATABASE_URL_PRODUCTION`, preventing local test invoices from writing into prod.
+
+## Project structure
+
+- Route-level screens now live in `src/pages/<PageName>/` with page-specific CSS kept beside the page component where needed.
+- Shared UI lives in `src/components/` (for example `JobsWidget`, `KPICard`, `VerseWidget`, `WeatherWidget`, `ThemeToggle`, and `ErrorBoundary`).
+- Shared data logic and browser utilities stay in `src/hooks/` and `src/utils/`.
+- The backend is being split by feature. Auth, dashboard, jobs, productivity, security headers, request logging, and shared async helpers now live under `backend/` feature folders, while `backend/server.js` remains the main composition root.
+
+## Useful commands
+
+- `npm run dev` starts the Vite frontend locally.
+- `npm run build` creates a production build.
+- `npm test` runs the current backend unit tests with Node's built-in test runner.
+- `npm run server` starts the backend API.
 
 ## Deployment
 
