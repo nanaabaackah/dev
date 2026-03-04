@@ -310,6 +310,12 @@ const GOOGLE_WEATHER_UNITS_SYSTEM =
     : "IMPERIAL";
 const GOOGLE_WEATHER_LANGUAGE_CODE =
   String(process.env.GOOGLE_WEATHER_LANGUAGE_CODE || "en").trim() || "en";
+const DASHBOARD_VERSE_CACHE_TTL_MS = Number(
+  process.env.DASHBOARD_VERSE_CACHE_TTL_MS ?? 24 * 60 * 60 * 1000
+);
+const DASHBOARD_WEATHER_CACHE_TTL_MS = Number(
+  process.env.DASHBOARD_WEATHER_CACHE_TTL_MS ?? 30 * 60 * 1000
+);
 const SITE_STATUS_USER_AGENT =
   process.env.SITE_STATUS_USER_AGENT ?? "bynana-portfolio-status/1.0 (+https://dev.nanaabaackah.com)";
 
@@ -3679,12 +3685,6 @@ const PRODUCTIVITY_RANGE_DAYS = {
 const JOB_WORK_TYPES = new Set(["freelance", "contract", "full_time"]);
 const JOB_RECOMMENDATION_CACHE_TTL_MS = Number(
   process.env.JOB_RECOMMENDATION_CACHE_TTL_MS ?? 60 * 60 * 1000
-);
-const DASHBOARD_VERSE_CACHE_TTL_MS = Number(
-  process.env.DASHBOARD_VERSE_CACHE_TTL_MS ?? 24 * 60 * 60 * 1000
-);
-const DASHBOARD_WEATHER_CACHE_TTL_MS = Number(
-  process.env.DASHBOARD_WEATHER_CACHE_TTL_MS ?? 30 * 60 * 1000
 );
 const ARBEITNOW_PAGE_LIMIT = Math.min(
   Math.max(Number(process.env.ARBEITNOW_PAGE_LIMIT ?? 2), 1),
