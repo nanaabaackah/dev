@@ -26,6 +26,7 @@
   --danger: color-mix(in oklab, #722f37, #3b2f2f 35%);
   --danger-soft: rgba(114, 47, 55, 0.18);
   --neutral-soft: color-mix(in oklab, #f6f1e8, #36454f 20%);
+  --mobile-tabbar-clearance: 0px;
   font-family: "IBM Plex Sans", "Trebuchet MS", sans-serif;
   line-height: 1.5;
   font-weight: 400;
@@ -1733,6 +1734,10 @@ textarea.input {
 }
 
 @media (max-width: 900px) {
+  :root {
+    --mobile-tabbar-clearance: calc(5.8rem + env(safe-area-inset-bottom));
+  }
+
   body {
     overflow-x: hidden;
   }
@@ -1769,7 +1774,7 @@ textarea.input {
     position: fixed;
     inset: 0 auto 0 0;
     width: min(78vw, 320px);
-    height: 100vh;
+    height: 100dvh;
     transform: translateX(-110%);
     transition: transform 0.25s ease;
     touch-action: pan-y;
@@ -1826,7 +1831,7 @@ textarea.input {
   }
 
   .erp-content {
-    padding: calc(1rem + var(--topbar-height)) 0.9rem 5.8rem;
+    padding: calc(1rem + var(--topbar-height)) 0.9rem var(--mobile-tabbar-clearance);
   }
 
   .offline-banner {
@@ -1927,6 +1932,19 @@ textarea.input {
     backdrop-filter: blur(10px);
   }
 
+  .modal-backdrop {
+    align-items: flex-start;
+    padding: 1rem 0.9rem calc(var(--mobile-tabbar-clearance) + 1rem);
+    overflow-y: auto;
+  }
+
+  .modal-card {
+    width: min(900px, 100%);
+    max-height: calc(100dvh - var(--mobile-tabbar-clearance) - 2rem);
+    margin: 0 auto;
+    padding: 1rem;
+  }
+
   .mobile-tabbar a {
     display: inline-grid;
     place-items: center;
@@ -2004,11 +2022,12 @@ textarea.input {
     padding-top: calc(var(--topbar-height) + 0.9rem);
     padding-left: 1rem;
     padding-right: 1rem;
+    padding-bottom: calc(var(--mobile-tabbar-clearance) + 0.9rem);
   }
 
   .invoice-preview-modal {
     width: min(100%, calc(100vw - 2rem));
-    max-height: calc(100vh - var(--topbar-height) - 1.8rem);
+    max-height: calc(100dvh - var(--topbar-height) - var(--mobile-tabbar-clearance) - 1.8rem);
     padding: 1rem;
   }
 
@@ -2111,12 +2130,12 @@ textarea.input {
     padding-top: calc(var(--topbar-height) + 0.65rem);
     padding-left: 0.75rem;
     padding-right: 0.75rem;
-    padding-bottom: 0.9rem;
+    padding-bottom: calc(var(--mobile-tabbar-clearance) + 0.65rem);
   }
 
   .invoice-preview-modal {
     width: min(100%, calc(100vw - 1.5rem));
-    max-height: calc(100vh - var(--topbar-height) - 1rem);
+    max-height: calc(100dvh - var(--topbar-height) - var(--mobile-tabbar-clearance) - 1rem);
     padding: 0.9rem;
     border-radius: 18px;
   }

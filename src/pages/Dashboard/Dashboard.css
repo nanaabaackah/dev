@@ -632,10 +632,27 @@
     display: grid;
     gap: 0.78rem;
   }
+
+  .slot-modal {
+    padding: 1rem 0.9rem calc(var(--mobile-tabbar-clearance) + 1rem);
+  }
+
+  .slot-modal__card {
+    width: min(520px, 100%);
+    max-height: calc(100dvh - var(--mobile-tabbar-clearance) - 2rem);
+    margin: 0 auto;
+    padding: 1rem;
+  }
 }
 
 @media (max-width: 620px) {
   .dashboard-brief-grid {
     grid-template-columns: 1fr;
+  }
+
+  .slot-modal {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+    padding-bottom: calc(var(--mobile-tabbar-clearance) + 0.85rem);
   }
 }
