@@ -23,20 +23,22 @@ import {
 } from "iconsax-react";
 import { FiActivity } from "react-icons/fi";
 import { RiLogoutCircleRLine } from "react-icons/ri";
-import Login from "./components/Login";
-import Dashboard from "./components/Dashboard";
-import Bookings from "./components/Bookings";
-import PublicBooking from "./components/PublicBooking";
-import Organizations from "./components/Organizations";
-import Profile from "./components/Profile";
-import SystemHealth from "./components/SystemHealth";
-import Reports from "./components/Reports";
-import Settings from "./components/Settings";
-import AuditLogs from "./components/AuditLogs";
+import Login from "./pages/Login/Login";
+import Dashboard from "./pages/Dashboard/Dashboard";
+import Bookings from "./pages/Bookings/Bookings";
+import PublicBooking from "./pages/PublicBooking/PublicBooking";
+import Organizations from "./pages/Organizations/Organizations";
+import Profile from "./pages/Profile/Profile";
+import SystemHealth from "./pages/SystemHealth/SystemHealth";
+import Reports from "./pages/Reports/Reports";
+import Settings from "./pages/Settings/Settings";
+import AuditLogs from "./pages/AuditLogs/AuditLogs";
 import ThemeToggle from "./components/ThemeToggle";
-import Accounting from "./components/Accounting";
-import Invoicing from "./components/Invoicing";
-import Productivity from "./components/Productivity";
+import Accounting from "./pages/Accounting/Accounting";
+import Invoicing from "./pages/Invoicing/Invoicing";
+import Productivity from "./pages/Productivity/Productivity";
+import ErrorBoundary from "./components/ErrorBoundary";
+import ErrorPage from "./pages/ErrorPage/ErrorPage";
 import useScrollAnimations from "./hooks/useScrollAnimations";
 import { buildApiUrl } from "./api-url";
 import { readJsonResponse } from "./utils/http";
@@ -507,6 +509,8 @@ const getTitleForPath = (pathname) => {
       return "Dashboard | Dev";
     case "/login":
       return "Login | Dev";
+    case "/error":
+      return "Error | Dev";
     case "/bookings":
       return "Appointments | Dev";
     case "/organizations":
@@ -528,7 +532,7 @@ const getTitleForPath = (pathname) => {
     case "/audit-logs":
       return "Audit Logs | Dev";
     default:
-      return "Dev";
+      return "Page Not Found | Dev";
   }
 };
 
@@ -550,11 +554,19 @@ const ScrollAnimationManager = () => {
   return null;
 };
 
+const RouteBoundary = ({ children }) => {
+  const location = useLocation();
+
+  return <ErrorBoundary resetKey={location.pathname}>{children}</ErrorBoundary>;
+};
+
 const ShellPage = ({ children, theme, onToggleTheme }) => (
   <PrivateRoute>
-    <AppShell theme={theme} onToggleTheme={onToggleTheme}>
-      {children}
-    </AppShell>
+    <RouteBoundary>
+      <AppShell theme={theme} onToggleTheme={onToggleTheme}>
+        {children}
+      </AppShell>
+    </RouteBoundary>
   </PrivateRoute>
 );
 
@@ -575,8 +587,30 @@ function App() {
       <TitleManager />
       <ScrollAnimationManager />
       <Routes>
-        <Route path="/login" element={<Login theme={theme} onToggleTheme={handleToggleTheme} />} />
-        <Route path="/book/:orgSlug?" element={<PublicBooking />} />
+        <Route
+          path="/login"
+          element={
+            <RouteBoundary>
+              <Login theme={theme} onToggleTheme={handleToggleTheme} />
+            </RouteBoundary>
+          }
+        />
+        <Route
+          path="/book/:orgSlug?"
+          element={
+            <RouteBoundary>
+              <PublicBooking />
+            </RouteBoundary>
+          }
+        />
+        <Route
+          path="/error"
+          element={
+            <RouteBoundary>
+              <ErrorPage />
+            </RouteBoundary>
+          }
+        />
         <Route
           path="/dashboard"
           element={
@@ -667,6 +701,18 @@ function App() {
           }
         />
         <Route path="/" element={<Navigate to="/dashboard" />} />
+        <Route
+          path="*"
+          element={
+            <RouteBoundary>
+              <ErrorPage
+                code="404"
+                title="Page not found."
+                message="The page you requested does not exist or may have moved."
+              />
+            </RouteBoundary>
+          }
+        />
       </Routes>
     </Router>
   );

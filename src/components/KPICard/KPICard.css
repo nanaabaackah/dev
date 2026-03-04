@@ -1,0 +1,4 @@
+.kpi-card__value-stack {
+  display: grid;
+  gap: 0.25rem;
+}

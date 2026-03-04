@@ -20,6 +20,11 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
   - Optional YouVersion auth headers: `YOUVERSION_API_KEY`, `YOUVERSION_BEARER_TOKEN`, `YOUVERSION_APP_ID`.
 - Job recommendations now aggregate multiple live boards (Remotive + Arbeitnow) via `/api/jobs/recommendations`. Optional: `ARBEITNOW_PAGE_LIMIT` to control fetched pages.
 - To auto-seed an admin for first login, set `DEFAULT_ADMIN_EMAIL` and a strong `DEFAULT_ADMIN_PASSWORD` (minimum 12 chars) on the backend.
+- Environment isolation for invoices and other writes:
+  - Backend now reads `APP_ENV` (defaults to `development`) and loads `.env.<APP_ENV>`.
+  - For local work, copy `.env.example` to your untracked `.env.development`, keep `APP_ENV="development"`, and set a local database in `DATABASE_URL_DEVELOPMENT`.
+  - In production set `APP_ENV="production"` (or `NODE_ENV=production`) and keep production DB in `DATABASE_URL` or `DATABASE_URL_PRODUCTION`.
+  - `ENFORCE_DATABASE_ISOLATION` (default `true` in development) refuses startup if local DB matches `DATABASE_URL_PRODUCTION`, preventing local test invoices from writing into prod.
 
 ## Deployment
 
