@@ -4096,7 +4096,7 @@ const fetchYouVersionVerseOfDay = async () => {
   throw new Error("Unable to parse YouVersion verse-of-day response");
 };
 
-const getDashboardVerseOfDayPayload = async () => {
+async function getDashboardVerseOfDayPayload() {
   const dayKey = new Date().toISOString().slice(0, 10);
   const getVerse = withCache(`dashboard-verse:${dayKey}`, DASHBOARD_VERSE_CACHE_TTL_MS, async () => {
     try {
@@ -4131,14 +4131,14 @@ const getDashboardVerseOfDayPayload = async () => {
   });
 
   return getVerse();
-};
+}
 
-const parseCoordinate = (value, min, max) => {
+function parseCoordinate(value, min, max) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
   if (parsed < min || parsed > max) return null;
   return parsed;
-};
+}
 
 const resolveWeatherNumber = (...values) => {
   for (const value of values) {
@@ -4162,8 +4162,9 @@ const formatTimeZoneLocation = (timeZoneId) => {
   return lastPart.replace(/_/g, " ");
 };
 
-const buildWeatherCacheKey = ({ latitude, longitude }) =>
-  `${latitude.toFixed(3)},${longitude.toFixed(3)}|${GOOGLE_WEATHER_UNITS_SYSTEM}|${GOOGLE_WEATHER_LANGUAGE_CODE}`;
+function buildWeatherCacheKey({ latitude, longitude }) {
+  return `${latitude.toFixed(3)},${longitude.toFixed(3)}|${GOOGLE_WEATHER_UNITS_SYSTEM}|${GOOGLE_WEATHER_LANGUAGE_CODE}`;
+}
 
 const normalizeGoogleWeatherPayload = ({ payload, latitude, longitude }) => {
   const unitFallback = GOOGLE_WEATHER_UNITS_SYSTEM === "METRIC" ? "CELSIUS" : "FAHRENHEIT";
@@ -4217,7 +4218,7 @@ const normalizeGoogleWeatherPayload = ({ payload, latitude, longitude }) => {
   };
 };
 
-const fetchGoogleCurrentWeather = async ({ latitude, longitude }) => {
+async function fetchGoogleCurrentWeather({ latitude, longitude }) {
   if (!GOOGLE_WEATHER_API_KEY) {
     throw new Error("Google Weather API key is not configured");
   }
@@ -4246,7 +4247,7 @@ const fetchGoogleCurrentWeather = async ({ latitude, longitude }) => {
   }
 
   return normalizeGoogleWeatherPayload({ payload, latitude, longitude });
-};
+}
 
 const normalizeJobSearch = (value) => String(value || "").trim().slice(0, 120);
 
