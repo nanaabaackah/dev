@@ -1,10 +1,29 @@
+const normalizeModuleName = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const extractRoleModules = (role) => {
+  const modules = role?.permissions?.modules;
+  if (!Array.isArray(modules)) return [];
+  return Array.from(
+    new Set(
+      modules
+        .map((item) => normalizeModuleName(item))
+        .filter(Boolean)
+    )
+  );
+};
+
 export const createBuildToken = ({ jwt, jwtSecret }) => (user) => {
+  const allowedModules = extractRoleModules(user?.role);
   const payload = {
     userId: user.id,
     organizationId: user.organizationId,
     roleId: user.roleId,
     roleName: user.role.name,
     email: user.email,
+    modules: allowedModules,
   };
 
   return jwt.sign(payload, jwtSecret, { expiresIn: "12h" });
@@ -26,6 +45,11 @@ export const createLoginHandler =
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
+    if (user.status !== "ACTIVE") {
+      return res.status(403).json({
+        error: "Your account is not active yet. Check your invitation email to set up your account.",
+      });
+    }
 
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
@@ -35,6 +59,7 @@ export const createLoginHandler =
     const token = buildToken(user);
     const csrfToken = createCsrfToken();
     setAuthCookies(res, { token, csrfToken });
+    const allowedModules = extractRoleModules(user?.role);
 
     return res.json({
       user: {
@@ -43,8 +68,13 @@ export const createLoginHandler =
         firstName: user.firstName,
         lastName: user.lastName,
         fullName: user.fullName,
-        role: { id: user.role.id, name: user.role.name },
+        role: {
+          id: user.role.id,
+          name: user.role.name,
+          permissions: user.role.permissions ?? null,
+        },
         organizationId: user.organizationId,
+        allowedModules,
       },
       token,
     });
@@ -58,7 +88,7 @@ export const createLogoutHandler =
   };
 
 export const createForgotPasswordHandler =
-  ({ defaultAdminEmail }) =>
+  ({ defaultAdminEmail, prisma, sendForgotPasswordEmail, exposeSendErrors = false }) =>
   async (req, res) => {
     const email = (req.body?.email || "").toLowerCase().trim();
     if (!email) {
@@ -66,8 +96,132 @@ export const createForgotPasswordHandler =
     }
 
     console.info(`Password reset requested for ${email}`);
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+    let delivery = null;
+
+    if (user && user.status !== "SUSPENDED" && typeof sendForgotPasswordEmail === "function") {
+      try {
+        delivery = await sendForgotPasswordEmail({ req, user });
+      } catch (error) {
+        console.error(`Failed to send password reset email for ${email}`, error);
+        if (exposeSendErrors) {
+          return res.status(error?.statusCode || 500).json({
+            error: error?.message || "Unable to send password reset email.",
+          });
+        }
+      }
+    }
+
     return res.json({
-      message: "If that address exists in our system, we will email you instructions shortly.",
+      message:
+        delivery?.resetRerouted && delivery?.resetRecipient
+          ? `Password reset instructions were sent to ${delivery.resetRecipient}.`
+          : "If that address exists in our system, we will email you instructions shortly.",
       supportEmail: defaultAdminEmail,
+      deliveryEmail: delivery?.resetRecipient || null,
+      intendedEmail: delivery?.resetIntendedRecipient || null,
+      rerouted: Boolean(delivery?.resetRerouted),
+    });
+  };
+
+export const createSetupAccountVerifyHandler =
+  ({ verifySetupTokenPayload, prisma }) =>
+  async (req, res) => {
+    const token = String(req.query?.token || "").trim();
+    if (!token) {
+      return res.status(400).json({ error: "Invitation token is required." });
+    }
+
+    const payload = verifySetupTokenPayload(token);
+    if (!payload) {
+      return res.status(400).json({ error: "Invalid or expired invitation token." });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      include: { role: true },
+    });
+    if (!user) {
+      return res.status(404).json({ error: "Invitation account was not found." });
+    }
+
+    if (
+      String(user.email || "").trim().toLowerCase() !== payload.email ||
+      user.updatedAt.toISOString() !== payload.version
+    ) {
+      return res.status(400).json({ error: "This invitation is no longer valid." });
+    }
+
+    if (user.status === "SUSPENDED") {
+      return res.status(403).json({ error: "This account is suspended. Contact an administrator." });
+    }
+
+    return res.json({
+      ok: true,
+      user: {
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        fullName: user.fullName,
+        role: { id: user.role.id, name: user.role.name },
+      },
+    });
+  };
+
+export const createSetupAccountCompleteHandler =
+  ({ verifySetupTokenPayload, validatePasswordStrength, passwordPolicyHint, prisma, bcrypt }) =>
+  async (req, res) => {
+    const token = String(req.body?.token || "").trim();
+    const password = String(req.body?.password || "").trim();
+    if (!token) {
+      return res.status(400).json({ error: "Invitation token is required." });
+    }
+    if (!password) {
+      return res.status(400).json({ error: "password is required." });
+    }
+
+    const payload = verifySetupTokenPayload(token);
+    if (!payload) {
+      return res.status(400).json({ error: "Invalid or expired invitation token." });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+    });
+    if (!user) {
+      return res.status(404).json({ error: "Invitation account was not found." });
+    }
+    if (
+      String(user.email || "").trim().toLowerCase() !== payload.email ||
+      user.updatedAt.toISOString() !== payload.version
+    ) {
+      return res.status(400).json({ error: "This invitation is no longer valid." });
+    }
+    if (user.status === "SUSPENDED") {
+      return res.status(403).json({ error: "This account is suspended. Contact an administrator." });
+    }
+
+    const passwordValidation = validatePasswordStrength(password);
+    if (!passwordValidation.ok) {
+      return res.status(400).json({
+        error: passwordValidation.error,
+        passwordPolicy: passwordPolicyHint,
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        status: user.status === "PENDING" ? "ACTIVE" : user.status,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      message: "Account setup complete. You can now sign in.",
     });
   };

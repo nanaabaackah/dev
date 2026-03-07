@@ -19,7 +19,16 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
   - Set `YOUVERSION_VERSE_ENDPOINT` for `/api/dashboard/verse-of-day` (defaults to `https://www.bible.com/verse-of-the-day`).
   - Optional YouVersion auth headers: `YOUVERSION_API_KEY`, `YOUVERSION_BEARER_TOKEN`, `YOUVERSION_APP_ID`.
 - Job recommendations now aggregate multiple live boards (Remotive + Arbeitnow) via `/api/jobs/recommendations`. Optional: `ARBEITNOW_PAGE_LIMIT` to control fetched pages.
-- To auto-seed an admin for first login, set `DEFAULT_ADMIN_EMAIL` and a strong `DEFAULT_ADMIN_PASSWORD` (minimum 12 chars) on the backend.
+- Rent module:
+  - `/rent` adds tenant rent tracking with payment logging and outstanding-balance dashboards.
+  - Create external rent-only users with the `Tenant` role (seeded automatically) so they only access rent APIs/pages.
+  - Optional quarterly tenant update env vars: `RENT_QUARTERLY_EMAIL_ENABLED`, `RENT_QUARTERLY_EMAIL_HOUR_UTC`, `RENT_QUARTERLY_EMAIL_MINUTE_UTC`, `RENT_QUARTERLY_FROM_EMAIL`.
+- User Control module:
+  - `/user-control` lets admins create users, assign roles/status, and edit role module access in-app.
+  - Creating a user now sends an invitation email with a `/setup-account` link so the user can choose their password.
+  - Optional invite env vars: `ACCOUNT_INVITE_FROM_EMAIL`, `ACCOUNT_SETUP_TOKEN_TTL_HOURS`, and `APP_BASE_URL` (used for invite links).
+- In non-production/local environments, all outgoing email is rerouted to `DEFAULT_ADMIN_EMAIL`.
+- To auto-seed an admin for first login, set `DEFAULT_ADMIN_EMAIL` and a strong `DEFAULT_ADMIN_PASSWORD` on the backend (minimum 14 chars with uppercase, lowercase, number, and special character).
 - Environment isolation for invoices and other writes:
   - Backend now reads `APP_ENV` (defaults to `development`) and loads `.env.<APP_ENV>`.
   - For local work, copy `.env.example` to your untracked `.env.development`, keep `APP_ENV="development"`, and set a local database in `DATABASE_URL_DEVELOPMENT`.

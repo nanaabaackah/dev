@@ -67,7 +67,11 @@ const Login = ({ theme, onToggleTheme }) => {
       if (!response.ok) {
         throw new Error(payload?.error || "Unable to request password help");
       }
-      setForgotStatus(payload.message || "If that email exists we sent instructions.");
+      const deliveredTo = String(payload?.deliveryEmail || "").trim();
+      const statusMessage = deliveredTo
+        ? `${payload.message || "Password reset instructions sent."} Check ${deliveredTo}.`
+        : payload.message || "If that email exists we sent instructions.";
+      setForgotStatus(statusMessage);
       setForgotError("");
     } catch (err) {
       setForgotError(err.message);

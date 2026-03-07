@@ -33,6 +33,9 @@ import SystemHealth from "./pages/SystemHealth/SystemHealth";
 import Reports from "./pages/Reports/Reports";
 import Settings from "./pages/Settings/Settings";
 import AuditLogs from "./pages/AuditLogs/AuditLogs";
+import Rent from "./pages/Rent/Rent";
+import UserControl from "./pages/UserControl/UserControl";
+import SetupAccount from "./pages/SetupAccount/SetupAccount";
 import ThemeToggle from "./components/ThemeToggle";
 import Accounting from "./pages/Accounting/Accounting";
 import Invoicing from "./pages/Invoicing/Invoicing";
@@ -42,27 +45,40 @@ import ErrorPage from "./pages/ErrorPage/ErrorPage";
 import useScrollAnimations from "./hooks/useScrollAnimations";
 import { buildApiUrl } from "./api-url";
 import { readJsonResponse } from "./utils/http";
+import { canAccessPath, hasModuleAccess, isRentOnlyUser } from "./utils/moduleAccess";
 
 const NAV_ITEMS = [
-  { to: "/dashboard", label: "Dashboard", Icon: Category },
-  { to: "/productivity", label: "Productivity", Icon: TaskSquare },
-  { to: "/accounting", label: "Accounting", Icon: WalletMoney },
-  { to: "/invoicing", label: "Invoicing", Icon: ReceiptItem },
-  { to: "/bookings", label: "Appointments", Icon: CalendarTick },
-  { to: "/organizations", label: "Organizations", Icon: Buildings2 },
-  { to: "/system-health", label: "System Health", Icon: Monitor },
-  { to: "/reports", label: "Reports", Icon: DocumentText },
-  { to: "/audit-logs", label: "Audit Logs", Icon: ClipboardTick },
-  { to: "/profile", label: "Profile", Icon: Profile2User },
-  { to: "/settings", label: "Settings", Icon: Setting2 },
+  { to: "/dashboard", label: "Dashboard", Icon: Category, module: "dashboard" },
+  { to: "/rent", label: "Rent", Icon: WalletMoney, module: "rent" },
+  { to: "/productivity", label: "Productivity", Icon: TaskSquare, module: "productivity" },
+  { to: "/accounting", label: "Accounting", Icon: WalletMoney, module: "accounting" },
+  { to: "/invoicing", label: "Invoicing", Icon: ReceiptItem, module: "invoicing" },
+  { to: "/bookings", label: "Appointments", Icon: CalendarTick, module: "bookings" },
+  { to: "/organizations", label: "Organizations", Icon: Buildings2, module: "organizations" },
+  { to: "/system-health", label: "System Health", Icon: Monitor, module: "system-health" },
+  { to: "/reports", label: "Reports", Icon: DocumentText, module: "reports" },
+  { to: "/audit-logs", label: "Audit Logs", Icon: ClipboardTick, module: "audit-logs" },
+  { to: "/user-control", label: "User Control", Icon: Profile2User, module: "user-control" },
+  { to: "/profile", label: "Profile", Icon: Profile2User, module: "profile" },
+  { to: "/settings", label: "Settings", Icon: Setting2, module: "settings" },
 ];
 
 const MOBILE_TAB_ITEMS = [
-  { to: "/dashboard", label: "Home", Icon: Category },
-  { to: "/productivity", label: "Focus", Icon: TaskSquare },
-  { to: "/accounting", label: "Finance", Icon: WalletMoney },
-  { to: "/bookings", label: "Appointments", Icon: CalendarTick },
-  { to: "/settings", label: "Settings", Icon: Setting2 },
+  { to: "/dashboard", label: "Home", Icon: Category, module: "dashboard" },
+  { to: "/rent", label: "Rent", Icon: WalletMoney, module: "rent" },
+  { to: "/productivity", label: "Focus", Icon: TaskSquare, module: "productivity" },
+  { to: "/accounting", label: "Finance", Icon: WalletMoney, module: "accounting" },
+  { to: "/bookings", label: "Appointments", Icon: CalendarTick, module: "bookings" },
+  { to: "/settings", label: "Settings", Icon: Setting2, module: "settings" },
+];
+
+const RENT_ONLY_NAV_ITEMS = [
+  { to: "/dashboard", label: "Rent", Icon: WalletMoney },
+  { to: "/profile", label: "Profile", Icon: Profile2User },
+];
+const RENT_ONLY_MOBILE_TAB_ITEMS = [
+  { to: "/dashboard", label: "Rent", Icon: WalletMoney },
+  { to: "/profile", label: "Profile", Icon: Profile2User },
 ];
 
 const isHealthyStatus = (status) => status === "ok" || status === "online";
@@ -108,10 +124,38 @@ const getOverdueAccountingCount = (accountingPayload) => {
   return entries.filter((entry) => String(entry?.status || "").toUpperCase() === "OVERDUE").length;
 };
 
+const getRentOutstandingCount = (rentPayload) => {
+  const tenants = Array.isArray(rentPayload?.tenants) ? rentPayload.tenants : [];
+  return tenants.filter((tenant) => Number(tenant?.outstandingTotal || 0) > 0).length;
+};
+
 const formatNotificationCount = (count) => (count > 99 ? "99+" : String(count));
 const NAV_SWIPE_CLOSE_THRESHOLD = 72;
 const NAV_SWIPE_VERTICAL_TOLERANCE = 72;
 const NAV_SWIPE_MIN_HORIZONTAL_DELTA = 12;
+
+const readStoredUser = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    return JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    return null;
+  }
+};
+
+const getVisibleNavItems = (user) => {
+  if (isRentOnlyUser(user)) {
+    return RENT_ONLY_NAV_ITEMS;
+  }
+  return NAV_ITEMS.filter((item) => !item.module || hasModuleAccess(user, item.module));
+};
+
+const getVisibleMobileTabItems = (user) => {
+  if (isRentOnlyUser(user)) {
+    return RENT_ONLY_MOBILE_TAB_ITEMS;
+  }
+  return MOBILE_TAB_ITEMS.filter((item) => !item.module || hasModuleAccess(user, item.module));
+};
 
 const PrivateRoute = ({ children }) => {
   const token = localStorage.getItem("token");
@@ -135,6 +179,8 @@ const getTopbarLabel = (pathname) => {
       return "Dashboard";
     case "/accounting":
       return "Accounting";
+    case "/rent":
+      return "Rent";
     case "/productivity":
       return "Productivity";
     case "/bookings":
@@ -151,6 +197,8 @@ const getTopbarLabel = (pathname) => {
       return "Reports";
     case "/audit-logs":
       return "Audit Logs";
+    case "/user-control":
+      return "User Control";
     case "/settings":
       return "Settings";
     default:
@@ -161,6 +209,10 @@ const getTopbarLabel = (pathname) => {
 const AppShell = ({ children, theme, onToggleTheme }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const currentUser = readStoredUser();
+  const isRentScopedUser = isRentOnlyUser(currentUser);
+  const visibleNavItems = getVisibleNavItems(currentUser);
+  const visibleMobileTabItems = getVisibleMobileTabItems(currentUser);
   const [isNavOpen, setIsNavOpen] = useState(false);
   const [navSwipeOffset, setNavSwipeOffset] = useState(0);
   const [isNavDragging, setIsNavDragging] = useState(false);
@@ -222,7 +274,6 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
     if (isOffline) return undefined;
 
     let isCanceled = false;
-
     const loadNavNotifications = async () => {
       const token = localStorage.getItem("token");
       if (!token) {
@@ -230,18 +281,34 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
         return;
       }
 
-      const now = new Date();
-      const end = new Date(now);
-      end.setDate(end.getDate() + 7);
-      const query = new URLSearchParams({
-        from: now.toISOString(),
-        to: end.toISOString(),
-      });
-      const accountingQuery = new URLSearchParams({
-        range: "all",
-      });
-
       try {
+        if (isRentScopedUser) {
+          const response = await fetch(buildApiUrl("/api/rent/dashboard"), {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const payload = await readJsonResponse(response);
+          if (!response.ok) {
+            return;
+          }
+          if (!isCanceled) {
+            setNavNotifications({
+              "/dashboard": getRentOutstandingCount(payload),
+            });
+          }
+          return;
+        }
+
+        const now = new Date();
+        const end = new Date(now);
+        end.setDate(end.getDate() + 7);
+        const query = new URLSearchParams({
+          from: now.toISOString(),
+          to: end.toISOString(),
+        });
+        const accountingQuery = new URLSearchParams({
+          range: "all",
+        });
+
         const [dashboardResponse, bookingsResponse, invoicesResponse, accountingResponse] =
           await Promise.all([
             fetch(buildApiUrl("/api/dashboard"), {
@@ -297,7 +364,7 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
       isCanceled = true;
       window.clearInterval(intervalId);
     };
-  }, [isOffline, location.pathname]);
+  }, [isOffline, isRentScopedUser, location.pathname]);
 
   const handleSignOut = async () => {
     try {
@@ -405,7 +472,7 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           </button>
         </div>
         <nav className="erp-nav">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const count = Number(navNotifications[item.to] || 0);
             const hasNotification = count > 0;
             return (
@@ -470,7 +537,7 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
         <main className="erp-content">{children}</main>
       </div>
       <nav className="mobile-tabbar" aria-label="Primary mobile navigation">
-        {MOBILE_TAB_ITEMS.map((item) => {
+        {visibleMobileTabItems.map((item) => {
           const count = Number(navNotifications[item.to] || 0);
           const hasNotification = count > 0;
           return (
@@ -509,6 +576,8 @@ const getTitleForPath = (pathname) => {
       return "Dashboard | Dev";
     case "/login":
       return "Login | Dev";
+    case "/setup-account":
+      return "Set Up Account | Dev";
     case "/error":
       return "Error | Dev";
     case "/bookings":
@@ -523,6 +592,8 @@ const getTitleForPath = (pathname) => {
       return "Reports | Dev";
     case "/accounting":
       return "Accounting | Dev";
+    case "/rent":
+      return "Rent | Dev";
     case "/invoicing":
       return "Invoicing | Dev";
     case "/productivity":
@@ -531,6 +602,8 @@ const getTitleForPath = (pathname) => {
       return "Settings | Dev";
     case "/audit-logs":
       return "Audit Logs | Dev";
+    case "/user-control":
+      return "User Control | Dev";
     default:
       return "Page Not Found | Dev";
   }
@@ -560,15 +633,34 @@ const RouteBoundary = ({ children }) => {
   return <ErrorBoundary resetKey={location.pathname}>{children}</ErrorBoundary>;
 };
 
+const ModuleScopeRoute = ({ children }) => {
+  const location = useLocation();
+  const user = readStoredUser();
+  if (!canAccessPath(user, location.pathname)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return children;
+};
+
 const ShellPage = ({ children, theme, onToggleTheme }) => (
   <PrivateRoute>
-    <RouteBoundary>
-      <AppShell theme={theme} onToggleTheme={onToggleTheme}>
-        {children}
-      </AppShell>
-    </RouteBoundary>
+    <ModuleScopeRoute>
+      <RouteBoundary>
+        <AppShell theme={theme} onToggleTheme={onToggleTheme}>
+          {children}
+        </AppShell>
+      </RouteBoundary>
+    </ModuleScopeRoute>
   </PrivateRoute>
 );
+
+const DashboardLanding = () => {
+  const user = readStoredUser();
+  if (isRentOnlyUser(user)) {
+    return <Rent />;
+  }
+  return <Dashboard />;
+};
 
 function App() {
   const [theme, setTheme] = useState(getInitialTheme);
@@ -596,6 +688,14 @@ function App() {
           }
         />
         <Route
+          path="/setup-account"
+          element={
+            <RouteBoundary>
+              <SetupAccount />
+            </RouteBoundary>
+          }
+        />
+        <Route
           path="/book/:orgSlug?"
           element={
             <RouteBoundary>
@@ -615,7 +715,15 @@ function App() {
           path="/dashboard"
           element={
             <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
-              <Dashboard />
+              <DashboardLanding />
+            </ShellPage>
+          }
+        />
+        <Route
+          path="/rent"
+          element={
+            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
+              <Rent />
             </ShellPage>
           }
         />
@@ -643,7 +751,15 @@ function App() {
             </ShellPage>
           }
         />
-        <Route path="/users" element={<Navigate to="/profile" replace />} />
+        <Route
+          path="/user-control"
+          element={
+            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
+              <UserControl />
+            </ShellPage>
+          }
+        />
+        <Route path="/users" element={<Navigate to="/user-control" replace />} />
         <Route
           path="/system-health"
           element={

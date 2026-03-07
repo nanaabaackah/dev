@@ -23,6 +23,8 @@ model Organization {
   invoices Invoice[]
   productivityEntries ProductivityEntry[]
   productivityTodos ProductivityTodo[]
+  rentTenants RentTenant[]
+  rentPayments RentPayment[]
 }
 
 model Role {
@@ -227,6 +229,50 @@ model InvoiceLineItem {
   @@index([invoiceId, sortOrder])
 }
 
+model RentTenant {
+  id                     Int              @id @default(autoincrement())
+  organizationId         Int
+  organization           Organization     @relation(fields: [organizationId], references: [id])
+  status                 RentTenantStatus @default(ACTIVE)
+  tenantName             String
+  tenantEmail            String
+  landlordName           String?
+  landlordEmail          String?
+  currency               CurrencyCode
+  monthlyRent            Decimal          @db.Decimal(14, 2)
+  leaseStartDate         DateTime         @db.Date
+  leaseEndDate           DateTime?        @db.Date
+  openingBalance         Decimal          @default(0) @db.Decimal(14, 2)
+  notes                  String?
+  lastQuarterlySummaryAt DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+
+  payments RentPayment[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, tenantEmail])
+}
+
+model RentPayment {
+  id             Int          @id @default(autoincrement())
+  organizationId Int
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  tenantId       Int
+  tenant         RentTenant   @relation(fields: [tenantId], references: [id])
+  currency       CurrencyCode
+  amount         Decimal      @db.Decimal(14, 2)
+  paidAt         DateTime     @db.Date
+  method         String?
+  reference      String?
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId, tenantId, paidAt])
+  @@index([tenantId, paidAt])
+}
+
 enum OrgStatus {
   ACTIVE
   INACTIVE
@@ -288,4 +334,9 @@ enum InvoiceStatus {
   PAID
   OVERDUE
   VOID
+}
+
+enum RentTenantStatus {
+  ACTIVE
+  INACTIVE
 }

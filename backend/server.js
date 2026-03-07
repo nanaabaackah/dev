@@ -15,6 +15,7 @@ import { createRequestLogger } from "./observability/requestLogger.js";
 import { createSecurityHeadersMiddleware } from "./security/securityHeaders.js";
 import {
   createAuthMiddleware,
+  createRentOnlyModuleAccessMiddleware,
   createRequireAdmin,
   createVerifyTokenPayload,
 } from "./auth/auth.middleware.js";
@@ -23,6 +24,8 @@ import {
   createForgotPasswordHandler,
   createLoginHandler,
   createLogoutHandler,
+  createSetupAccountCompleteHandler,
+  createSetupAccountVerifyHandler,
 } from "./auth/auth.controller.js";
 import { registerAuthRoutes } from "./auth/auth.routes.js";
 import { createGetDashboardVerseHandler } from "./dashboard/verse.js";
@@ -32,6 +35,23 @@ import { createGetJobRecommendationsHandler } from "./jobs/jobs.controller.js";
 import { registerJobRoutes } from "./jobs/jobs.routes.js";
 import { createProductivityAiHandler } from "./productivity/ai.controller.js";
 import { registerProductivityRoutes } from "./productivity/productivity.routes.js";
+import { buildAccountInvitationEmailContent } from "./accountInvitationEmailTemplate.js";
+import { buildForgotPasswordEmailContent } from "./forgotPasswordEmailTemplate.js";
+import {
+  getDeleteUserBlocker,
+  getResendInvitationBlocker,
+  resolveUserStatusForPasswordState,
+} from "./utils/accessUsers.js";
+import {
+  resolveEmailDeliveryRecipients,
+  resolveSingleEmailDeliveryTarget,
+} from "./utils/emailDelivery.js";
+import {
+  buildRentTenantWhereForUser,
+  getManagedLandlordEmail,
+  isRentManagerUser,
+} from "./utils/rentAccess.js";
+import { resolveRequestBaseUrl as resolveFrontendBaseUrl } from "./utils/requestBaseUrl.js";
 import { buildInvoiceEmailContent } from "./invoiceEmailTemplate.js";
 
 const parsePositiveInt = (
@@ -1140,7 +1160,66 @@ const WEEKLY_REPORT_FROM_EMAIL_RAW =
   process.env.WEEKLY_REPORT_FROM_EMAIL ??
   process.env.ALERT_FROM_EMAIL ??
   DEFAULT_ADMIN_EMAIL;
+const ACCOUNT_INVITE_FROM_EMAIL_RAW =
+  process.env.ACCOUNT_INVITE_FROM_EMAIL ??
+  process.env.ALERT_FROM_EMAIL ??
+  DEFAULT_ADMIN_EMAIL;
+const ACCOUNT_SETUP_TOKEN_TTL_HOURS = parsePositiveInt(
+  process.env.ACCOUNT_SETUP_TOKEN_TTL_HOURS,
+  72,
+  {
+    min: 1,
+    max: 24 * 30,
+  }
+);
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+const RENT_QUARTERLY_EMAIL_ENABLED = parseEnvBoolean(
+  process.env.RENT_QUARTERLY_EMAIL_ENABLED,
+  true
+);
+const RENT_QUARTERLY_EMAIL_HOUR_UTC = parsePositiveInt(
+  process.env.RENT_QUARTERLY_EMAIL_HOUR_UTC,
+  9,
+  {
+    min: 0,
+    max: 23,
+  }
+);
+const RENT_QUARTERLY_EMAIL_MINUTE_UTC = parsePositiveInt(
+  process.env.RENT_QUARTERLY_EMAIL_MINUTE_UTC,
+  0,
+  {
+    min: 0,
+    max: 59,
+  }
+);
+const RENT_QUARTERLY_FROM_EMAIL_RAW =
+  process.env.RENT_QUARTERLY_FROM_EMAIL ??
+  process.env.ALERT_FROM_EMAIL ??
+  DEFAULT_ADMIN_EMAIL;
+const RENT_MODULE_KEY = "rent";
+const ACCESS_MODULE_KEYS = [
+  "dashboard",
+  "rent",
+  "productivity",
+  "accounting",
+  "invoicing",
+  "bookings",
+  "organizations",
+  "system-health",
+  "reports",
+  "audit-logs",
+  "profile",
+  "settings",
+  "user-control",
+];
+const ACCESS_MODULE_SET = new Set(ACCESS_MODULE_KEYS);
+const SUPPORTED_USER_ROLE_NAMES = ["Admin", "Landlord", "Tenant"];
+const RENT_ONLY_ALLOWED_API_PATHS = [
+  /^\/api\/rent(?:\/|$)/,
+  /^\/api\/users\/me(?:\/|$)/,
+  /^\/api\/auth(?:\/|$)/,
+];
 
 const coerceBoolean = (value, fallback = false) => {
   if (value === undefined || value === null) return fallback;
@@ -1152,9 +1231,6 @@ const coerceBoolean = (value, fallback = false) => {
 };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const DEV_INVOICE_RECIPIENT =
-  String(process.env.DEV_INVOICE_RECIPIENT || "dev@nanaabaackah.com").trim() ||
-  "dev@nanaabaackah.com";
 const INVOICE_EMAIL_SENDER_NAME =
   String(process.env.INVOICE_EMAIL_SENDER_NAME || "By Nana").trim() || "By Nana";
 const INVOICE_EMAIL_HEADER_TAGLINE =
@@ -1176,29 +1252,75 @@ const INVOICE_EMAIL_SUPPORT_MESSAGE =
 const INVOICE_EMAIL_CLOSING_NAME =
   String(process.env.INVOICE_EMAIL_CLOSING_NAME || INVOICE_EMAIL_SENDER_NAME).trim() ||
   INVOICE_EMAIL_SENDER_NAME;
-const MIN_PASSWORD_LENGTH = 12;
-const DEFAULT_ADMIN_PASSWORD = String(process.env.DEFAULT_ADMIN_PASSWORD || "").trim();
-const HAS_DEFAULT_ADMIN_PASSWORD = DEFAULT_ADMIN_PASSWORD.length >= MIN_PASSWORD_LENGTH;
-
-const resolveInvoiceDeliveryTarget = (recipient) => {
-  const intendedRecipient = String(recipient || "").trim();
-  if (isProduction) {
+const MIN_PASSWORD_LENGTH = 14;
+const PASSWORD_LOWERCASE_PATTERN = /[a-z]/;
+const PASSWORD_UPPERCASE_PATTERN = /[A-Z]/;
+const PASSWORD_NUMBER_PATTERN = /[0-9]/;
+const PASSWORD_SPECIAL_PATTERN = /[^A-Za-z0-9\s]/;
+const PASSWORD_WHITESPACE_PATTERN = /\s/;
+const PASSWORD_POLICY_HINT = `Password must be at least ${MIN_PASSWORD_LENGTH} characters and include uppercase, lowercase, number, and special character (no spaces).`;
+const validatePasswordStrength = (value) => {
+  const password = String(value ?? "");
+  if (password.length < MIN_PASSWORD_LENGTH) {
     return {
-      intendedRecipient,
-      deliveryRecipient: intendedRecipient,
-      wasRerouted: false,
+      ok: false,
+      error: `password must be at least ${MIN_PASSWORD_LENGTH} characters long.`,
     };
   }
+  if (PASSWORD_WHITESPACE_PATTERN.test(password)) {
+    return {
+      ok: false,
+      error: "password cannot contain spaces.",
+    };
+  }
+  if (!PASSWORD_LOWERCASE_PATTERN.test(password)) {
+    return {
+      ok: false,
+      error: "password must include at least one lowercase letter.",
+    };
+  }
+  if (!PASSWORD_UPPERCASE_PATTERN.test(password)) {
+    return {
+      ok: false,
+      error: "password must include at least one uppercase letter.",
+    };
+  }
+  if (!PASSWORD_NUMBER_PATTERN.test(password)) {
+    return {
+      ok: false,
+      error: "password must include at least one number.",
+    };
+  }
+  if (!PASSWORD_SPECIAL_PATTERN.test(password)) {
+    return {
+      ok: false,
+      error: "password must include at least one special character.",
+    };
+  }
+  return { ok: true };
+};
+const generateRandomStrongPassword = () => {
+  const token = crypto.randomBytes(24).toString("base64url");
+  return `A${token}a1!`;
+};
+const DEFAULT_ADMIN_PASSWORD = String(process.env.DEFAULT_ADMIN_PASSWORD || "").trim();
+const DEFAULT_ADMIN_PASSWORD_VALIDATION = validatePasswordStrength(DEFAULT_ADMIN_PASSWORD);
+const HAS_DEFAULT_ADMIN_PASSWORD = DEFAULT_ADMIN_PASSWORD_VALIDATION.ok;
 
-  const fallbackRecipient = EMAIL_PATTERN.test(DEV_INVOICE_RECIPIENT)
-    ? DEV_INVOICE_RECIPIENT
-    : "dev@nanaabaackah.com";
+const resolveInvoiceDeliveryTarget = (recipient) => {
+  return resolveSingleEmailDeliveryTarget({
+    recipient,
+    isProduction,
+    defaultAdminEmail: DEFAULT_ADMIN_EMAIL,
+  });
+};
 
-  return {
-    intendedRecipient,
-    deliveryRecipient: fallbackRecipient,
-    wasRerouted: fallbackRecipient.toLowerCase() !== intendedRecipient.toLowerCase(),
-  };
+const resolveAccountInviteDeliveryTarget = (recipient) => {
+  return resolveSingleEmailDeliveryTarget({
+    recipient,
+    isProduction,
+    defaultAdminEmail: DEFAULT_ADMIN_EMAIL,
+  });
 };
 
 const sanitizeExternalUrl = (value) => {
@@ -1297,6 +1419,87 @@ const parseRecipients = (value) => {
     .map((item) => item.trim())
     .filter((item) => EMAIL_PATTERN.test(item));
 };
+
+const normalizeModuleName = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const extractAllowedModules = (permissions) => {
+  const modules = permissions?.modules;
+  if (!Array.isArray(modules)) return [];
+  return Array.from(new Set(modules.map((item) => normalizeModuleName(item)).filter(Boolean)));
+};
+
+const serializeUserRole = (role) => ({
+  id: role.id,
+  name: role.name,
+  permissions: role.permissions ?? null,
+  modules: extractAllowedModules(role.permissions),
+});
+
+const normalizeAccessModules = (value) => {
+  if (!Array.isArray(value)) return null;
+  const modules = Array.from(new Set(value.map((item) => normalizeModuleName(item)).filter(Boolean)));
+  if (modules.some((module) => !ACCESS_MODULE_SET.has(module))) {
+    return null;
+  }
+  return modules;
+};
+
+const serializeAccessRole = (role) => ({
+  id: role.id,
+  organizationId: role.organizationId,
+  name: role.name,
+  description: role.description ?? null,
+  permissions: role.permissions ?? null,
+  modules: extractAllowedModules(role.permissions),
+  userCount: role?._count?.users ?? 0,
+});
+
+const serializeAccessUser = (user) => ({
+  id: user.id,
+  organizationId: user.organizationId,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  fullName: user.fullName,
+  email: user.email,
+  status: user.status,
+  role: user.role ? serializeUserRole(user.role) : null,
+  createdAt: user.createdAt ? user.createdAt.toISOString() : null,
+  updatedAt: user.updatedAt ? user.updatedAt.toISOString() : null,
+});
+
+const isRentOnlyModuleScope = (modules = []) =>
+  modules.length === 1 && modules[0] === RENT_MODULE_KEY;
+
+const resolveAuthenticatedPayload = (req) => {
+  const bearerToken = readBearerToken(req?.headers?.authorization);
+  const bearerPayload = verifyTokenPayload(bearerToken);
+  if (bearerPayload) return bearerPayload;
+
+  const cookieToken = getCookieValue(req, AUTH_COOKIE_NAME);
+  const cookiePayload = verifyTokenPayload(cookieToken);
+  if (cookiePayload) return cookiePayload;
+  return null;
+};
+
+const rentOnlyModuleAccessMiddleware = createRentOnlyModuleAccessMiddleware({
+  resolveAuthenticatedPayload,
+  extractAllowedModules,
+  isRentOnlyModuleScope,
+  allowedPathMatchers: RENT_ONLY_ALLOWED_API_PATHS,
+});
+
+const rentQuarterlyFromEmail =
+  String(RENT_QUARTERLY_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+const accountInviteFromEmail =
+  String(ACCOUNT_INVITE_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+
+const rentQuarterlyScheduleLabel = `Daily at ${String(RENT_QUARTERLY_EMAIL_HOUR_UTC).padStart(
+  2,
+  "0"
+)}:${String(RENT_QUARTERLY_EMAIL_MINUTE_UTC).padStart(2, "0")} UTC`;
 
 const globalAdminEmailSet = new Set(
   parseRecipients(process.env.GLOBAL_ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAIL).map((email) =>
@@ -1423,14 +1626,19 @@ const sendEmail = async ({ fromEmail, recipients, subject, text, html }) => {
   if (!resend) {
     throw new Error("RESEND_API_KEY is not configured");
   }
-  const normalizedRecipients = parseRecipients(recipients);
-  if (!normalizedRecipients.length) {
+  const delivery = resolveEmailDeliveryRecipients({
+    recipients,
+    parseRecipients,
+    isProduction,
+    defaultAdminEmail: DEFAULT_ADMIN_EMAIL,
+  });
+  if (!delivery.deliveryRecipients.length) {
     throw new Error("No valid email recipients configured");
   }
 
   const result = await resend.emails.send({
     from: String(fromEmail || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL,
-    to: normalizedRecipients,
+    to: delivery.deliveryRecipients,
     subject,
     text,
     html,
@@ -1445,7 +1653,117 @@ const sendEmail = async ({ fromEmail, recipients, subject, text, html }) => {
     throw error;
   }
 
-  return result;
+  return {
+    ...result,
+    intendedRecipients: delivery.intendedRecipients,
+    deliveryRecipients: delivery.deliveryRecipients,
+    wasRerouted: delivery.wasRerouted,
+  };
+};
+
+const sendAccountInvitationEmail = async ({ req, user }) => {
+  if (!EMAIL_PATTERN.test(accountInviteFromEmail)) {
+    const error = new Error("ACCOUNT_INVITE_FROM_EMAIL is invalid.");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const invitationToken = buildSetupAccountToken(user);
+  const setupUrl = buildSetupAccountUrl(req, invitationToken);
+  const { subject, text, html } = buildAccountInvitationEmailContent({
+    recipientName: user.firstName || user.fullName || user.email,
+    setupUrl,
+    expiresInHours: ACCOUNT_SETUP_TOKEN_TTL_HOURS,
+    organizationName: user.organization?.name,
+  });
+  const deliveryTarget = resolveAccountInviteDeliveryTarget(user.email);
+  const subjectLine = deliveryTarget.wasRerouted ? `[DEV] ${subject}` : subject;
+  const textBody = deliveryTarget.wasRerouted
+    ? [
+        "DEV MODE: account invitation delivery was rerouted.",
+        `Intended recipient: ${deliveryTarget.intendedRecipient}`,
+        `Delivered to: ${deliveryTarget.deliveryRecipient}`,
+        "",
+        text,
+      ].join("\n")
+    : text;
+  const htmlBody = deliveryTarget.wasRerouted
+    ? `
+        <p><strong>DEV MODE:</strong> account invitation delivery was rerouted.</p>
+        <p>Intended recipient: ${escapeHtml(deliveryTarget.intendedRecipient)}</p>
+        <p>Delivered to: ${escapeHtml(deliveryTarget.deliveryRecipient)}</p>
+        <hr />
+        ${html}
+      `.trim()
+    : html;
+
+  await sendEmail({
+    fromEmail: accountInviteFromEmail,
+    recipients: [deliveryTarget.deliveryRecipient],
+    subject: subjectLine,
+    text: textBody,
+    html: htmlBody,
+  });
+
+  return {
+    invitationRecipient: deliveryTarget.deliveryRecipient,
+    invitationIntendedRecipient: deliveryTarget.intendedRecipient,
+    invitationRerouted: deliveryTarget.wasRerouted,
+  };
+};
+
+const sendForgotPasswordEmail = async ({ req, user }) => {
+  if (!EMAIL_PATTERN.test(accountInviteFromEmail)) {
+    const error = new Error("ACCOUNT_INVITE_FROM_EMAIL is invalid.");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const resetToken = buildSetupAccountToken(user);
+  const resetUrl = buildSetupAccountUrl(req, resetToken);
+  const { subject, text, html } = buildForgotPasswordEmailContent({
+    recipientName: user.firstName || user.fullName || user.email,
+    resetUrl,
+    expiresInHours: ACCOUNT_SETUP_TOKEN_TTL_HOURS,
+  });
+  const deliveryTarget = resolveSingleEmailDeliveryTarget({
+    recipient: user.email,
+    isProduction,
+    defaultAdminEmail: DEFAULT_ADMIN_EMAIL,
+  });
+  const subjectLine = deliveryTarget.wasRerouted ? `[DEV] ${subject}` : subject;
+  const textBody = deliveryTarget.wasRerouted
+    ? [
+        "DEV MODE: password reset delivery was rerouted.",
+        `Intended recipient: ${deliveryTarget.intendedRecipient}`,
+        `Delivered to: ${deliveryTarget.deliveryRecipient}`,
+        "",
+        text,
+      ].join("\n")
+    : text;
+  const htmlBody = deliveryTarget.wasRerouted
+    ? `
+        <p><strong>DEV MODE:</strong> password reset delivery was rerouted.</p>
+        <p>Intended recipient: ${escapeHtml(deliveryTarget.intendedRecipient)}</p>
+        <p>Delivered to: ${escapeHtml(deliveryTarget.deliveryRecipient)}</p>
+        <hr />
+        ${html}
+      `.trim()
+    : html;
+
+  await sendEmail({
+    fromEmail: accountInviteFromEmail,
+    recipients: [deliveryTarget.deliveryRecipient],
+    subject: subjectLine,
+    text: textBody,
+    html: htmlBody,
+  });
+
+  return {
+    resetRecipient: deliveryTarget.deliveryRecipient,
+    resetIntendedRecipient: deliveryTarget.intendedRecipient,
+    resetRerouted: deliveryTarget.wasRerouted,
+  };
 };
 
 const sendAlertEmail = async ({ subject, text, html, recipients }) => {
@@ -1773,6 +2091,193 @@ const scheduleWeeklyReportEmail = () => {
   scheduleNext();
 };
 
+const rentQuarterlyUpdateState = {
+  lastRunAt: null,
+  lastScheduledFor: null,
+  lastQuarterLabel: null,
+  lastSentCount: 0,
+};
+
+const buildRentQuarterlyEmailContent = ({ summary, quarterLabel }) => {
+  const subject = `Rent quarterly update • ${quarterLabel}`;
+  const text = [
+    `Hello ${summary.tenantName},`,
+    "",
+    `Here is your rent summary for ${quarterLabel}.`,
+    "",
+    `Monthly rent: ${summary.currency} ${Number(summary.monthlyRent || 0).toFixed(2)}`,
+    `Paid this quarter: ${summary.currency} ${Number(summary.paidThisQuarter || 0).toFixed(2)}`,
+    `Expected this quarter: ${summary.currency} ${Number(summary.expectedThisQuarter || 0).toFixed(2)}`,
+    `Outstanding this quarter: ${summary.currency} ${Number(summary.outstandingThisQuarter || 0).toFixed(2)}`,
+    `Total outstanding balance: ${summary.currency} ${Number(summary.outstandingTotal || 0).toFixed(2)}`,
+    "",
+    `Lease start: ${summary.leaseStartDate ? summary.leaseStartDate.slice(0, 10) : "N/A"}`,
+    `Lease end: ${summary.leaseEndDate ? summary.leaseEndDate.slice(0, 10) : "Open-ended"}`,
+    "",
+    "Please contact your landlord if anything looks incorrect.",
+  ].join("\n");
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#2d2d2d;">
+      <p>Hello ${escapeHtml(summary.tenantName)},</p>
+      <p>Here is your rent summary for <strong>${escapeHtml(quarterLabel)}</strong>.</p>
+      <table style="border-collapse:collapse;border:1px solid #d0d0c8;">
+        <tbody>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Monthly rent</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.monthlyRent || 0).toFixed(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Paid this quarter</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.paidThisQuarter || 0).toFixed(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Expected this quarter</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.expectedThisQuarter || 0).toFixed(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Outstanding this quarter</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.outstandingThisQuarter || 0).toFixed(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Total outstanding balance</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.outstandingTotal || 0).toFixed(2)}</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top:14px;">Please contact your landlord if anything looks incorrect.</p>
+    </div>
+  `.trim();
+
+  return { subject, text, html };
+};
+
+const runRentQuarterlyTenantUpdates = async () => {
+  if (!RENT_QUARTERLY_EMAIL_ENABLED) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "Quarterly rent updates are disabled.",
+    };
+  }
+  if (!resend) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "RESEND_API_KEY is not configured.",
+    };
+  }
+  if (!EMAIL_PATTERN.test(rentQuarterlyFromEmail)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "Invalid RENT_QUARTERLY_FROM_EMAIL configuration.",
+    };
+  }
+
+  const quarterRange = getLastCompletedQuarterRangeUtc();
+  const quarterLabel = formatQuarterLabel(quarterRange);
+  const tenants = await prisma.rentTenant.findMany({
+    where: {
+      status: "ACTIVE",
+    },
+    include: {
+      payments: {
+        where: {
+          paidAt: {
+            lte: quarterRange.end,
+          },
+        },
+        orderBy: { paidAt: "desc" },
+      },
+    },
+  });
+
+  const dueTenants = tenants.filter((tenant) => {
+    const email = normalizeEmailAddress(tenant.tenantEmail);
+    if (!email) return false;
+    if (!tenant.lastQuarterlySummaryAt) return true;
+    return tenant.lastQuarterlySummaryAt.getTime() < quarterRange.end.getTime();
+  });
+
+  let sentCount = 0;
+  const errors = [];
+
+  for (const tenant of dueTenants) {
+    const summary = buildRentTenantSummary(tenant, {
+      quarterRange,
+      asOfDate: quarterRange.end,
+    });
+    const { subject, text, html } = buildRentQuarterlyEmailContent({
+      summary,
+      quarterLabel,
+    });
+
+    try {
+      await sendEmail({
+        fromEmail: rentQuarterlyFromEmail,
+        recipients: [tenant.tenantEmail],
+        subject,
+        text,
+        html,
+      });
+      await prisma.rentTenant.update({
+        where: { id: tenant.id },
+        data: { lastQuarterlySummaryAt: new Date() },
+      });
+      sentCount += 1;
+    } catch (error) {
+      errors.push({
+        tenantId: tenant.id,
+        email: tenant.tenantEmail,
+        message: error?.message || "Unknown email failure",
+      });
+    }
+  }
+
+  rentQuarterlyUpdateState.lastRunAt = new Date().toISOString();
+  rentQuarterlyUpdateState.lastQuarterLabel = quarterLabel;
+  rentQuarterlyUpdateState.lastSentCount = sentCount;
+
+  if (errors.length) {
+    console.error("Quarterly rent update failures", errors);
+  }
+
+  return {
+    ok: true,
+    quarterLabel,
+    sentCount,
+    attempted: dueTenants.length,
+    failedCount: errors.length,
+    errors,
+  };
+};
+
+const getNextRentQuarterlyRunDateUtc = (fromDate = new Date()) => {
+  const now = new Date(fromDate);
+  const next = new Date(now);
+  next.setUTCHours(RENT_QUARTERLY_EMAIL_HOUR_UTC, RENT_QUARTERLY_EMAIL_MINUTE_UTC, 0, 0);
+  if (next <= now) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  return next;
+};
+
+const scheduleRentQuarterlyUpdates = () => {
+  if (!RENT_QUARTERLY_EMAIL_ENABLED) return;
+  if (!resend) {
+    console.warn("Rent quarterly scheduler skipped: RESEND_API_KEY is not configured.");
+    return;
+  }
+  if (!EMAIL_PATTERN.test(rentQuarterlyFromEmail)) {
+    console.warn("Rent quarterly scheduler skipped: invalid from email configuration.");
+    return;
+  }
+
+  const scheduleNext = () => {
+    const nextRun = getNextRentQuarterlyRunDateUtc();
+    const delay = Math.max(nextRun.getTime() - Date.now(), 0);
+    rentQuarterlyUpdateState.lastScheduledFor = nextRun.toISOString();
+
+    setTimeout(async () => {
+      try {
+        await runRentQuarterlyTenantUpdates();
+      } catch (error) {
+        console.error("Quarterly rent update scheduler run failed", error);
+      }
+      scheduleNext();
+    }, delay);
+  };
+
+  console.info(`Rent quarterly scheduler active: ${rentQuarterlyScheduleLabel}`);
+  scheduleNext();
+};
+
 const createRateLimitMiddleware = ({
   scope,
   windowMs,
@@ -1906,7 +2411,56 @@ const csrfMiddleware = (req, res, next) => {
 };
 
 const requireAdmin = createRequireAdmin();
+const requireRentManager = (req, res, next) => {
+  if (!isRentManagerUser(req.user)) {
+    return res.status(403).json({ error: "Rent manager access required" });
+  }
+  return next();
+};
 const buildToken = createBuildToken({ jwt, jwtSecret });
+const buildSetupAccountToken = (user) =>
+  jwt.sign(
+    {
+      purpose: "account_setup",
+      userId: user.id,
+      email: String(user.email || "").trim().toLowerCase(),
+      version: user.updatedAt?.toISOString?.() || "",
+    },
+    jwtSecret,
+    {
+      expiresIn: `${ACCOUNT_SETUP_TOKEN_TTL_HOURS}h`,
+    }
+  );
+const verifySetupTokenPayload = (token) => {
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, jwtSecret);
+    if (payload?.purpose !== "account_setup") return null;
+    if (!Number.isInteger(payload?.userId) || payload.userId <= 0) return null;
+    const email = String(payload?.email || "").trim().toLowerCase();
+    const version = String(payload?.version || "").trim();
+    if (!email || !version) return null;
+    return {
+      userId: payload.userId,
+      email,
+      version,
+    };
+  } catch {
+    return null;
+  }
+};
+const resolveRequestBaseUrl = (req) =>
+  resolveFrontendBaseUrl({
+    appBaseUrl,
+    isProduction,
+    requestOrigin: req?.header?.("origin"),
+    forwardedProto: req?.header?.("x-forwarded-proto"),
+    protocol: req?.protocol,
+    host: req?.get?.("host"),
+    devFallbackOrigins: devOrigins,
+  });
+const buildSetupAccountUrl = (req, token) =>
+  `${resolveRequestBaseUrl(req)}/setup-account?token=${encodeURIComponent(token)}`;
 
 const isPrismaErrorInstance = (error, className) => {
   if (!error || !className) return false;
@@ -2005,6 +2559,7 @@ app.use("/api/auth/forgot-password", authRateLimit);
 app.use("/api/public/bookings", publicBookingRateLimit);
 app.use("/api/ai/productivity-coach", aiRateLimit);
 app.use("/api", csrfMiddleware);
+app.use("/api", rentOnlyModuleAccessMiddleware);
 
 const loginHandler = createLoginHandler({
   prisma,
@@ -2016,12 +2571,28 @@ const loginHandler = createLoginHandler({
 const logoutHandler = createLogoutHandler({ clearAuthCookies });
 const forgotPasswordHandler = createForgotPasswordHandler({
   defaultAdminEmail: DEFAULT_ADMIN_EMAIL,
+  prisma,
+  sendForgotPasswordEmail,
+  exposeSendErrors: !isProduction,
+});
+const setupAccountVerifyHandler = createSetupAccountVerifyHandler({
+  verifySetupTokenPayload,
+  prisma,
+});
+const setupAccountCompleteHandler = createSetupAccountCompleteHandler({
+  verifySetupTokenPayload,
+  validatePasswordStrength,
+  passwordPolicyHint: PASSWORD_POLICY_HINT,
+  prisma,
+  bcrypt,
 });
 
 registerAuthRoutes(app, {
   loginHandler,
   logoutHandler,
   forgotPasswordHandler,
+  setupAccountVerifyHandler,
+  setupAccountCompleteHandler,
 });
 
 app.get("/api/users/me", authMiddleware, async (req, res) => {
@@ -2039,15 +2610,21 @@ app.get("/api/users/me", authMiddleware, async (req, res) => {
     lastName: user.lastName,
     fullName: user.fullName,
     email: user.email,
-    role: { id: user.role.id, name: user.role.name },
+    role: serializeUserRole(user.role),
+    allowedModules: extractAllowedModules(user.role.permissions),
   });
 });
 
 app.patch("/api/users/me", authMiddleware, async (req, res) => {
   const hasFirstName = req.body?.firstName !== undefined;
   const hasLastName = req.body?.lastName !== undefined;
-  if (!hasFirstName && !hasLastName) {
-    return res.status(400).json({ error: "Provide firstName or lastName to update profile." });
+  const hasEmail = req.body?.email !== undefined;
+  const hasCurrentPassword = req.body?.currentPassword !== undefined;
+  const hasNewPassword = req.body?.newPassword !== undefined;
+  if (!hasFirstName && !hasLastName && !hasEmail && !hasCurrentPassword && !hasNewPassword) {
+    return res.status(400).json({
+      error: "Provide firstName, lastName, email, and/or password details to update profile.",
+    });
   }
 
   const normalizeName = (value) => (typeof value === "string" ? value.trim() : "");
@@ -2066,25 +2643,92 @@ app.patch("/api/users/me", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "First name and last name are required." });
   }
 
-  const nextFullName = `${nextFirstName} ${nextLastName}`.trim();
+  const updateData = {
+    firstName: nextFirstName,
+    lastName: nextLastName,
+    fullName: `${nextFirstName} ${nextLastName}`.trim(),
+  };
+  let shouldRefreshSession = false;
+
+  if (hasEmail) {
+    const nextEmail = normalizeEmailAddress(req.body.email);
+    if (!nextEmail) {
+      return res.status(400).json({ error: "email must be a valid email address." });
+    }
+    if (nextEmail !== String(user.email || "").trim().toLowerCase()) {
+      const existing = await prisma.user.findUnique({ where: { email: nextEmail } });
+      if (existing && existing.id !== user.id) {
+        return res.status(409).json({ error: "A user with that email already exists." });
+      }
+      updateData.email = nextEmail;
+      shouldRefreshSession = true;
+    }
+  }
+
+  if (hasCurrentPassword && !hasNewPassword) {
+    return res.status(400).json({ error: "Provide newPassword when currentPassword is supplied." });
+  }
+  if (!hasCurrentPassword && hasNewPassword) {
+    return res.status(400).json({ error: "currentPassword is required to change password." });
+  }
+
+  if (hasCurrentPassword && hasNewPassword) {
+    const currentPassword = String(req.body.currentPassword || "").trim();
+    const newPassword = String(req.body.newPassword || "").trim();
+    if (!currentPassword) {
+      return res.status(400).json({ error: "currentPassword cannot be empty." });
+    }
+    if (!newPassword) {
+      return res.status(400).json({ error: "newPassword cannot be empty." });
+    }
+
+    const currentPasswordMatches = await bcrypt.compare(currentPassword, user.password);
+    if (!currentPasswordMatches) {
+      return res.status(403).json({ error: "Current password is incorrect." });
+    }
+
+    const sameAsCurrent = await bcrypt.compare(newPassword, user.password);
+    if (sameAsCurrent) {
+      return res.status(400).json({ error: "newPassword must be different from currentPassword." });
+    }
+
+    const passwordValidation = validatePasswordStrength(newPassword);
+    if (!passwordValidation.ok) {
+      return res.status(400).json({
+        error: passwordValidation.error,
+        passwordPolicy: PASSWORD_POLICY_HINT,
+      });
+    }
+
+    updateData.password = await bcrypt.hash(newPassword, 10);
+    shouldRefreshSession = true;
+  }
+
   const updated = await prisma.user.update({
     where: { id: user.id },
-    data: {
-      firstName: nextFirstName,
-      lastName: nextLastName,
-      fullName: nextFullName,
-    },
+    data: updateData,
     include: { role: true },
   });
 
-  return res.json({
+  const payload = {
     id: updated.id,
     firstName: updated.firstName,
     lastName: updated.lastName,
     fullName: updated.fullName,
     email: updated.email,
-    role: { id: updated.role.id, name: updated.role.name },
-  });
+    role: serializeUserRole(updated.role),
+    allowedModules: extractAllowedModules(updated.role.permissions),
+  };
+
+  if (shouldRefreshSession) {
+    const refreshedToken = buildToken(updated);
+    const csrfToken = createCsrfToken();
+    setAuthCookies(res, { token: refreshedToken, csrfToken });
+    payload.token = refreshedToken;
+    payload.sessionUpdated = true;
+  }
+
+  return res.json(payload);
 });
 
 app.get("/api/organizations", authMiddleware, requireAdmin, async (req, res) => {
@@ -2097,10 +2741,461 @@ app.get("/api/organizations", authMiddleware, requireAdmin, async (req, res) => 
 
 app.get("/api/roles", authMiddleware, async (req, res) => {
   const roles = await prisma.role.findMany({
-    where: { organizationId: req.user.organizationId },
+    where: {
+      organizationId: req.user.organizationId,
+      name: { in: SUPPORTED_USER_ROLE_NAMES },
+    },
     orderBy: { name: "asc" },
   });
-  res.json(roles.map((role) => ({ id: role.id, name: role.name, description: role.description })));
+  res.json(
+    roles.map((role) => ({
+      id: role.id,
+      name: role.name,
+      description: role.description,
+      permissions: role.permissions ?? null,
+    }))
+  );
+});
+
+app.get("/api/access/modules", authMiddleware, requireAdmin, (_req, res) => {
+  res.json({ modules: ACCESS_MODULE_KEYS });
+});
+
+app.get("/api/access/roles", authMiddleware, requireAdmin, async (req, res) => {
+  const roles = await prisma.role.findMany({
+    where: {
+      organizationId: req.user.organizationId,
+      name: { in: SUPPORTED_USER_ROLE_NAMES },
+    },
+    include: {
+      _count: {
+        select: { users: true },
+      },
+    },
+    orderBy: { name: "asc" },
+  });
+
+  res.json({
+    modules: ACCESS_MODULE_KEYS,
+    roles: roles.map(serializeAccessRole),
+  });
+});
+
+app.patch("/api/access/roles/:id", authMiddleware, requireAdmin, async (req, res) => {
+  const roleId = parseUserControlId(req.params.id);
+  if (!roleId) {
+    return res.status(400).json({ error: "Invalid role id." });
+  }
+
+  const role = await prisma.role.findFirst({
+    where: {
+      id: roleId,
+      organizationId: req.user.organizationId,
+      name: { in: SUPPORTED_USER_ROLE_NAMES },
+    },
+  });
+  if (!role) {
+    return res.status(404).json({ error: "Role not found." });
+  }
+
+  const updateData = {};
+
+  if (req.body?.description !== undefined) {
+    updateData.description = String(req.body.description || "").trim() || null;
+  }
+
+  if (req.body?.modules !== undefined) {
+    const modules = normalizeAccessModules(req.body.modules);
+    if (!modules) {
+      return res.status(400).json({
+        error: `modules must be an array of supported module keys: ${ACCESS_MODULE_KEYS.join(", ")}`,
+      });
+    }
+    if (role.name === "Admin" && modules.length) {
+      return res
+        .status(400)
+        .json({ error: "Admin role cannot be module-scoped. Leave modules empty for full access." });
+    }
+
+    updateData.permissions = modules.length ? { modules } : null;
+  }
+
+  if (!Object.keys(updateData).length) {
+    return res.status(400).json({ error: "Provide description and/or modules to update role access." });
+  }
+
+  const updated = await prisma.role.update({
+    where: { id: role.id },
+    data: updateData,
+    include: {
+      _count: {
+        select: { users: true },
+      },
+    },
+  });
+
+  return res.json({
+    role: serializeAccessRole(updated),
+  });
+});
+
+app.get("/api/access/users", authMiddleware, requireAdmin, async (req, res) => {
+  const users = await prisma.user.findMany({
+    where: { organizationId: req.user.organizationId },
+    include: { role: true },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+
+  res.json({
+    users: users.map(serializeAccessUser),
+  });
+});
+
+app.post("/api/access/users", authMiddleware, requireAdmin, async (req, res) => {
+  const firstName = String(req.body?.firstName || "").trim();
+  const lastName = String(req.body?.lastName || "").trim();
+  const email = normalizeEmailAddress(req.body?.email);
+  const providedPassword = String(req.body?.password || "").trim();
+  const roleId = parseUserControlId(req.body?.roleId);
+  const requestedStatus = req.body?.status !== undefined ? normalizeUserStatus(req.body?.status) : null;
+  const hasProvidedPassword = Boolean(providedPassword);
+  const status = resolveUserStatusForPasswordState({
+    requestedStatus: requestedStatus ?? "ACTIVE",
+    hasPassword: hasProvidedPassword,
+  });
+
+  if (!firstName || !lastName) {
+    return res.status(400).json({ error: "firstName and lastName are required." });
+  }
+  if (!email) {
+    return res.status(400).json({ error: "email must be a valid email address." });
+  }
+  if (!roleId) {
+    return res.status(400).json({ error: "roleId must be a valid role id." });
+  }
+  if (req.body?.status !== undefined && !requestedStatus) {
+    return res.status(400).json({ error: "status must be ACTIVE, SUSPENDED, or PENDING." });
+  }
+  if (providedPassword) {
+    const passwordValidation = validatePasswordStrength(providedPassword);
+    if (!passwordValidation.ok) {
+      return res.status(400).json({
+        error: passwordValidation.error,
+        passwordPolicy: PASSWORD_POLICY_HINT,
+      });
+    }
+  }
+
+  const role = await prisma.role.findFirst({
+    where: {
+      id: roleId,
+      organizationId: req.user.organizationId,
+      name: { in: SUPPORTED_USER_ROLE_NAMES },
+    },
+  });
+  if (!role) {
+    return res.status(400).json({ error: "Selected role does not belong to this organization." });
+  }
+
+  const existingUser = await prisma.user.findUnique({ where: { email } });
+  if (existingUser) {
+    return res.status(409).json({ error: "A user with that email already exists." });
+  }
+
+  const password = providedPassword || generateRandomStrongPassword();
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const fullName = `${firstName} ${lastName}`.trim();
+
+  const createdUser = await prisma.user.create({
+    data: {
+      organizationId: req.user.organizationId,
+      roleId: role.id,
+      firstName,
+      lastName,
+      fullName,
+      email,
+      password: hashedPassword,
+      status,
+    },
+    include: {
+      role: true,
+      organization: {
+        select: { name: true },
+      },
+    },
+  });
+
+  try {
+    const invitationResult = await sendAccountInvitationEmail({
+      req,
+      user: createdUser,
+    });
+
+    return res.status(201).json({
+      user: serializeAccessUser(createdUser),
+      invitationSent: true,
+      ...invitationResult,
+    });
+  } catch (inviteError) {
+    console.error("Account invitation email failed", {
+      userId: createdUser.id,
+      intendedRecipient: createdUser.email,
+      deliveryRecipient: resolveAccountInviteDeliveryTarget(createdUser.email).deliveryRecipient,
+      error: inviteError?.message || inviteError,
+    });
+    try {
+      await prisma.user.delete({
+        where: { id: createdUser.id },
+      });
+    } catch (cleanupError) {
+      console.error("Unable to rollback invited user after email failure", {
+        userId: createdUser.id,
+        error: cleanupError?.message || cleanupError,
+      });
+    }
+    const status =
+      Number.isInteger(Number(inviteError?.statusCode)) && Number(inviteError.statusCode) >= 400
+        ? Number(inviteError.statusCode)
+        : 502;
+    return res.status(status).json({
+      error: inviteError?.message || "Unable to send invitation email. User was not created.",
+    });
+  }
+});
+
+app.patch("/api/access/users/:id", authMiddleware, requireAdmin, async (req, res) => {
+  const targetUserId = parseUserControlId(req.params.id);
+  if (!targetUserId) {
+    return res.status(400).json({ error: "Invalid user id." });
+  }
+
+  const user = await prisma.user.findFirst({
+    where: {
+      id: targetUserId,
+      organizationId: req.user.organizationId,
+    },
+    include: { role: true },
+  });
+  if (!user) {
+    return res.status(404).json({ error: "User not found." });
+  }
+
+  const updateData = {};
+  let requestedStatus = null;
+
+  if (req.body?.firstName !== undefined) {
+    const firstName = String(req.body.firstName || "").trim();
+    if (!firstName) return res.status(400).json({ error: "firstName cannot be empty." });
+    updateData.firstName = firstName;
+  }
+
+  if (req.body?.lastName !== undefined) {
+    const lastName = String(req.body.lastName || "").trim();
+    if (!lastName) return res.status(400).json({ error: "lastName cannot be empty." });
+    updateData.lastName = lastName;
+  }
+
+  if (req.body?.email !== undefined) {
+    const email = normalizeEmailAddress(req.body.email);
+    if (!email) {
+      return res.status(400).json({ error: "email must be a valid email address." });
+    }
+    updateData.email = email;
+  }
+
+  if (req.body?.status !== undefined) {
+    requestedStatus = normalizeUserStatus(req.body.status);
+    if (!requestedStatus) {
+      return res.status(400).json({ error: "status must be ACTIVE, SUSPENDED, or PENDING." });
+    }
+    updateData.status = requestedStatus;
+  }
+
+  if (req.body?.roleId !== undefined) {
+    const roleId = parseUserControlId(req.body.roleId);
+    if (!roleId) {
+      return res.status(400).json({ error: "roleId must be a valid role id." });
+    }
+    const role = await prisma.role.findFirst({
+      where: {
+        id: roleId,
+        organizationId: req.user.organizationId,
+        name: { in: SUPPORTED_USER_ROLE_NAMES },
+      },
+    });
+    if (!role) {
+      return res.status(400).json({ error: "Selected role does not belong to this organization." });
+    }
+    updateData.roleId = role.id;
+  }
+
+  if (req.body?.password !== undefined) {
+    const password = String(req.body.password || "").trim();
+    if (!password) {
+      return res.status(400).json({ error: "password cannot be empty when provided." });
+    }
+    const passwordValidation = validatePasswordStrength(password);
+    if (!passwordValidation.ok) {
+      return res.status(400).json({
+        error: passwordValidation.error,
+        passwordPolicy: PASSWORD_POLICY_HINT,
+      });
+    }
+    updateData.password = await bcrypt.hash(password, 10);
+    const resolvedStatus = resolveUserStatusForPasswordState({
+      currentStatus: user.status,
+      requestedStatus,
+      hasPassword: true,
+    });
+    if (resolvedStatus !== (updateData.status ?? user.status)) {
+      updateData.status = resolvedStatus;
+    }
+  }
+
+  const hasNameChange = updateData.firstName !== undefined || updateData.lastName !== undefined;
+  if (hasNameChange) {
+    const nextFirstName = updateData.firstName ?? user.firstName;
+    const nextLastName = updateData.lastName ?? user.lastName;
+    updateData.fullName = `${nextFirstName} ${nextLastName}`.trim();
+  }
+
+  if (!Object.keys(updateData).length) {
+    return res.status(400).json({
+      error: "Provide firstName, lastName, email, roleId, status, or password to update the user.",
+    });
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: updateData,
+    include: { role: true },
+  });
+
+  return res.json({
+    user: serializeAccessUser(updatedUser),
+  });
+});
+
+app.post("/api/access/users/:id/resend-invitation", authMiddleware, requireAdmin, async (req, res) => {
+  const targetUserId = parseUserControlId(req.params.id);
+  if (!targetUserId) {
+    return res.status(400).json({ error: "Invalid user id." });
+  }
+
+  const user = await prisma.user.findFirst({
+    where: {
+      id: targetUserId,
+      organizationId: req.user.organizationId,
+    },
+    include: {
+      role: true,
+      organization: {
+        select: { name: true },
+      },
+    },
+  });
+  if (!user) {
+    return res.status(404).json({ error: "User not found." });
+  }
+
+  const blocker = getResendInvitationBlocker({
+    targetStatus: user.status,
+  });
+  if (blocker) {
+    return res.status(400).json({ error: blocker });
+  }
+
+  try {
+    const invitationResult = await sendAccountInvitationEmail({
+      req,
+      user,
+    });
+
+    return res.json({
+      ok: true,
+      user: serializeAccessUser(user),
+      invitationSent: true,
+      ...invitationResult,
+    });
+  } catch (inviteError) {
+    console.error("Account invitation resend failed", {
+      userId: user.id,
+      intendedRecipient: user.email,
+      deliveryRecipient: resolveAccountInviteDeliveryTarget(user.email).deliveryRecipient,
+      error: inviteError?.message || inviteError,
+    });
+    const status =
+      Number.isInteger(Number(inviteError?.statusCode)) && Number(inviteError.statusCode) >= 400
+        ? Number(inviteError.statusCode)
+        : 502;
+    return res.status(status).json({
+      error: inviteError?.message || "Unable to resend invitation email.",
+    });
+  }
+});
+
+app.delete("/api/access/users/:id", authMiddleware, requireAdmin, async (req, res) => {
+  const targetUserId = parseUserControlId(req.params.id);
+  if (!targetUserId) {
+    return res.status(400).json({ error: "Invalid user id." });
+  }
+
+  const user = await prisma.user.findFirst({
+    where: {
+      id: targetUserId,
+      organizationId: req.user.organizationId,
+    },
+    include: { role: true },
+  });
+  if (!user) {
+    return res.status(404).json({ error: "User not found." });
+  }
+
+  let remainingAdminCount = 0;
+  if (user.role?.name === "Admin") {
+    remainingAdminCount = await prisma.user.count({
+      where: {
+        organizationId: req.user.organizationId,
+        roleId: user.roleId,
+        id: { not: user.id },
+      },
+    });
+  }
+
+  const blocker = getDeleteUserBlocker({
+    requesterUserId: req.user.userId,
+    targetUserId: user.id,
+    targetRoleName: user.role?.name,
+    remainingAdminCount,
+  });
+  if (blocker) {
+    return res.status(400).json({ error: blocker });
+  }
+
+  const deletionResult = await prisma.$transaction(async (tx) => {
+    const deletedEntries = await tx.productivityEntry.deleteMany({
+      where: { userId: user.id },
+    });
+    const deletedTodos = await tx.productivityTodo.deleteMany({
+      where: { userId: user.id },
+    });
+
+    await tx.user.delete({
+      where: { id: user.id },
+    });
+
+    return {
+      deletedProductivityEntries: deletedEntries.count,
+      deletedProductivityTodos: deletedTodos.count,
+    };
+  });
+
+  return res.json({
+    ok: true,
+    deletedUserId: user.id,
+    deletedUserEmail: user.email,
+    ...deletionResult,
+  });
 });
 
 app.get("/api/alerts/preferences", authMiddleware, requireAdmin, (req, res) => {
@@ -2245,6 +3340,374 @@ registerDashboardRoutes(app, {
   authMiddleware,
   getDashboardVerseHandler,
   getDashboardWeatherHandler,
+});
+
+app.get("/api/rent/dashboard", authMiddleware, async (req, res) => {
+  const where = buildRentTenantWhereForUser(req.user);
+  const tenants = await prisma.rentTenant.findMany({
+    where,
+    include: {
+      payments: {
+        orderBy: { paidAt: "desc" },
+      },
+    },
+    orderBy: [{ status: "asc" }, { tenantName: "asc" }],
+  });
+
+  const quarterRange = getQuarterRangeUtc();
+  const generatedAt = new Date().toISOString();
+  const payload = buildRentDashboardPayload(tenants, {
+    quarterRange,
+    generatedAt,
+  });
+  res.json(payload);
+});
+
+app.get("/api/rent/tenants", authMiddleware, async (req, res) => {
+  const where = buildRentTenantWhereForUser(req.user);
+  const tenants = await prisma.rentTenant.findMany({
+    where,
+    include: {
+      payments: {
+        orderBy: { paidAt: "desc" },
+      },
+    },
+    orderBy: [{ status: "asc" }, { tenantName: "asc" }],
+  });
+  const quarterRange = getQuarterRangeUtc();
+  const asOfDate = new Date();
+  const summaries = tenants.map((tenant) =>
+    buildRentTenantSummary(tenant, {
+      quarterRange,
+      asOfDate,
+    })
+  );
+  res.json({
+    generatedAt: asOfDate.toISOString(),
+    quarter: {
+      label: formatQuarterLabel(quarterRange),
+      start: quarterRange.start.toISOString(),
+      end: quarterRange.end.toISOString(),
+    },
+    tenants: summaries,
+  });
+});
+
+app.post("/api/rent/tenants", authMiddleware, requireRentManager, async (req, res) => {
+  const tenantName = String(req.body?.tenantName || "").trim();
+  const tenantEmail = normalizeEmailAddress(req.body?.tenantEmail);
+  const landlordName = String(req.body?.landlordName || "").trim() || null;
+  const landlordEmailRaw = String(req.body?.landlordEmail || "").trim();
+  const managedLandlordEmail = getManagedLandlordEmail(req.user);
+  const providedLandlordEmail = landlordEmailRaw ? normalizeEmailAddress(landlordEmailRaw) : null;
+  const landlordEmail = managedLandlordEmail || providedLandlordEmail;
+  const currency = normalizeAccountingCurrency(req.body?.currency);
+  const monthlyRent = parsePositiveAmount(req.body?.monthlyRent);
+  const leaseStartDate = parseDateValue(req.body?.leaseStartDate);
+  const leaseEndDate = req.body?.leaseEndDate ? parseDateValue(req.body?.leaseEndDate) : null;
+  const openingBalanceRaw = req.body?.openingBalance;
+  const openingBalance =
+    openingBalanceRaw === undefined || openingBalanceRaw === null || openingBalanceRaw === ""
+      ? 0
+      : parsePositiveAmount(openingBalanceRaw, { allowZero: true });
+  const status = normalizeRentTenantStatus(req.body?.status) ?? "ACTIVE";
+  const notes = String(req.body?.notes || "").trim() || null;
+
+  if (!tenantName) {
+    return res.status(400).json({ error: "tenantName is required." });
+  }
+  if (!tenantEmail) {
+    return res.status(400).json({ error: "tenantEmail must be a valid email address." });
+  }
+  if (landlordEmailRaw && !managedLandlordEmail && !providedLandlordEmail) {
+    return res.status(400).json({ error: "landlordEmail must be a valid email address." });
+  }
+  if (
+    managedLandlordEmail &&
+    landlordEmailRaw &&
+    providedLandlordEmail !== managedLandlordEmail
+  ) {
+    return res.status(403).json({
+      error: "Landlord users can only create tenants under their own landlord email.",
+    });
+  }
+  if (!currency) {
+    return res.status(400).json({ error: "currency must be CAD or GHS." });
+  }
+  if (!monthlyRent) {
+    return res.status(400).json({ error: "monthlyRent must be greater than zero." });
+  }
+  if (!leaseStartDate) {
+    return res.status(400).json({ error: "leaseStartDate is required and must be valid." });
+  }
+  if (openingBalance === null) {
+    return res.status(400).json({ error: "openingBalance must be zero or a positive number." });
+  }
+  if (req.body?.leaseEndDate && !leaseEndDate) {
+    return res.status(400).json({ error: "leaseEndDate must be a valid date." });
+  }
+  if (leaseEndDate && leaseEndDate < leaseStartDate) {
+    return res.status(400).json({ error: "leaseEndDate cannot be earlier than leaseStartDate." });
+  }
+
+  const tenant = await prisma.rentTenant.create({
+    data: {
+      organizationId: req.user.organizationId,
+      status,
+      tenantName,
+      tenantEmail,
+      landlordName,
+      landlordEmail,
+      currency,
+      monthlyRent,
+      leaseStartDate,
+      leaseEndDate,
+      openingBalance,
+      notes,
+    },
+    include: {
+      payments: {
+        orderBy: { paidAt: "desc" },
+      },
+    },
+  });
+
+  const quarterRange = getQuarterRangeUtc();
+  res.status(201).json(
+    buildRentTenantSummary(tenant, {
+      quarterRange,
+      asOfDate: new Date(),
+    })
+  );
+});
+
+app.patch("/api/rent/tenants/:id", authMiddleware, requireRentManager, async (req, res) => {
+  const tenantId = parseRentTenantId(req.params.id);
+  if (!tenantId) {
+    return res.status(400).json({ error: "Invalid tenant id." });
+  }
+
+  const tenantScopeWhere = buildRentTenantWhereForUser(req.user);
+  const tenant = await prisma.rentTenant.findFirst({
+    where: {
+      ...tenantScopeWhere,
+      id: tenantId,
+    },
+    include: {
+      payments: {
+        orderBy: { paidAt: "desc" },
+      },
+    },
+  });
+
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
+
+  const updates = {};
+  const managedLandlordEmail = getManagedLandlordEmail(req.user);
+
+  if (req.body?.tenantName !== undefined) {
+    const tenantName = String(req.body.tenantName || "").trim();
+    if (!tenantName) {
+      return res.status(400).json({ error: "tenantName cannot be empty." });
+    }
+    updates.tenantName = tenantName;
+  }
+
+  if (req.body?.tenantEmail !== undefined) {
+    const tenantEmail = normalizeEmailAddress(req.body.tenantEmail);
+    if (!tenantEmail) {
+      return res.status(400).json({ error: "tenantEmail must be a valid email address." });
+    }
+    updates.tenantEmail = tenantEmail;
+  }
+
+  if (req.body?.landlordName !== undefined) {
+    updates.landlordName = String(req.body.landlordName || "").trim() || null;
+  }
+
+  if (req.body?.landlordEmail !== undefined) {
+    const rawLandlordEmail = String(req.body.landlordEmail || "").trim();
+    if (managedLandlordEmail) {
+      const landlordEmail = rawLandlordEmail ? normalizeEmailAddress(rawLandlordEmail) : null;
+      if (landlordEmail !== managedLandlordEmail) {
+        return res.status(403).json({
+          error: "Landlord users can only keep tenants under their own landlord email.",
+        });
+      }
+      updates.landlordEmail = managedLandlordEmail;
+    } else if (!rawLandlordEmail) {
+      updates.landlordEmail = null;
+    } else {
+      const landlordEmail = normalizeEmailAddress(rawLandlordEmail);
+      if (!landlordEmail) {
+        return res.status(400).json({ error: "landlordEmail must be a valid email address." });
+      }
+      updates.landlordEmail = landlordEmail;
+    }
+  }
+
+  if (req.body?.currency !== undefined) {
+    const currency = normalizeAccountingCurrency(req.body.currency);
+    if (!currency) {
+      return res.status(400).json({ error: "currency must be CAD or GHS." });
+    }
+    updates.currency = currency;
+  }
+
+  if (req.body?.monthlyRent !== undefined) {
+    const monthlyRent = parsePositiveAmount(req.body.monthlyRent);
+    if (!monthlyRent) {
+      return res.status(400).json({ error: "monthlyRent must be greater than zero." });
+    }
+    updates.monthlyRent = monthlyRent;
+  }
+
+  if (req.body?.openingBalance !== undefined) {
+    const openingBalance = parsePositiveAmount(req.body.openingBalance, { allowZero: true });
+    if (openingBalance === null) {
+      return res.status(400).json({ error: "openingBalance must be zero or a positive number." });
+    }
+    updates.openingBalance = openingBalance;
+  }
+
+  if (req.body?.status !== undefined) {
+    const status = normalizeRentTenantStatus(req.body.status);
+    if (!status) {
+      return res.status(400).json({ error: "status must be ACTIVE or INACTIVE." });
+    }
+    updates.status = status;
+  }
+
+  if (req.body?.notes !== undefined) {
+    updates.notes = String(req.body.notes || "").trim() || null;
+  }
+
+  const nextLeaseStartDate =
+    req.body?.leaseStartDate !== undefined ? parseDateValue(req.body.leaseStartDate) : tenant.leaseStartDate;
+  if (req.body?.leaseStartDate !== undefined && !nextLeaseStartDate) {
+    return res.status(400).json({ error: "leaseStartDate must be a valid date." });
+  }
+
+  const nextLeaseEndDate =
+    req.body?.leaseEndDate !== undefined
+      ? req.body.leaseEndDate
+        ? parseDateValue(req.body.leaseEndDate)
+        : null
+      : tenant.leaseEndDate;
+  if (req.body?.leaseEndDate !== undefined && req.body.leaseEndDate && !nextLeaseEndDate) {
+    return res.status(400).json({ error: "leaseEndDate must be a valid date or null." });
+  }
+
+  if (nextLeaseEndDate && nextLeaseStartDate && nextLeaseEndDate < nextLeaseStartDate) {
+    return res.status(400).json({ error: "leaseEndDate cannot be earlier than leaseStartDate." });
+  }
+
+  updates.leaseStartDate = nextLeaseStartDate;
+  updates.leaseEndDate = nextLeaseEndDate;
+
+  const updatedTenant = await prisma.rentTenant.update({
+    where: { id: tenant.id },
+    data: updates,
+    include: {
+      payments: {
+        orderBy: { paidAt: "desc" },
+      },
+    },
+  });
+
+  const quarterRange = getQuarterRangeUtc();
+  res.json(
+    buildRentTenantSummary(updatedTenant, {
+      quarterRange,
+      asOfDate: new Date(),
+    })
+  );
+});
+
+app.get("/api/rent/payments", authMiddleware, async (req, res) => {
+  const tenantScopeWhere = buildRentTenantWhereForUser(req.user);
+  const requestedTenantId = req.query?.tenantId ? parseRentTenantId(req.query.tenantId) : null;
+  if (req.query?.tenantId && !requestedTenantId) {
+    return res.status(400).json({ error: "tenantId must be a positive integer." });
+  }
+
+  const tenantWhere = requestedTenantId
+    ? { ...tenantScopeWhere, id: requestedTenantId }
+    : tenantScopeWhere;
+
+  const tenants = await prisma.rentTenant.findMany({
+    where: tenantWhere,
+    select: { id: true },
+  });
+  const tenantIds = tenants.map((tenant) => tenant.id);
+  if (!tenantIds.length) {
+    return res.json({ payments: [] });
+  }
+
+  const payments = await prisma.rentPayment.findMany({
+    where: {
+      organizationId: req.user.organizationId,
+      tenantId: { in: tenantIds },
+    },
+    orderBy: [{ paidAt: "desc" }, { id: "desc" }],
+    take: 200,
+  });
+
+  return res.json({
+    payments: payments.map(serializeRentPayment),
+  });
+});
+
+app.post("/api/rent/payments", authMiddleware, requireRentManager, async (req, res) => {
+  const tenantId = parseRentTenantId(req.body?.tenantId);
+  const amount = parsePositiveAmount(req.body?.amount);
+  const paidAt = parseDateValue(req.body?.paidAt);
+  const method = String(req.body?.method || "").trim() || null;
+  const reference = String(req.body?.reference || "").trim() || null;
+  const notes = String(req.body?.notes || "").trim() || null;
+
+  if (!tenantId) {
+    return res.status(400).json({ error: "tenantId must be a positive integer." });
+  }
+  if (!amount) {
+    return res.status(400).json({ error: "amount must be greater than zero." });
+  }
+  if (!paidAt) {
+    return res.status(400).json({ error: "paidAt is required and must be a valid date." });
+  }
+
+  const tenantScopeWhere = buildRentTenantWhereForUser(req.user);
+  const tenant = await prisma.rentTenant.findFirst({
+    where: {
+      ...tenantScopeWhere,
+      id: tenantId,
+    },
+  });
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
+
+  const payment = await prisma.rentPayment.create({
+    data: {
+      organizationId: req.user.organizationId,
+      tenantId: tenant.id,
+      currency: tenant.currency,
+      amount,
+      paidAt,
+      method,
+      reference,
+      notes,
+    },
+  });
+
+  res.status(201).json(serializeRentPayment(payment));
+});
+
+app.post("/api/rent/quarterly-updates/send", authMiddleware, requireAdmin, async (req, res) => {
+  const result = await runRentQuarterlyTenantUpdates();
+  res.json(result);
 });
 
 app.get("/api/public/trust-stats", async (req, res) => {
@@ -3694,11 +5157,13 @@ registerProductivityRoutes(app, {
 });
 
 const BOOKING_STATUS_VALUES = new Set(["CONFIRMED", "TENTATIVE", "CANCELED"]);
+const USER_STATUS_VALUES = new Set(["ACTIVE", "SUSPENDED", "PENDING"]);
 const ACCOUNTING_TYPE_VALUES = new Set(["REVENUE", "EXPENSE"]);
 const ACCOUNTING_STATUS_VALUES = new Set(["PAID", "PENDING", "SCHEDULED", "OVERDUE"]);
 const ACCOUNTING_CURRENCY_VALUES = new Set(["CAD", "GHS"]);
 const ACCOUNTING_INTERVAL_VALUES = new Set(["MONTHLY", "QUARTERLY", "YEARLY"]);
 const INVOICE_STATUS_VALUES = new Set(["DRAFT", "SENT", "PAID", "OVERDUE", "VOID"]);
+const RENT_TENANT_STATUS_VALUES = new Set(["ACTIVE", "INACTIVE"]);
 const PRODUCTIVITY_TODO_PRIORITY_VALUES = new Set(["low", "medium", "high"]);
 const PRODUCTIVITY_RANGE_DAYS = {
   "7d": 7,
@@ -3742,10 +5207,52 @@ const normalizeAccountingCurrency = (value) => {
   return ACCOUNTING_CURRENCY_VALUES.has(normalized) ? normalized : null;
 };
 
+const normalizeRentTenantStatus = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const normalized = String(value || "").trim().toUpperCase();
+  return RENT_TENANT_STATUS_VALUES.has(normalized) ? normalized : null;
+};
+
+const normalizeUserStatus = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const normalized = String(value || "").trim().toUpperCase();
+  return USER_STATUS_VALUES.has(normalized) ? normalized : null;
+};
+
 const parseOrganizationId = (value) => {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) return null;
   return parsed;
+};
+
+const parseRentTenantId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+};
+
+const parseUserControlId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+};
+
+const normalizeEmailAddress = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized || !EMAIL_PATTERN.test(normalized)) return null;
+  return normalized;
+};
+
+const parsePositiveAmount = (value, { allowZero = false } = {}) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const rounded = Math.round(parsed * 100) / 100;
+  if (allowZero) {
+    return rounded >= 0 ? rounded : null;
+  }
+  return rounded > 0 ? rounded : null;
 };
 
 const normalizeAccountingInterval = (value) => {
@@ -4721,6 +6228,205 @@ const resolveManagedOrganizationCount = async () => {
   );
 };
 
+const toUtcEndOfDay = (date) =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999));
+
+const getQuarterRangeUtc = (referenceDate = new Date()) => {
+  const year = referenceDate.getUTCFullYear();
+  const quarterIndex = Math.floor(referenceDate.getUTCMonth() / 3);
+  const quarterStartMonth = quarterIndex * 3;
+  const start = new Date(Date.UTC(year, quarterStartMonth, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, quarterStartMonth + 3, 0, 23, 59, 59, 999));
+  return { start, end };
+};
+
+const getLastCompletedQuarterRangeUtc = (referenceDate = new Date()) => {
+  const current = getQuarterRangeUtc(referenceDate);
+  const end = new Date(current.start.getTime() - 1);
+  return getQuarterRangeUtc(end);
+};
+
+const formatQuarterLabel = (range) => {
+  const quarter = Math.floor(range.start.getUTCMonth() / 3) + 1;
+  const year = range.start.getUTCFullYear();
+  return `Q${quarter} ${year}`;
+};
+
+const getUtcMonthIndex = (date) => date.getUTCFullYear() * 12 + date.getUTCMonth();
+
+const countBillableMonthsInRange = ({
+  leaseStartDate,
+  leaseEndDate = null,
+  periodStart,
+  periodEnd,
+}) => {
+  if (!(leaseStartDate instanceof Date) || !(periodStart instanceof Date) || !(periodEnd instanceof Date)) {
+    return 0;
+  }
+  const effectiveStart = new Date(
+    Math.max(toUtcStartOfDay(leaseStartDate).getTime(), toUtcStartOfDay(periodStart).getTime())
+  );
+  const leaseBoundaryEnd = leaseEndDate ? toUtcEndOfDay(leaseEndDate) : toUtcEndOfDay(periodEnd);
+  const effectiveEnd = new Date(
+    Math.min(toUtcEndOfDay(periodEnd).getTime(), leaseBoundaryEnd.getTime())
+  );
+  if (effectiveStart.getTime() > effectiveEnd.getTime()) return 0;
+  return getUtcMonthIndex(effectiveEnd) - getUtcMonthIndex(effectiveStart) + 1;
+};
+
+const resolveRentPaymentAmount = (payment) =>
+  typeof payment?.amount?.toNumber === "function" ? payment.amount.toNumber() : Number(payment?.amount || 0);
+
+const sumRentPaymentsInWindow = (payments, startDate, endDate) =>
+  roundCurrencyAmount(
+    (Array.isArray(payments) ? payments : []).reduce((total, payment) => {
+      const paidAt = parseDateValue(payment?.paidAt);
+      if (!paidAt) return total;
+      if (paidAt < startDate || paidAt > endDate) return total;
+      return total + resolveRentPaymentAmount(payment);
+    }, 0)
+  );
+
+const sumRentPaymentsToDate = (payments, asOfDate) =>
+  roundCurrencyAmount(
+    (Array.isArray(payments) ? payments : []).reduce((total, payment) => {
+      const paidAt = parseDateValue(payment?.paidAt);
+      if (!paidAt || paidAt > asOfDate) return total;
+      return total + resolveRentPaymentAmount(payment);
+    }, 0)
+  );
+
+const buildRentTenantSummary = (tenant, { quarterRange, asOfDate }) => {
+  const monthlyRent = resolveDecimalAmount(tenant.monthlyRent);
+  const openingBalance = resolveDecimalAmount(tenant.openingBalance);
+  const payments = Array.isArray(tenant.payments) ? tenant.payments : [];
+  const paidThisQuarter = sumRentPaymentsInWindow(payments, quarterRange.start, quarterRange.end);
+  const paidToDate = sumRentPaymentsToDate(payments, asOfDate);
+  const expectedThisQuarter = roundCurrencyAmount(
+    monthlyRent *
+      countBillableMonthsInRange({
+        leaseStartDate: tenant.leaseStartDate,
+        leaseEndDate: tenant.leaseEndDate,
+        periodStart: quarterRange.start,
+        periodEnd: quarterRange.end,
+      })
+  );
+  const expectedToDate = roundCurrencyAmount(
+    monthlyRent *
+      countBillableMonthsInRange({
+        leaseStartDate: tenant.leaseStartDate,
+        leaseEndDate: tenant.leaseEndDate,
+        periodStart: tenant.leaseStartDate,
+        periodEnd: asOfDate,
+      })
+  );
+  const quarterNet = expectedThisQuarter - paidThisQuarter;
+  const totalNet = openingBalance + expectedToDate - paidToDate;
+  const lastPayment = [...payments]
+    .sort((left, right) => new Date(right.paidAt).getTime() - new Date(left.paidAt).getTime())
+    .at(0);
+
+  return {
+    id: tenant.id,
+    organizationId: tenant.organizationId,
+    status: tenant.status,
+    tenantName: tenant.tenantName,
+    tenantEmail: tenant.tenantEmail,
+    landlordName: tenant.landlordName ?? null,
+    landlordEmail: tenant.landlordEmail ?? null,
+    currency: tenant.currency,
+    monthlyRent: roundCurrencyAmount(monthlyRent),
+    openingBalance: roundCurrencyAmount(openingBalance),
+    leaseStartDate: tenant.leaseStartDate ? tenant.leaseStartDate.toISOString() : null,
+    leaseEndDate: tenant.leaseEndDate ? tenant.leaseEndDate.toISOString() : null,
+    notes: tenant.notes ?? null,
+    paymentsCount: payments.length,
+    paidThisQuarter,
+    expectedThisQuarter,
+    outstandingThisQuarter: roundCurrencyAmount(Math.max(quarterNet, 0)),
+    creditThisQuarter: roundCurrencyAmount(Math.max(-quarterNet, 0)),
+    paidToDate,
+    expectedToDate,
+    outstandingTotal: roundCurrencyAmount(Math.max(totalNet, 0)),
+    creditTotal: roundCurrencyAmount(Math.max(-totalNet, 0)),
+    lastPaymentAt: lastPayment?.paidAt ? new Date(lastPayment.paidAt).toISOString() : null,
+    lastQuarterlySummaryAt: tenant.lastQuarterlySummaryAt
+      ? tenant.lastQuarterlySummaryAt.toISOString()
+      : null,
+    createdAt: tenant.createdAt ? tenant.createdAt.toISOString() : null,
+    updatedAt: tenant.updatedAt ? tenant.updatedAt.toISOString() : null,
+  };
+};
+
+const buildRentDashboardPayload = (tenants, { quarterRange, generatedAt }) => {
+  const asOfDate = new Date(generatedAt);
+  const summaries = tenants.map((tenant) =>
+    buildRentTenantSummary(tenant, {
+      quarterRange,
+      asOfDate,
+    })
+  );
+
+  const currencyTotals = {};
+  summaries.forEach((entry) => {
+    const currency = String(entry.currency || "GHS").toUpperCase();
+    if (!currencyTotals[currency]) {
+      currencyTotals[currency] = {
+        monthlyRent: 0,
+        paidThisQuarter: 0,
+        expectedThisQuarter: 0,
+        outstandingThisQuarter: 0,
+        outstandingTotal: 0,
+      };
+    }
+    currencyTotals[currency].monthlyRent = roundCurrencyAmount(
+      currencyTotals[currency].monthlyRent + Number(entry.monthlyRent || 0)
+    );
+    currencyTotals[currency].paidThisQuarter = roundCurrencyAmount(
+      currencyTotals[currency].paidThisQuarter + Number(entry.paidThisQuarter || 0)
+    );
+    currencyTotals[currency].expectedThisQuarter = roundCurrencyAmount(
+      currencyTotals[currency].expectedThisQuarter + Number(entry.expectedThisQuarter || 0)
+    );
+    currencyTotals[currency].outstandingThisQuarter = roundCurrencyAmount(
+      currencyTotals[currency].outstandingThisQuarter + Number(entry.outstandingThisQuarter || 0)
+    );
+    currencyTotals[currency].outstandingTotal = roundCurrencyAmount(
+      currencyTotals[currency].outstandingTotal + Number(entry.outstandingTotal || 0)
+    );
+  });
+
+  return {
+    generatedAt,
+    quarter: {
+      label: formatQuarterLabel(quarterRange),
+      start: quarterRange.start.toISOString(),
+      end: quarterRange.end.toISOString(),
+    },
+    totals: {
+      tenantsTracked: summaries.length,
+      activeTenants: summaries.filter((tenant) => tenant.status === "ACTIVE").length,
+      paymentsRecorded: summaries.reduce((total, tenant) => total + Number(tenant.paymentsCount || 0), 0),
+      currencyTotals,
+    },
+    tenants: summaries,
+  };
+};
+
+const serializeRentPayment = (payment) => ({
+  id: payment.id,
+  organizationId: payment.organizationId,
+  tenantId: payment.tenantId,
+  currency: payment.currency,
+  amount: roundCurrencyAmount(resolveRentPaymentAmount(payment)),
+  paidAt: payment.paidAt ? payment.paidAt.toISOString() : null,
+  method: payment.method ?? null,
+  reference: payment.reference ?? null,
+  notes: payment.notes ?? null,
+  createdAt: payment.createdAt ? payment.createdAt.toISOString() : null,
+  updatedAt: payment.updatedAt ? payment.updatedAt.toISOString() : null,
+});
+
 const resolveAccountingEntryDate = (entry) => {
   const isPaid = entry.status === "PAID";
   const candidate = isPaid ? entry.paidAt || entry.createdAt : entry.dueAt || entry.createdAt;
@@ -5667,9 +7373,17 @@ app.use((err, req, res, _next) => {
 
 const ensureDefaults = async () => {
   const roles = [
-    { name: "Admin", description: "Full access to every endpoint" },
-    { name: "Editor", description: "Can update dashboard data and content" },
-    { name: "Viewer", description: "Read-only access to dashboard" },
+    { name: "Admin", description: "Full access to every endpoint", permissions: null },
+    {
+      name: "Landlord",
+      description: "Rent manager with access to landlord-linked tenants only",
+      permissions: { modules: [RENT_MODULE_KEY] },
+    },
+    {
+      name: "Tenant",
+      description: "External user with rent module access only",
+      permissions: { modules: [RENT_MODULE_KEY] },
+    },
   ];
 
   const organizationDefinitions = [
@@ -5699,12 +7413,38 @@ const ensureDefaults = async () => {
     for (const role of roles) {
       await prisma.role.upsert({
         where: { organizationId_name: { organizationId: organization.id, name: role.name } },
-        update: { description: role.description },
+        update: { description: role.description, permissions: role.permissions },
         create: {
           name: role.name,
           description: role.description,
+          permissions: role.permissions,
           organizationId: organization.id,
         },
+      });
+    }
+
+    const legacyRoles = await prisma.role.findMany({
+      where: {
+        organizationId: organization.id,
+        name: { notIn: SUPPORTED_USER_ROLE_NAMES },
+      },
+      include: {
+        _count: {
+          select: { users: true },
+        },
+      },
+    });
+
+    for (const legacyRole of legacyRoles) {
+      if ((legacyRole?._count?.users ?? 0) > 0) {
+        console.warn(
+          `Keeping legacy role ${legacyRole.name} in ${organization.name} because it still has assigned users.`
+        );
+        continue;
+      }
+
+      await prisma.role.delete({
+        where: { id: legacyRole.id },
       });
     }
   }
@@ -5718,7 +7458,7 @@ const ensureDefaults = async () => {
   if (!adminRole) return;
   if (!HAS_DEFAULT_ADMIN_PASSWORD) {
     console.warn(
-      `Skipping default admin seed: DEFAULT_ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters.`
+      `Skipping default admin seed: ${DEFAULT_ADMIN_PASSWORD_VALIDATION.error || PASSWORD_POLICY_HINT}`
     );
     return;
   }
@@ -5763,6 +7503,7 @@ const start = async () => {
   if (databaseReady) {
     scheduleNightlyGoogleSync();
     scheduleWeeklyReportEmail();
+    scheduleRentQuarterlyUpdates();
   } else {
     console.warn("Background jobs are disabled until database connectivity is restored.");
   }

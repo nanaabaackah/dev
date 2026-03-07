@@ -1,0 +1,93 @@
+.user-control-page {
+  gap: 1rem;
+}
+
+.user-control-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.user-control-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 980px;
+}
+
+.user-control-table th,
+.user-control-table td {
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  padding: 0.65rem 0.55rem;
+  vertical-align: top;
+}
+
+.user-control-table th {
+  font-size: 0.78rem;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+}
+
+.user-control-table td {
+  font-size: 0.86rem;
+}
+
+.user-control-name-grid {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+}
+
+.user-control-create-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.user-control-password-cell {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.user-control-inline-button {
+  white-space: nowrap;
+}
+
+.user-control-action-stack {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.user-control-remove-button {
+  border-color: color-mix(in oklab, var(--danger), var(--border) 40%);
+  color: var(--danger);
+}
+
+.user-control-resend-button {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 38%);
+  color: var(--accent);
+}
+
+.user-control-resend-button:hover {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 12%);
+}
+
+.user-control-remove-button:hover {
+  border-color: color-mix(in oklab, var(--danger), var(--border) 12%);
+  box-shadow: 0 10px 22px color-mix(in oklab, var(--danger), transparent 84%);
+}
+
+.user-control-action-stack .spinner {
+  width: 14px;
+  height: 14px;
+}
+
+@media (max-width: 900px) {
+  .user-control-table {
+    min-width: 760px;
+  }
+
+  .user-control-name-grid {
+    grid-template-columns: 1fr;
+  }
+}
