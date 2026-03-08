@@ -375,10 +375,18 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const googleRedirectUri = process.env.GOOGLE_REDIRECT_URI;
 const googleWebhookUrl = process.env.GOOGLE_WEBHOOK_URL;
 const appBaseUrl = process.env.APP_BASE_URL;
-const oauthTokenCrypto = createSecretCrypto(process.env.OAUTH_TOKEN_ENCRYPTION_KEY);
-if (googleClientId && googleClientSecret && googleRedirectUri && !oauthTokenCrypto) {
-  throw new Error(
-    "Missing OAUTH_TOKEN_ENCRYPTION_KEY. Google integrations require a 32-byte encryption key."
+let oauthTokenCrypto = null;
+try {
+  oauthTokenCrypto = createSecretCrypto(process.env.OAUTH_TOKEN_ENCRYPTION_KEY);
+} catch (error) {
+  console.error(`Google Calendar integration disabled: ${error.message}`);
+}
+const hasGoogleOAuthCredentials = Boolean(
+  googleClientId && googleClientSecret && googleRedirectUri
+);
+if (hasGoogleOAuthCredentials && !oauthTokenCrypto) {
+  console.warn(
+    "Google Calendar integration disabled: set OAUTH_TOKEN_ENCRYPTION_KEY to a valid 32-byte key."
   );
 }
 const googleNightlySyncEnabled = ["true", "1", "yes", "on"].includes(
@@ -662,8 +670,7 @@ const getRequestBaseUrl = (req) => {
   return `${protocol}://${host}`;
 };
 
-const isGoogleConfigured = () =>
-  Boolean(googleClientId && googleClientSecret && googleRedirectUri);
+const isGoogleConfigured = () => hasGoogleOAuthCredentials && Boolean(oauthTokenCrypto);
 
 const createGoogleClient = () =>
   new google.auth.OAuth2(googleClientId, googleClientSecret, googleRedirectUri);
@@ -1109,6 +1116,10 @@ const ensureGoogleWatch = async (integration) => {
 
 const runNightlyGoogleSync = async () => {
   if (!googleNightlySyncEnabled) return;
+  if (!isGoogleConfigured()) {
+    console.warn("Nightly Google sync skipped: Google Calendar integration is not fully configured.");
+    return;
+  }
   try {
     const integrations = await prisma.calendarIntegration.findMany({
       where: { provider: "GOOGLE_CALENDAR" },
@@ -1130,6 +1141,10 @@ const runNightlyGoogleSync = async () => {
 
 const scheduleNightlyGoogleSync = () => {
   if (!googleNightlySyncEnabled) return;
+  if (!isGoogleConfigured()) {
+    console.warn("Nightly Google sync skipped: Google Calendar integration is not fully configured.");
+    return;
+  }
   if (!Number.isFinite(googleNightlySyncHour) || !Number.isFinite(googleNightlySyncMinute)) {
     console.warn("Nightly Google sync skipped: invalid schedule configuration.");
     return;
@@ -8215,6 +8230,14 @@ app.use("/api", (req, res) => {
   });
 });
 
+app.get("/healthz", (_req, res) => {
+  res.json({
+    ok: true,
+    environment: APP_ENV,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.use((err, req, res, _next) => {
   if (res.headersSent) return;
 
@@ -8347,7 +8370,7 @@ const ensureDefaults = async () => {
   }
 };
 
-const start = async () => {
+const initializeBackgroundServices = async () => {
   let databaseReady = true;
   try {
     await ensureDefaults();
@@ -8358,13 +8381,11 @@ const start = async () => {
       databaseReady = false;
       console.error(`Startup seed skipped: ${message}${codeSuffix}`);
     } else {
-      throw error;
+      databaseReady = false;
+      console.error(`Startup initialization failed: ${message}${codeSuffix}`);
+      console.error(error);
     }
   }
-
-  app.listen(port, () => {
-    console.log(`API server listening on http://localhost:${port}`);
-  });
 
   if (databaseReady) {
     scheduleNightlyGoogleSync();
@@ -8375,7 +8396,14 @@ const start = async () => {
   }
 };
 
-start().catch((error) => {
-  console.error("Unable to start server", error);
-  process.exit(1);
-});
+const start = () => {
+  app.listen(port, () => {
+    console.log(`API server listening on http://localhost:${port}`);
+  });
+
+  initializeBackgroundServices().catch((error) => {
+    console.error("Background service initialization failed", error);
+  });
+};
+
+start();

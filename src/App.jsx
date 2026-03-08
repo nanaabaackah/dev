@@ -477,7 +477,7 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
           </div>
           <div className="topbar-actions">
             <ThemeToggle theme={theme} onToggle={onToggleTheme} />
-            <button className="button button-ghost" type="button" onClick={handleSignOut}>
+            <button className="button button-ghost topbar-signout" type="button" onClick={handleSignOut}>
               <RiLogoutCircleRLine aria-hidden="true" />
               <span>Sign out</span>
             </button>
