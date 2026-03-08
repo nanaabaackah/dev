@@ -1,6 +1,15 @@
 const normalizeBaseUrl = (value) => {
   const trimmed = String(value || "").trim();
-  return trimmed ? trimmed.replace(/\/$/, "") : "";
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
 };
 
 const DEFAULT_LOCAL_APP_BASE_URL = "http://localhost:5173";
@@ -8,10 +17,6 @@ const DEFAULT_LOCAL_APP_BASE_URL = "http://localhost:5173";
 export const resolveRequestBaseUrl = ({
   appBaseUrl,
   isProduction,
-  requestOrigin,
-  forwardedProto,
-  protocol,
-  host,
   devFallbackOrigins = [],
 }) => {
   const configuredBase = normalizeBaseUrl(appBaseUrl);
@@ -19,29 +24,8 @@ export const resolveRequestBaseUrl = ({
     return configuredBase;
   }
 
-  const originBase = normalizeBaseUrl(requestOrigin);
-  if (originBase) {
-    return originBase;
-  }
-
   const devFallbackBase = !isProduction
     ? devFallbackOrigins.map(normalizeBaseUrl).find(Boolean) || DEFAULT_LOCAL_APP_BASE_URL
     : "";
-
-  const normalizedHost = String(host || "").trim();
-  if (normalizedHost) {
-    const normalizedForwardedProto = String(forwardedProto || "")
-      .split(",")[0]
-      .trim();
-    const scheme = normalizedForwardedProto || String(protocol || "").trim() || "https";
-    const hostBase = `${scheme}://${normalizedHost}`;
-
-    if (isProduction) {
-      return hostBase;
-    }
-
-    return devFallbackBase || hostBase;
-  }
-
-  return devFallbackBase || DEFAULT_LOCAL_APP_BASE_URL;
+  return devFallbackBase || "";
 };

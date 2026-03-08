@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { FiEye, FiEyeOff } from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import { buildApiUrl } from "../../api-url";
+import { AUTH_SESSION_STORAGE_MARKER } from "../../utils/authSession";
 import { getApiErrorMessage, readJsonResponse } from "../../utils/http";
 import { formatDateTime } from "../../utils/formatters";
 
@@ -216,8 +217,8 @@ const Profile = () => {
         throw new Error(passwordPolicy ? `${message} ${passwordPolicy}` : message);
       }
 
-      if (payload && typeof payload === "object" && typeof payload.token === "string") {
-        localStorage.setItem("token", payload.token);
+      if (payload && typeof payload === "object" && payload.sessionUpdated) {
+        localStorage.setItem("token", AUTH_SESSION_STORAGE_MARKER);
       }
 
       const currentLocalUser = readLocalUser();

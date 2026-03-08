@@ -13,8 +13,10 @@ import { Resend } from "resend";
 import { google } from "googleapis";
 import { createRequestLogger } from "./observability/requestLogger.js";
 import { createSecurityHeadersMiddleware } from "./security/securityHeaders.js";
+import { createSecretCrypto } from "./security/secretCrypto.js";
 import {
   createAuthMiddleware,
+  createResolveAuthenticatedPayload,
   createRentOnlyModuleAccessMiddleware,
   createRequireAdmin,
   createVerifyTokenPayload,
@@ -120,6 +122,49 @@ const normalizeDatabaseIdentity = (value) => {
   }
 };
 
+const LOCAL_DATABASE_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+const getConnectionHost = (value) => {
+  try {
+    return new URL(value || "").hostname || "";
+  } catch {
+    return "";
+  }
+};
+
+const readOptionalMultilineEnv = (value) => {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  return normalized.replace(/\\n/g, "\n");
+};
+
+const resolvePgSslConfig = ({ connectionString, envPrefix }) => {
+  const host = getConnectionHost(connectionString);
+  const sslMode = String(process.env[`${envPrefix}_SSL_MODE`] || "")
+    .trim()
+    .toLowerCase();
+  const defaultEnabled = Boolean(host) && !LOCAL_DATABASE_HOSTS.has(host);
+  const explicitEnabled = parseEnvBoolean(process.env[`${envPrefix}_SSL`], defaultEnabled);
+  const shouldEnableSsl = explicitEnabled && sslMode !== "disable";
+
+  if (!shouldEnableSsl) {
+    return false;
+  }
+
+  const rejectUnauthorized = parseEnvBoolean(
+    process.env[`${envPrefix}_SSL_REJECT_UNAUTHORIZED`],
+    true
+  );
+  const ca = readOptionalMultilineEnv(process.env[`${envPrefix}_SSL_CA`]);
+
+  return ca
+    ? {
+        rejectUnauthorized,
+        ca,
+      }
+    : { rejectUnauthorized };
+};
+
 const pickDatabaseUrl = (environment) => {
   const candidates = [
     environment === "production" ? "DATABASE_URL_PRODUCTION" : "DATABASE_URL_DEVELOPMENT",
@@ -174,7 +219,7 @@ const trustProxyHops = parsePositiveInt(process.env.TRUST_PROXY_HOPS, 1, {
 app.set("trust proxy", trustProxyHops);
 const pool = new Pool({
   connectionString: databaseUrl,
-  ssl: { rejectUnauthorized: false },
+  ssl: resolvePgSslConfig({ connectionString: databaseUrl, envPrefix: "DATABASE" }),
 });
 const adapter = new PrismaPg(pool);
 const { PrismaClient } = prismaPkg;
@@ -308,13 +353,19 @@ const AUTH_COOKIE_SECURE = parseEnvBoolean(process.env.AUTH_COOKIE_SECURE, isPro
 const reebsPool = reebsDatabaseUrl
   ? new Pool({
       connectionString: reebsDatabaseUrl,
-      ssl: { rejectUnauthorized: false },
+      ssl: resolvePgSslConfig({
+        connectionString: reebsDatabaseUrl,
+        envPrefix: "REEBS_DATABASE",
+      }),
     })
   : null;
 const faakoPool = faakoDatabaseUrl
   ? new Pool({
       connectionString: faakoDatabaseUrl,
-      ssl: { rejectUnauthorized: false },
+      ssl: resolvePgSslConfig({
+        connectionString: faakoDatabaseUrl,
+        envPrefix: "FAAKO_DATABASE",
+      }),
     })
   : null;
 const port = Number(process.env.PORT ?? process.env.API_PORT ?? 8080);
@@ -324,6 +375,12 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const googleRedirectUri = process.env.GOOGLE_REDIRECT_URI;
 const googleWebhookUrl = process.env.GOOGLE_WEBHOOK_URL;
 const appBaseUrl = process.env.APP_BASE_URL;
+const oauthTokenCrypto = createSecretCrypto(process.env.OAUTH_TOKEN_ENCRYPTION_KEY);
+if (googleClientId && googleClientSecret && googleRedirectUri && !oauthTokenCrypto) {
+  throw new Error(
+    "Missing OAUTH_TOKEN_ENCRYPTION_KEY. Google integrations require a 32-byte encryption key."
+  );
+}
 const googleNightlySyncEnabled = ["true", "1", "yes", "on"].includes(
   String(process.env.GOOGLE_NIGHTLY_SYNC_ENABLED ?? "").trim().toLowerCase()
 );
@@ -611,11 +668,20 @@ const isGoogleConfigured = () =>
 const createGoogleClient = () =>
   new google.auth.OAuth2(googleClientId, googleClientSecret, googleRedirectUri);
 
-const signGoogleState = (payload) => jwt.sign(payload, jwtSecret, { expiresIn: "15m" });
+const signGoogleState = (payload) =>
+  jwt.sign(
+    {
+      purpose: "google_oauth_state",
+      ...payload,
+    },
+    jwtSecret,
+    { expiresIn: "15m" }
+  );
 
 const verifyGoogleState = (value) => {
   try {
-    return jwt.verify(value, jwtSecret);
+    const payload = jwt.verify(value, jwtSecret);
+    return payload?.purpose === "google_oauth_state" ? payload : null;
   } catch {
     return null;
   }
@@ -787,22 +853,31 @@ const getPrivateBookingId = (event) => {
   return Number.isInteger(parsed) ? parsed : null;
 };
 
-const getCalendarClient = (integration) => {
+const getCalendarClient = async (integration) => {
+  const secureIntegration = await maybeEncryptCalendarIntegrationSecrets(integration);
   const auth = createGoogleClient();
   auth.setCredentials({
-    access_token: integration.accessToken,
-    refresh_token: integration.refreshToken ?? undefined,
-    expiry_date: integration.tokenExpiry ? new Date(integration.tokenExpiry).getTime() : undefined,
+    access_token: decryptIntegrationSecret(secureIntegration.accessToken),
+    refresh_token: decryptIntegrationSecret(secureIntegration.refreshToken) ?? undefined,
+    expiry_date: secureIntegration.tokenExpiry
+      ? new Date(secureIntegration.tokenExpiry).getTime()
+      : undefined,
   });
 
   auth.on("tokens", async (tokens) => {
     if (!tokens.access_token && !tokens.refresh_token) return;
     await prisma.calendarIntegration.update({
-      where: { id: integration.id },
+      where: { id: secureIntegration.id },
       data: {
-        accessToken: tokens.access_token ?? integration.accessToken,
-        refreshToken: tokens.refresh_token ?? integration.refreshToken,
-        tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : integration.tokenExpiry,
+        accessToken: tokens.access_token
+          ? encryptIntegrationSecret(tokens.access_token)
+          : secureIntegration.accessToken,
+        refreshToken: tokens.refresh_token
+          ? encryptIntegrationSecret(tokens.refresh_token)
+          : secureIntegration.refreshToken,
+        tokenExpiry: tokens.expiry_date
+          ? new Date(tokens.expiry_date)
+          : secureIntegration.tokenExpiry,
       },
     });
   });
@@ -907,7 +982,7 @@ const buildGoogleEventPayload = (booking, { createConference = false } = {}) => 
 };
 
 const createGoogleCalendarEvent = async (integration, booking) => {
-  const { calendar } = getCalendarClient(integration);
+  const { calendar } = await getCalendarClient(integration);
   const response = await calendar.events.insert({
     calendarId: integration.calendarId || "primary",
     conferenceDataVersion: 1,
@@ -920,7 +995,7 @@ const createGoogleCalendarEvent = async (integration, booking) => {
 };
 
 const updateGoogleCalendarEvent = async (integration, booking, { createConference = false } = {}) => {
-  const { calendar } = getCalendarClient(integration);
+  const { calendar } = await getCalendarClient(integration);
   const response = await calendar.events.patch({
     calendarId: integration.calendarId || "primary",
     eventId: booking.calendarEventId,
@@ -935,7 +1010,7 @@ const updateGoogleCalendarEvent = async (integration, booking, { createConferenc
 
 const stopGoogleWatch = async (integration) => {
   if (!integration.channelId || !integration.channelResourceId) return;
-  const { calendar } = getCalendarClient(integration);
+  const { calendar } = await getCalendarClient(integration);
   await calendar.channels.stop({
     requestBody: {
       id: integration.channelId,
@@ -945,7 +1020,7 @@ const stopGoogleWatch = async (integration) => {
 };
 
 const syncGoogleCalendar = async (integration) => {
-  const { calendar } = getCalendarClient(integration);
+  const { calendar } = await getCalendarClient(integration);
   const calendarId = integration.calendarId || "primary";
   const timeMin = integration.lastSyncedAt
     ? new Date(new Date(integration.lastSyncedAt).getTime() - 24 * 60 * 60 * 1000).toISOString()
@@ -1007,7 +1082,7 @@ const syncGoogleCalendar = async (integration) => {
 
 const ensureGoogleWatch = async (integration) => {
   if (!googleWebhookUrl) return null;
-  const { calendar } = getCalendarClient(integration);
+  const { calendar } = await getCalendarClient(integration);
   const channelId = crypto.randomUUID();
   const channelToken = crypto.randomUUID();
 
@@ -1026,7 +1101,7 @@ const ensureGoogleWatch = async (integration) => {
 
   return {
     channelId,
-    channelToken,
+    channelToken: encryptIntegrationSecret(channelToken),
     channelResourceId: response.data.resourceId ?? null,
     channelExpiration: expiration,
   };
@@ -1409,6 +1484,54 @@ const timingSafeEqual = (left, right) => {
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 };
 
+const encryptIntegrationSecret = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return value ?? null;
+  if (!oauthTokenCrypto) {
+    throw new Error("Missing OAUTH_TOKEN_ENCRYPTION_KEY for calendar secret encryption.");
+  }
+  return oauthTokenCrypto.encrypt(String(value));
+};
+
+const decryptIntegrationSecret = (value) => {
+  if (value === undefined || value === null || value === "") return value ?? null;
+  if (!oauthTokenCrypto) {
+    throw new Error("Missing OAUTH_TOKEN_ENCRYPTION_KEY for calendar secret decryption.");
+  }
+  return oauthTokenCrypto.decrypt(String(value));
+};
+
+const maybeEncryptCalendarIntegrationSecrets = async (integration) => {
+  if (!integration?.id || !oauthTokenCrypto) {
+    return integration;
+  }
+
+  const updateData = {};
+  if (integration.accessToken && !oauthTokenCrypto.isEncrypted(integration.accessToken)) {
+    updateData.accessToken = encryptIntegrationSecret(integration.accessToken);
+  }
+  if (integration.refreshToken && !oauthTokenCrypto.isEncrypted(integration.refreshToken)) {
+    updateData.refreshToken = encryptIntegrationSecret(integration.refreshToken);
+  }
+  if (integration.channelToken && !oauthTokenCrypto.isEncrypted(integration.channelToken)) {
+    updateData.channelToken = encryptIntegrationSecret(integration.channelToken);
+  }
+
+  if (!Object.keys(updateData).length) {
+    return integration;
+  }
+
+  await prisma.calendarIntegration.update({
+    where: { id: integration.id },
+    data: updateData,
+  });
+
+  return {
+    ...integration,
+    ...updateData,
+  };
+};
+
 const authCookieBaseOptions = {
   secure: AUTH_COOKIE_SECURE,
   sameSite: AUTH_COOKIE_SAME_SITE,
@@ -1499,24 +1622,32 @@ const serializeAccessUser = (user) => ({
 
 const isRentOnlyModuleScope = (modules = []) =>
   modules.length === 1 && modules[0] === RENT_MODULE_KEY;
-
-const resolveAuthenticatedPayload = (req) => {
-  const bearerToken = readBearerToken(req?.headers?.authorization);
-  const bearerPayload = verifyTokenPayload(bearerToken);
-  if (bearerPayload) return bearerPayload;
-
-  const cookieToken = getCookieValue(req, AUTH_COOKIE_NAME);
-  const cookiePayload = verifyTokenPayload(cookieToken);
-  if (cookiePayload) return cookiePayload;
-  return null;
-};
-
-const rentOnlyModuleAccessMiddleware = createRentOnlyModuleAccessMiddleware({
-  resolveAuthenticatedPayload,
-  extractAllowedModules,
-  isRentOnlyModuleScope,
-  allowedPathMatchers: RENT_ONLY_ALLOWED_API_PATHS,
+const serializeAuthenticatedUser = (user) => ({
+  userId: user.id,
+  organizationId: user.organizationId,
+  roleId: user.roleId,
+  roleName: user.role?.name || "",
+  email: user.email,
+  status: user.status,
+  modules: extractAllowedModules(user.role?.permissions),
 });
+
+const loadSessionUser = async (payload) => {
+  const userId = Number(payload?.userId);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { role: true },
+  });
+  if (!user || user.status !== "ACTIVE" || !user.role) {
+    return null;
+  }
+
+  return serializeAuthenticatedUser(user);
+};
 
 const rentMonthlyFromEmail =
   String(RENT_MONTHLY_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
@@ -1698,7 +1829,7 @@ const sendAccountInvitationEmail = async ({ req, user }) => {
   }
 
   const invitationToken = buildSetupAccountToken(user);
-  const setupUrl = buildSetupAccountUrl(req, invitationToken);
+  const setupUrl = buildSetupAccountUrl(invitationToken);
   const { subject, text, html } = buildAccountInvitationEmailContent({
     recipientName: user.firstName || user.fullName || user.email,
     setupUrl,
@@ -1999,7 +2130,7 @@ const sendForgotPasswordEmail = async ({ req, user }) => {
   }
 
   const resetToken = buildSetupAccountToken(user);
-  const resetUrl = buildSetupAccountUrl(req, resetToken);
+  const resetUrl = buildSetupAccountUrl(resetToken);
   const { subject, text, html } = buildForgotPasswordEmailContent({
     recipientName: user.firstName || user.fullName || user.email,
     resetUrl,
@@ -2651,12 +2782,30 @@ if (!jwtSecret) {
   throw new Error("Missing JWT_SECRET in environment config.");
 }
 
-const verifyTokenPayload = createVerifyTokenPayload({ jwt, jwtSecret });
+const verifyTokenPayload = createVerifyTokenPayload({
+  jwt,
+  jwtSecret,
+  expectedPurpose: "session",
+});
 const authMiddleware = createAuthMiddleware({
   authCookieName: AUTH_COOKIE_NAME,
   getCookieValue,
   readBearerToken,
   verifyTokenPayload,
+  loadSessionUser,
+});
+const resolveAuthenticatedPayload = createResolveAuthenticatedPayload({
+  authCookieName: AUTH_COOKIE_NAME,
+  getCookieValue,
+  readBearerToken,
+  verifyTokenPayload,
+  loadSessionUser,
+});
+const rentOnlyModuleAccessMiddleware = createRentOnlyModuleAccessMiddleware({
+  resolveAuthenticatedPayload,
+  extractAllowedModules,
+  isRentOnlyModuleScope,
+  allowedPathMatchers: RENT_ONLY_ALLOWED_API_PATHS,
 });
 
 const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -2729,18 +2878,21 @@ const verifySetupTokenPayload = (token) => {
     return null;
   }
 };
-const resolveRequestBaseUrl = (req) =>
+const resolveRequestBaseUrl = () =>
   resolveFrontendBaseUrl({
     appBaseUrl,
     isProduction,
-    requestOrigin: req?.header?.("origin"),
-    forwardedProto: req?.header?.("x-forwarded-proto"),
-    protocol: req?.protocol,
-    host: req?.get?.("host"),
     devFallbackOrigins: devOrigins,
   });
-const buildSetupAccountUrl = (req, token) =>
-  `${resolveRequestBaseUrl(req)}/setup-account?token=${encodeURIComponent(token)}`;
+const buildSetupAccountUrl = (token) => {
+  const frontendBaseUrl = resolveRequestBaseUrl();
+  if (!frontendBaseUrl) {
+    const error = new Error("APP_BASE_URL must be configured before sending account links.");
+    error.statusCode = 500;
+    throw error;
+  }
+  return `${frontendBaseUrl}/setup-account#token=${encodeURIComponent(token)}`;
+};
 
 const isPrismaErrorInstance = (error, className) => {
   if (!error || !className) return false;
@@ -2861,7 +3013,6 @@ const forgotPasswordHandler = createForgotPasswordHandler({
   defaultAdminEmail: DEFAULT_ADMIN_EMAIL,
   prisma,
   sendForgotPasswordEmail,
-  exposeSendErrors: !isProduction,
 });
 const setupAccountVerifyHandler = createSetupAccountVerifyHandler({
   verifySetupTokenPayload,
@@ -7871,7 +8022,9 @@ app.post("/api/integrations/google/disconnect", authMiddleware, requireAdmin, as
         console.warn("Google Calendar disconnect: stop watch failed", error);
       }
 
-      const revokeToken = integration.refreshToken || integration.accessToken;
+      const revokeToken = integration.refreshToken
+        ? decryptIntegrationSecret(integration.refreshToken)
+        : decryptIntegrationSecret(integration.accessToken);
       if (revokeToken) {
         try {
           await createGoogleClient().revokeToken(revokeToken);
@@ -7961,8 +8114,16 @@ app.get("/api/integrations/google/callback", async (req, res) => {
         },
       },
       update: {
-        accessToken: tokens.access_token ?? existing?.accessToken ?? "",
-        refreshToken: tokens.refresh_token ?? existing?.refreshToken ?? null,
+        accessToken: tokens.access_token
+          ? encryptIntegrationSecret(tokens.access_token)
+          : existing?.accessToken
+            ? encryptIntegrationSecret(decryptIntegrationSecret(existing.accessToken))
+            : "",
+        refreshToken: tokens.refresh_token
+          ? encryptIntegrationSecret(tokens.refresh_token)
+          : existing?.refreshToken
+            ? encryptIntegrationSecret(decryptIntegrationSecret(existing.refreshToken))
+            : null,
         tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : existing?.tokenExpiry ?? null,
         scope: tokens.scope ?? existing?.scope ?? null,
         email: calendarEmail ?? existing?.email ?? null,
@@ -7971,8 +8132,8 @@ app.get("/api/integrations/google/callback", async (req, res) => {
       create: {
         organizationId: decodedState.organizationId,
         provider: "GOOGLE_CALENDAR",
-        accessToken: tokens.access_token ?? "",
-        refreshToken: tokens.refresh_token ?? null,
+        accessToken: tokens.access_token ? encryptIntegrationSecret(tokens.access_token) : "",
+        refreshToken: tokens.refresh_token ? encryptIntegrationSecret(tokens.refresh_token) : null,
         tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
         scope: tokens.scope ?? null,
         email: calendarEmail,
@@ -8034,7 +8195,8 @@ app.post("/api/webhooks/google-calendar", async (req, res) => {
   }
 
   if (integration.channelToken) {
-    if (!channelToken || integration.channelToken !== channelToken) {
+    const storedChannelToken = decryptIntegrationSecret(integration.channelToken);
+    if (!channelToken || !timingSafeEqual(storedChannelToken, channelToken)) {
       res.status(403).end();
       return;
     }

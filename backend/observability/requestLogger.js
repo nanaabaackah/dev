@@ -14,8 +14,12 @@ export const createRequestLogger = ({ logger = console } = {}) => {
       const contentLength = res.getHeader("content-length");
       const sizeSuffix =
         contentLength === undefined || contentLength === null ? "" : ` ${contentLength}b`;
+      const requestPath =
+        typeof req?.originalUrl === "string" && req.originalUrl
+          ? req.originalUrl.split("?")[0]
+          : req?.path || req?.url || "";
 
-      log(`[api] ${req.method} ${req.originalUrl} ${res.statusCode} ${durationMs}ms${sizeSuffix}`);
+      log(`[api] ${req.method} ${requestPath} ${res.statusCode} ${durationMs}ms${sizeSuffix}`);
     });
 
     next();

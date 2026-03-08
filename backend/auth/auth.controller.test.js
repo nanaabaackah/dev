@@ -89,9 +89,6 @@ test("createForgotPasswordHandler sends a reset email for an existing active use
   assert.deepEqual(res.body, {
     message: "If that address exists in our system, we will email you instructions shortly.",
     supportEmail: "admin@example.com",
-    deliveryEmail: null,
-    intendedEmail: null,
-    rerouted: false,
   });
 });
 
@@ -119,9 +116,6 @@ test("createForgotPasswordHandler returns the generic success response when the 
   assert.deepEqual(res.body, {
     message: "If that address exists in our system, we will email you instructions shortly.",
     supportEmail: "admin@example.com",
-    deliveryEmail: null,
-    intendedEmail: null,
-    rerouted: false,
   });
 });
 
@@ -153,13 +147,10 @@ test("createForgotPasswordHandler does not send reset emails for suspended users
   assert.deepEqual(res.body, {
     message: "If that address exists in our system, we will email you instructions shortly.",
     supportEmail: "admin@example.com",
-    deliveryEmail: null,
-    intendedEmail: null,
-    rerouted: false,
   });
 });
 
-test("createForgotPasswordHandler reports the rerouted local recipient when delivery succeeds", async () => {
+test("createForgotPasswordHandler keeps the response generic when delivery is rerouted", async () => {
   const handler = createForgotPasswordHandler({
     defaultAdminEmail: "admin@example.com",
     prisma: {
@@ -187,18 +178,14 @@ test("createForgotPasswordHandler reports the rerouted local recipient when deli
 
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body, {
-    message: "Password reset instructions were sent to admin@example.com.",
+    message: "If that address exists in our system, we will email you instructions shortly.",
     supportEmail: "admin@example.com",
-    deliveryEmail: "admin@example.com",
-    intendedEmail: "user@example.com",
-    rerouted: true,
   });
 });
 
-test("createForgotPasswordHandler exposes local delivery errors when configured", async () => {
+test("createForgotPasswordHandler keeps the response generic when delivery fails", async () => {
   const handler = createForgotPasswordHandler({
     defaultAdminEmail: "admin@example.com",
-    exposeSendErrors: true,
     prisma: {
       user: {
         async findUnique() {
@@ -220,8 +207,9 @@ test("createForgotPasswordHandler exposes local delivery errors when configured"
 
   await handler({ body: { email: "user@example.com" } }, res);
 
-  assert.equal(res.statusCode, 502);
+  assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body, {
-    error: "RESEND request failed",
+    message: "If that address exists in our system, we will email you instructions shortly.",
+    supportEmail: "admin@example.com",
   });
 });

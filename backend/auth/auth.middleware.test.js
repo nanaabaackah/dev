@@ -4,6 +4,7 @@ import {
   createAuthMiddleware,
   createRentOnlyModuleAccessMiddleware,
   createRequireAdmin,
+  createResolveAuthenticatedPayload,
   createVerifyTokenPayload,
   resolveMountedRequestPath,
 } from "./auth.middleware.js";
@@ -38,7 +39,21 @@ test("createVerifyTokenPayload returns null when token verification fails", () =
   assert.equal(verifyTokenPayload("bad-token"), null);
 });
 
-test("createAuthMiddleware authenticates with a bearer token first", () => {
+test("createVerifyTokenPayload rejects tokens with the wrong purpose", () => {
+  const verifyTokenPayload = createVerifyTokenPayload({
+    jwt: {
+      verify() {
+        return { purpose: "account_setup", userId: 7 };
+      },
+    },
+    jwtSecret: "secret",
+    expectedPurpose: "session",
+  });
+
+  assert.equal(verifyTokenPayload("setup-token"), null);
+});
+
+test("createAuthMiddleware authenticates with a bearer token first", async () => {
   const req = { headers: { authorization: "Bearer bearer-token" } };
   const res = createMockResponse();
   let nextCalled = false;
@@ -52,23 +67,26 @@ test("createAuthMiddleware authenticates with a bearer token first", () => {
       return "bearer-token";
     },
     verifyTokenPayload(token) {
-      if (token === "cookie-token") return { userId: "1", roleName: "Admin" };
-      if (token === "bearer-token") return { userId: "2", roleName: "User" };
+      if (token === "cookie-token") return { userId: 1 };
+      if (token === "bearer-token") return { userId: 2 };
       return null;
+    },
+    async loadSessionUser(payload) {
+      return payload?.userId === 2 ? { userId: 2, roleName: "User" } : null;
     },
   });
 
-  authMiddleware(req, res, () => {
+  await authMiddleware(req, res, () => {
     nextCalled = true;
   });
 
   assert.equal(nextCalled, true);
-  assert.deepEqual(req.user, { userId: "2", roleName: "User" });
+  assert.deepEqual(req.user, { userId: 2, roleName: "User" });
   assert.equal(req.authMethod, "bearer");
   assert.equal(res.statusCode, null);
 });
 
-test("createAuthMiddleware falls back to cookie tokens", () => {
+test("createAuthMiddleware falls back to cookie tokens", async () => {
   const req = { headers: { authorization: "Bearer bad-token" } };
   const res = createMockResponse();
   let nextCalled = false;
@@ -82,20 +100,23 @@ test("createAuthMiddleware falls back to cookie tokens", () => {
       return header === "Bearer bad-token" ? "bad-token" : null;
     },
     verifyTokenPayload(token) {
-      return token === "cookie-token" ? { userId: "1", roleName: "Admin" } : null;
+      return token === "cookie-token" ? { userId: 1 } : null;
+    },
+    async loadSessionUser(payload) {
+      return payload?.userId === 1 ? { userId: 1, roleName: "Admin" } : null;
     },
   });
 
-  authMiddleware(req, res, () => {
+  await authMiddleware(req, res, () => {
     nextCalled = true;
   });
 
   assert.equal(nextCalled, true);
-  assert.deepEqual(req.user, { userId: "1", roleName: "Admin" });
+  assert.deepEqual(req.user, { userId: 1, roleName: "Admin" });
   assert.equal(req.authMethod, "cookie");
 });
 
-test("createAuthMiddleware returns 401 when no valid auth is present", () => {
+test("createAuthMiddleware returns 401 when no valid auth is present", async () => {
   const req = { headers: { authorization: "" } };
   const res = createMockResponse();
   let nextCalled = false;
@@ -113,7 +134,7 @@ test("createAuthMiddleware returns 401 when no valid auth is present", () => {
     },
   });
 
-  authMiddleware(req, res, () => {
+  await authMiddleware(req, res, () => {
     nextCalled = true;
   });
 
@@ -161,7 +182,7 @@ test("resolveMountedRequestPath preserves the mounted prefix for api middleware"
   assert.equal(requestPath, "/api/auth/login");
 });
 
-test("createRentOnlyModuleAccessMiddleware allows mounted auth routes for rent-scoped users", () => {
+test("createRentOnlyModuleAccessMiddleware allows mounted auth routes for rent-scoped users", async () => {
   const req = {
     baseUrl: "/api",
     path: "/auth/login",
@@ -171,7 +192,7 @@ test("createRentOnlyModuleAccessMiddleware allows mounted auth routes for rent-s
   let nextCalled = false;
 
   const middleware = createRentOnlyModuleAccessMiddleware({
-    resolveAuthenticatedPayload() {
+    async resolveAuthenticatedPayload() {
       return { modules: ["rent"] };
     },
     extractAllowedModules({ modules }) {
@@ -183,7 +204,7 @@ test("createRentOnlyModuleAccessMiddleware allows mounted auth routes for rent-s
     allowedPathMatchers: [/^\/api\/rent(?:\/|$)/, /^\/api\/users\/me(?:\/|$)/, /^\/api\/auth(?:\/|$)/],
   });
 
-  middleware(req, res, () => {
+  await middleware(req, res, () => {
     nextCalled = true;
   });
 
@@ -191,7 +212,7 @@ test("createRentOnlyModuleAccessMiddleware allows mounted auth routes for rent-s
   assert.equal(res.statusCode, null);
 });
 
-test("createRentOnlyModuleAccessMiddleware allows mounted users/me routes for rent-scoped users", () => {
+test("createRentOnlyModuleAccessMiddleware allows mounted users/me routes for rent-scoped users", async () => {
   const req = {
     baseUrl: "/api",
     path: "/users/me",
@@ -201,7 +222,7 @@ test("createRentOnlyModuleAccessMiddleware allows mounted users/me routes for re
   let nextCalled = false;
 
   const middleware = createRentOnlyModuleAccessMiddleware({
-    resolveAuthenticatedPayload() {
+    async resolveAuthenticatedPayload() {
       return { modules: ["rent"] };
     },
     extractAllowedModules({ modules }) {
@@ -213,7 +234,7 @@ test("createRentOnlyModuleAccessMiddleware allows mounted users/me routes for re
     allowedPathMatchers: [/^\/api\/rent(?:\/|$)/, /^\/api\/users\/me(?:\/|$)/, /^\/api\/auth(?:\/|$)/],
   });
 
-  middleware(req, res, () => {
+  await middleware(req, res, () => {
     nextCalled = true;
   });
 
@@ -221,7 +242,7 @@ test("createRentOnlyModuleAccessMiddleware allows mounted users/me routes for re
   assert.equal(res.statusCode, null);
 });
 
-test("createRentOnlyModuleAccessMiddleware blocks non-rent endpoints for rent-scoped users", () => {
+test("createRentOnlyModuleAccessMiddleware blocks non-rent endpoints for rent-scoped users", async () => {
   const req = {
     baseUrl: "/api",
     path: "/organizations",
@@ -231,7 +252,7 @@ test("createRentOnlyModuleAccessMiddleware blocks non-rent endpoints for rent-sc
   let nextCalled = false;
 
   const middleware = createRentOnlyModuleAccessMiddleware({
-    resolveAuthenticatedPayload() {
+    async resolveAuthenticatedPayload() {
       return { modules: ["rent"] };
     },
     extractAllowedModules({ modules }) {
@@ -243,11 +264,32 @@ test("createRentOnlyModuleAccessMiddleware blocks non-rent endpoints for rent-sc
     allowedPathMatchers: [/^\/api\/rent(?:\/|$)/, /^\/api\/users\/me(?:\/|$)/, /^\/api\/auth(?:\/|$)/],
   });
 
-  middleware(req, res, () => {
+  await middleware(req, res, () => {
     nextCalled = true;
   });
 
   assert.equal(nextCalled, false);
   assert.equal(res.statusCode, 403);
   assert.deepEqual(res.body, { error: "Your account is restricted to the rent module." });
+});
+test("createResolveAuthenticatedPayload only resolves session tokens", async () => {
+  const resolveAuthenticatedPayload = createResolveAuthenticatedPayload({
+    authCookieName: "auth",
+    getCookieValue() {
+      return "setup-token";
+    },
+    readBearerToken() {
+      return null;
+    },
+    verifyTokenPayload(token) {
+      return token === "setup-token" ? null : null;
+    },
+    async loadSessionUser() {
+      return { userId: 1, roleName: "Admin" };
+    },
+  });
+
+  const payload = await resolveAuthenticatedPayload({ headers: {} });
+
+  assert.equal(payload, null);
 });

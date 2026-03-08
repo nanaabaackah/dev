@@ -16,14 +16,9 @@ const extractRoleModules = (role) => {
 };
 
 export const createBuildToken = ({ jwt, jwtSecret }) => (user) => {
-  const allowedModules = extractRoleModules(user?.role);
   const payload = {
+    purpose: "session",
     userId: user.id,
-    organizationId: user.organizationId,
-    roleId: user.roleId,
-    roleName: user.role.name,
-    email: user.email,
-    modules: allowedModules,
   };
 
   return jwt.sign(payload, jwtSecret, { expiresIn: "12h" });
@@ -56,9 +51,9 @@ export const createLoginHandler =
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    const token = buildToken(user);
+    const sessionToken = buildToken(user);
     const csrfToken = createCsrfToken();
-    setAuthCookies(res, { token, csrfToken });
+    setAuthCookies(res, { token: sessionToken, csrfToken });
     const allowedModules = extractRoleModules(user?.role);
 
     return res.json({
@@ -76,7 +71,6 @@ export const createLoginHandler =
         organizationId: user.organizationId,
         allowedModules,
       },
-      token,
     });
   };
 
@@ -88,7 +82,7 @@ export const createLogoutHandler =
   };
 
 export const createForgotPasswordHandler =
-  ({ defaultAdminEmail, prisma, sendForgotPasswordEmail, exposeSendErrors = false }) =>
+  ({ defaultAdminEmail, prisma, sendForgotPasswordEmail }) =>
   async (req, res) => {
     const email = (req.body?.email || "").toLowerCase().trim();
     if (!email) {
@@ -99,37 +93,25 @@ export const createForgotPasswordHandler =
     const user = await prisma.user.findUnique({
       where: { email },
     });
-    let delivery = null;
 
     if (user && user.status !== "SUSPENDED" && typeof sendForgotPasswordEmail === "function") {
       try {
-        delivery = await sendForgotPasswordEmail({ req, user });
+        await sendForgotPasswordEmail({ req, user });
       } catch (error) {
         console.error(`Failed to send password reset email for ${email}`, error);
-        if (exposeSendErrors) {
-          return res.status(error?.statusCode || 500).json({
-            error: error?.message || "Unable to send password reset email.",
-          });
-        }
       }
     }
 
     return res.json({
-      message:
-        delivery?.resetRerouted && delivery?.resetRecipient
-          ? `Password reset instructions were sent to ${delivery.resetRecipient}.`
-          : "If that address exists in our system, we will email you instructions shortly.",
+      message: "If that address exists in our system, we will email you instructions shortly.",
       supportEmail: defaultAdminEmail,
-      deliveryEmail: delivery?.resetRecipient || null,
-      intendedEmail: delivery?.resetIntendedRecipient || null,
-      rerouted: Boolean(delivery?.resetRerouted),
     });
   };
 
 export const createSetupAccountVerifyHandler =
   ({ verifySetupTokenPayload, prisma }) =>
   async (req, res) => {
-    const token = String(req.query?.token || "").trim();
+    const token = String(req.body?.token || "").trim();
     if (!token) {
       return res.status(400).json({ error: "Invitation token is required." });
     }

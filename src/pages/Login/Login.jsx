@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { buildApiUrl } from "../../api-url";
 import ThemeToggle from "../../components/ThemeToggle";
+import { AUTH_SESSION_STORAGE_MARKER } from "../../utils/authSession";
 import "./Login.css";
 
 const Login = ({ theme, onToggleTheme }) => {
@@ -35,7 +36,7 @@ const Login = ({ theme, onToggleTheme }) => {
         if (!data?.user) {
           throw new Error("Login succeeded but user details were missing.");
         }
-        localStorage.setItem("token", data.token);
+        localStorage.setItem("token", AUTH_SESSION_STORAGE_MARKER);
         localStorage.setItem("user", JSON.stringify(data.user));
         navigate("/dashboard");
       } else {
@@ -67,10 +68,7 @@ const Login = ({ theme, onToggleTheme }) => {
       if (!response.ok) {
         throw new Error(payload?.error || "Unable to request password help");
       }
-      const deliveredTo = String(payload?.deliveryEmail || "").trim();
-      const statusMessage = deliveredTo
-        ? `${payload.message || "Password reset instructions sent."} Check ${deliveredTo}.`
-        : payload.message || "If that email exists we sent instructions.";
+      const statusMessage = payload?.message || "If that email exists we sent instructions.";
       setForgotStatus(statusMessage);
       setForgotError("");
     } catch (err) {
@@ -91,7 +89,7 @@ const Login = ({ theme, onToggleTheme }) => {
           <p className="eyebrow">Dev KPI Portal</p>
           <h1>Monitor every ERP signal in one place</h1>
           <p className="muted">
-            dev.nanaabaackah.com surfaces live metrics from all databases along with system health
+            This site surfaces live metrics from all databases along with system health
             insights.
           </p>
           <div className="auth-list">

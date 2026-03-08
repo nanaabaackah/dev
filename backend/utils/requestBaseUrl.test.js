@@ -16,7 +16,7 @@ test("resolveRequestBaseUrl prefers APP_BASE_URL when configured", () => {
   assert.equal(baseUrl, "http://localhost:4173");
 });
 
-test("resolveRequestBaseUrl uses request origin before proxy host", () => {
+test("resolveRequestBaseUrl ignores request-controlled origin headers", () => {
   const baseUrl = resolveRequestBaseUrl({
     appBaseUrl: "",
     isProduction: false,
@@ -27,7 +27,7 @@ test("resolveRequestBaseUrl uses request origin before proxy host", () => {
     devFallbackOrigins: ["http://localhost:5173"],
   });
 
-  assert.equal(baseUrl, "http://127.0.0.1:5173");
+  assert.equal(baseUrl, "http://localhost:5173");
 });
 
 test("resolveRequestBaseUrl falls back to the local frontend origin in development", () => {
@@ -44,7 +44,7 @@ test("resolveRequestBaseUrl falls back to the local frontend origin in developme
   assert.equal(baseUrl, "http://localhost:5173");
 });
 
-test("resolveRequestBaseUrl uses the request host in production", () => {
+test("resolveRequestBaseUrl requires APP_BASE_URL in production", () => {
   const baseUrl = resolveRequestBaseUrl({
     appBaseUrl: "",
     isProduction: true,
@@ -55,5 +55,5 @@ test("resolveRequestBaseUrl uses the request host in production", () => {
     devFallbackOrigins: ["http://localhost:5173"],
   });
 
-  assert.equal(baseUrl, "https://dev.nanaabaackah.com");
+  assert.equal(baseUrl, "");
 });

@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FiCheck, FiEye, FiEyeOff, FiX } from "react-icons/fi";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { buildApiUrl } from "../../api-url";
 import { getApiErrorMessage, readJsonResponse } from "../../utils/http";
 import "./SetupAccount.css";
+
+const SETUP_ACCOUNT_TOKEN_STORAGE_KEY = "setup-account-token";
 
 const MIN_PASSWORD_LENGTH = 14;
 const PASSWORD_REQUIREMENTS = [
@@ -39,13 +41,21 @@ const PASSWORD_REQUIREMENTS = [
   },
 ];
 
+const readTokenFromLocation = (location) => {
+  const hashToken = new URLSearchParams(String(location?.hash || "").replace(/^#/, "")).get("token");
+  if (hashToken) return hashToken;
+  return new URLSearchParams(String(location?.search || "")).get("token") || "";
+};
+
 const SetupAccount = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const token = useMemo(
-    () => new URLSearchParams(location.search).get("token") || "",
-    [location.search]
-  );
+  const { hash, pathname, search } = location;
+  const [token, setToken] = useState(() => {
+    const locationToken = readTokenFromLocation({ hash, search });
+    if (typeof window === "undefined") return locationToken;
+    return locationToken || window.sessionStorage.getItem(SETUP_ACCOUNT_TOKEN_STORAGE_KEY) || "";
+  });
 
   const [isVerifying, setIsVerifying] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -62,6 +72,25 @@ const SetupAccount = () => {
   }));
 
   useEffect(() => {
+    const locationToken = readTokenFromLocation({ hash, search });
+    const storedToken =
+      typeof window !== "undefined"
+        ? window.sessionStorage.getItem(SETUP_ACCOUNT_TOKEN_STORAGE_KEY) || ""
+        : "";
+    const nextToken = locationToken || storedToken;
+    if (!nextToken) return;
+
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(SETUP_ACCOUNT_TOKEN_STORAGE_KEY, nextToken);
+      if (locationToken && (hash || search)) {
+        window.history.replaceState(window.history.state, document.title, pathname);
+      }
+    }
+
+    setToken(nextToken);
+  }, [hash, pathname, search]);
+
+  useEffect(() => {
     let isActive = true;
 
     const verifyToken = async () => {
@@ -75,8 +104,13 @@ const SetupAccount = () => {
       setIsVerifying(true);
       setError("");
       try {
-        const query = new URLSearchParams({ token });
-        const response = await fetch(buildApiUrl(`/api/auth/setup-account/verify?${query.toString()}`));
+        const response = await fetch(buildApiUrl("/api/auth/setup-account/verify"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ token }),
+        });
         const payload = await readJsonResponse(response);
         if (!response.ok) {
           throw new Error(getApiErrorMessage(payload, "Invitation link is invalid or expired."));
@@ -146,6 +180,9 @@ const SetupAccount = () => {
       setSuccess(payload?.message || "Account setup complete. You can now sign in.");
       setPassword("");
       setConfirmPassword("");
+      if (typeof window !== "undefined") {
+        window.sessionStorage.removeItem(SETUP_ACCOUNT_TOKEN_STORAGE_KEY);
+      }
       window.setTimeout(() => {
         navigate("/login", { replace: true });
       }, 1500);
