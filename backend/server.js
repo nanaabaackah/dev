@@ -182,6 +182,48 @@ const isHttpStatusCode = (value) => Number.isInteger(value) && value >= 400 && v
 const PRISMA_DB_UNAVAILABLE_CODES = new Set(["P1001", "P1002", "P1008", "P1017"]);
 const PRISMA_SCHEMA_MISMATCH_CODES = new Set(["P2021", "P2022"]);
 const PRISMA_TRANSACTION_CONTENTION_CODES = new Set(["P2024", "P2028"]);
+const DATABASE_CONNECTION_ERROR_HINTS = [
+  "econnrefused",
+  "econnreset",
+  "ehostunreach",
+  "enotfound",
+  "socket hang up",
+  "timeout expired",
+  "connection terminated unexpectedly",
+  "the database system is starting up",
+  "remaining connection slots are reserved",
+];
+const DATABASE_TLS_ERROR_HINTS = [
+  "self signed certificate",
+  "self-signed certificate",
+  "self_signed_cert_in_chain",
+  "depth_zero_self_signed_cert",
+  "unable_to_verify_leaf_signature",
+  "unable to verify the first certificate",
+  "certificate has expired",
+  "cert_has_expired",
+  "err_tls_cert_altname_invalid",
+];
+
+const collectErrorHints = (error) => {
+  const hints = [];
+  let current = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    if (typeof current?.code === "string" && current.code.trim()) {
+      hints.push(current.code.trim().toLowerCase());
+    }
+    if (typeof current?.message === "string" && current.message.trim()) {
+      hints.push(current.message.trim().toLowerCase());
+    }
+    current = current?.cause;
+  }
+  return hints;
+};
+
+const errorHintsContain = (error, patterns) => {
+  const hints = collectErrorHints(error);
+  return patterns.some((pattern) => hints.some((hint) => hint.includes(pattern)));
+};
 
 const app = express();
 app.disable("x-powered-by");
@@ -2922,6 +2964,23 @@ const classifyApiError = (error) => {
 
   if (error?.type === "entity.parse.failed") {
     return { status: 400, message: "Malformed JSON body.", code: "BAD_JSON" };
+  }
+
+  if (errorHintsContain(error, DATABASE_TLS_ERROR_HINTS)) {
+    return {
+      status: 503,
+      message:
+        "Database TLS verification failed. Check DATABASE_SSL_REJECT_UNAUTHORIZED or configure DATABASE_SSL_CA.",
+      code: "DB_TLS",
+    };
+  }
+
+  if (errorHintsContain(error, DATABASE_CONNECTION_ERROR_HINTS)) {
+    return {
+      status: 503,
+      message: "Database is unavailable. Check DATABASE_URL/network and try again.",
+      code: "DB_CONNECTION",
+    };
   }
 
   const prismaCode = typeof error?.code === "string" ? error.code : null;
