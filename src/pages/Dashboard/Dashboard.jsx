@@ -1,6 +1,8 @@
+/* eslint-disable jsx-a11y/no-noninteractive-element-to-interactive-role */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ReceiptItem, TaskSquare, Timer1 } from "iconsax-react";
+import { FiArrowRight, FiChevronDown } from "react-icons/fi";
 import KPICard from "../../components/KPICard/KPICard";
 import useDashboardData from "../../hooks/useDashboardData";
 import VerseWidget from "../../components/VerseWidget/VerseWidget";
@@ -312,6 +314,15 @@ const buildAvailabilityMatrix = (days, bookings, holidayMap) => {
     
   });
 };
+
+const ModulePanelLink = ({ to, label }) => (
+  <>
+    <Link className="dashboard-module-panel__link" to={to} aria-label={label} />
+    <span className="dashboard-module-panel__arrow" aria-hidden="true">
+      <FiArrowRight />
+    </span>
+  </>
+);
 
 const Dashboard = () => {
   const storedUser = useMemo(() => readStoredUser(), []);
@@ -858,6 +869,12 @@ const Dashboard = () => {
     setExpandedSites((prev) => ({ ...prev, [siteId]: !prev[siteId] }));
   };
 
+  const handleSiteCardKeyDown = (event, siteId) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleSiteExpansion(siteId);
+  };
+
   const activeRange = RANGE_OPTIONS.find((option) => option.value === timeRange) || RANGE_OPTIONS[1];
   const rangeDescription = activeRange.description;
   const rangeWindowMs = activeRange.hours * 60 * 60 * 1000;
@@ -1195,9 +1212,6 @@ const Dashboard = () => {
             >
               {isRefreshing ? "Refreshing..." : "Refresh metrics"}
             </button>
-            <Link className="button button-ghost" to="/bookings">
-              Appointments
-            </Link>
             <a className="button button-ghost" href="#site-status">
               Site status
             </a>
@@ -1218,7 +1232,10 @@ const Dashboard = () => {
         </div>
       ) : null}
 
-      <section className="panel dashboard-productivity" id="productivity">
+      <section
+        className="panel dashboard-productivity dashboard-module-panel dashboard-module-panel--interactive"
+        id="productivity"
+      >
         <div className="panel-header">
           <div>
             <h3>Productivity tracker</h3>
@@ -1228,9 +1245,6 @@ const Dashboard = () => {
             <span className="status-pill is-info">
               {productivitySummary.momentumLabel || productivityMetrics.momentumLabel}
             </span>
-            <Link className="button button-ghost" to="/productivity">
-              Open module
-            </Link>
           </div>
         </div>
 
@@ -1360,9 +1374,14 @@ const Dashboard = () => {
             {productivityNotice}
           </div>
         ) : null}
+
+        <ModulePanelLink to="/productivity" label="Open productivity module" />
       </section>
 
-      <section className="panel availability-panel" id="availability">
+      <section
+        className="panel availability-panel dashboard-module-panel dashboard-module-panel--interactive"
+        id="availability"
+      >
         <div className="panel-header">
           <div>
             <h3>Weekly availability</h3>
@@ -1506,6 +1525,8 @@ const Dashboard = () => {
               : null}
           </div>
         </div>
+
+        <ModulePanelLink to="/bookings" label="Open bookings module" />
       </section>
 
       {slotModal ? (
@@ -1657,15 +1678,12 @@ const Dashboard = () => {
       ) : null}
 
 
-      <section className="stack">
-          <div className="panel-header">
-            <div>
-              <h3>Accounting snapshot</h3>
-              <p className="muted">Window: {ACCOUNTING_RANGE.label} across CAD and GHS.</p>
-            </div>
-            <Link className="button button-ghost" to="/accounting">
-              View ledger
-            </Link>
+      <section className="panel stack dashboard-module-panel dashboard-accounting-snapshot">
+        <div className="panel-header">
+          <div>
+            <h3>Accounting snapshot</h3>
+            <p className="muted">Window: {ACCOUNTING_RANGE.label} across CAD and GHS.</p>
+          </div>
         </div>
 
         {accountingError ? (
@@ -1729,6 +1747,8 @@ const Dashboard = () => {
             />
           </div>
         ) : null}
+
+        <ModulePanelLink to="/accounting" label="Open accounting module" />
       </section>
 
       {kpiData ? (
@@ -1992,7 +2012,15 @@ const Dashboard = () => {
                   return (
                     <article
                       key={site.id}
-                      className={`site-card ${site.id === "reebs-portal" ? "is-portal" : ""}`.trim()}
+                      className={`site-card ${site.id === "reebs-portal" ? "is-portal" : ""} ${
+                        isExpanded ? "is-expanded" : ""
+                      }`.trim()}
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isExpanded}
+                      aria-controls={listId}
+                      onClick={() => toggleSiteExpansion(site.id)}
+                      onKeyDown={(event) => handleSiteCardKeyDown(event, site.id)}
                     >
                       <div className="site-card__header">
                         <div className="site-card__meta">
@@ -2001,15 +2029,9 @@ const Dashboard = () => {
                         </div>
                         <div className="site-card__actions">
                           {renderStatusPill(site.aggregateStatus)}
-                          <button
-                            className="text-button site-card__toggle"
-                            type="button"
-                            onClick={() => toggleSiteExpansion(site.id)}
-                            aria-expanded={isExpanded}
-                            aria-controls={listId}
-                          >
-                            {isExpanded ? "Hide pages" : "View pages"}
-                          </button>
+                          <span className="site-card__chevron" aria-hidden="true">
+                            <FiChevronDown />
+                          </span>
                         </div>
                       </div>
                       {isExpanded ? (
@@ -2025,9 +2047,7 @@ const Dashboard = () => {
                             <p className="muted">No pages tracked.</p>
                           )}
                         </div>
-                      ) : (
-                        <div className="site-card__collapsed muted">Pages hidden</div>
-                      )}
+                      ) : null}
                     </article>
                   );
                 })

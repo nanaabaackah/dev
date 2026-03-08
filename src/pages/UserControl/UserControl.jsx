@@ -97,19 +97,15 @@ const UserControl = () => {
       setNotice("");
 
       try {
-        const [rolesResponse, usersResponse] = await Promise.all([
-          fetch(buildApiUrl("/api/access/roles"), {
-            headers: { Authorization: `Bearer ${token}` },
-          }),
-          fetch(buildApiUrl("/api/access/users"), {
-            headers: { Authorization: `Bearer ${token}` },
-          }),
-        ]);
+        const usersResponse = await fetch(buildApiUrl("/api/access/users"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const usersPayload = await readJsonResponse(usersResponse);
 
-        const [rolesPayload, usersPayload] = await Promise.all([
-          readJsonResponse(rolesResponse),
-          readJsonResponse(usersResponse),
-        ]);
+        const rolesResponse = await fetch(buildApiUrl("/api/access/roles"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const rolesPayload = await readJsonResponse(rolesResponse);
 
         if (!rolesResponse.ok || !usersResponse.ok) {
           if (rolesResponse.status === 401 || usersResponse.status === 401) {
@@ -359,18 +355,27 @@ const UserControl = () => {
         payload && typeof payload === "object" && typeof payload.invitationRecipient === "string"
           ? payload.invitationRecipient
           : "";
+      const tenantProfileCreated =
+        payload && typeof payload === "object" && payload.tenantProfileCreated === true;
+      const tenantProfileAlreadyExists =
+        payload && typeof payload === "object" && payload.tenantProfileAlreadyExists === true;
       const createdStatus =
         payload && typeof payload === "object" && typeof payload?.user?.status === "string"
           ? payload.user.status
           : "";
+      const tenantProfileMessage = tenantProfileCreated
+        ? " Tenant profile added to Rent."
+        : tenantProfileAlreadyExists
+          ? " Tenant profile already existed in Rent."
+          : "";
       setCreateNotice(
         createdStatus === "PENDING"
           ? invitationRecipient
-            ? `User created with PENDING status until password setup is completed. Invitation email sent to ${invitationRecipient}.`
-            : "User created with PENDING status until password setup is completed."
+            ? `User created with PENDING status until password setup is completed. Invitation email sent to ${invitationRecipient}.${tenantProfileMessage}`
+            : `User created with PENDING status until password setup is completed.${tenantProfileMessage}`
           : invitationRecipient
-            ? `User created. Invitation email sent to ${invitationRecipient}.`
-            : "User created."
+            ? `User created. Invitation email sent to ${invitationRecipient}.${tenantProfileMessage}`
+            : `User created.${tenantProfileMessage}`
       );
       setSavedCreatedPassword(createdPassword);
       setCreateForm((prev) => ({

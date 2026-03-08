@@ -21,7 +21,6 @@ import {
   Profile2User,
   Setting2,
 } from "iconsax-react";
-import { FiActivity } from "react-icons/fi";
 import { RiLogoutCircleRLine } from "react-icons/ri";
 import Login from "./pages/Login/Login";
 import Dashboard from "./pages/Dashboard/Dashboard";
@@ -41,6 +40,7 @@ import Accounting from "./pages/Accounting/Accounting";
 import Invoicing from "./pages/Invoicing/Invoicing";
 import Productivity from "./pages/Productivity/Productivity";
 import ErrorBoundary from "./components/ErrorBoundary";
+import SideNav from "./components/SideNav";
 import ErrorPage from "./pages/ErrorPage/ErrorPage";
 import useScrollAnimations from "./hooks/useScrollAnimations";
 import { buildApiUrl } from "./api-url";
@@ -65,7 +65,6 @@ const NAV_ITEMS = [
 
 const MOBILE_TAB_ITEMS = [
   { to: "/dashboard", label: "Home", Icon: Category, module: "dashboard" },
-  { to: "/rent", label: "Rent", Icon: WalletMoney, module: "rent" },
   { to: "/productivity", label: "Focus", Icon: TaskSquare, module: "productivity" },
   { to: "/accounting", label: "Finance", Icon: WalletMoney, module: "accounting" },
   { to: "/bookings", label: "Appointments", Icon: CalendarTick, module: "bookings" },
@@ -448,63 +447,18 @@ const AppShell = ({ children, theme, onToggleTheme }) => {
 
   return (
     <div className={`erp-shell ${isOffline ? "is-offline" : ""}`}>
-      <aside
+      <SideNav
         className={sidebarClassName}
-        id="erp-sidebar"
         style={sidebarStyle}
+        isOpen={isNavOpen}
+        visibleNavItems={visibleNavItems}
+        navNotifications={navNotifications}
+        formatNotificationCount={formatNotificationCount}
+        onClose={() => setIsNavOpen(false)}
         onTouchStart={handleSidebarTouchStart}
         onTouchMove={handleSidebarTouchMove}
         onTouchEnd={handleSidebarTouchEnd}
         onTouchCancel={handleSidebarTouchEnd}
-      >
-        <div className="sidebar-header">
-          <div className="brand">
-            <FiActivity aria-hidden="true" />
-            <span>Dev KPI</span>
-          </div>
-          <button
-            className="nav-close"
-            type="button"
-            onClick={() => setIsNavOpen(false)}
-            aria-label="Close navigation"
-          >
-            Close
-          </button>
-        </div>
-        <nav className="erp-nav">
-          {visibleNavItems.map((item) => {
-            const count = Number(navNotifications[item.to] || 0);
-            const hasNotification = count > 0;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === "/dashboard"}
-                className={({ isActive }) => (isActive ? "active" : "")}
-              >
-                <span className="nav-link-main">
-                  {React.createElement(item.Icon, {
-                    size: 16,
-                    variant: "Linear",
-                    className: "nav-icon",
-                  })}
-                  <span>{item.label}</span>
-                </span>
-                {hasNotification ? (
-                  <span className="nav-badge" aria-label={`${count} new ${item.label.toLowerCase()}`}>
-                    {formatNotificationCount(count)}
-                  </span>
-                ) : null}
-              </NavLink>
-            );
-          })}
-        </nav>
-      </aside>
-      <button
-        className={`nav-scrim ${isNavOpen ? "is-open" : ""}`}
-        type="button"
-        aria-label="Close navigation"
-        onClick={() => setIsNavOpen(false)}
       />
       <div className="erp-main">
         <header className="erp-topbar">

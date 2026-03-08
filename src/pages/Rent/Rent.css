@@ -6,6 +6,167 @@
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+.rent-single-tenant-panel {
+  gap: 1rem;
+}
+
+.rent-single-tenant-panel__actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.rent-single-tenant-card {
+  width: 100%;
+  display: grid;
+  gap: 1rem;
+  padding: 1.05rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--surface), var(--card) 14%), transparent),
+    color-mix(in oklab, var(--surface), var(--card) 22%);
+  box-shadow: 0 14px 28px color-mix(in oklab, var(--ink), transparent 92%);
+}
+
+.rent-single-tenant-card:disabled {
+  opacity: 1;
+}
+
+.rent-single-tenant-card--clickable {
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.rent-single-tenant-card--clickable:hover,
+.rent-single-tenant-card--clickable:focus-visible,
+.rent-single-tenant-card.is-editing {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 40%);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--accent-soft), var(--surface) 18%), transparent),
+    color-mix(in oklab, var(--surface), var(--accent-soft) 22%);
+  box-shadow: 0 18px 34px color-mix(in oklab, var(--accent), transparent 90%);
+  transform: translateY(-1px);
+}
+
+.rent-single-tenant-card--clickable:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), var(--border) 18%);
+  outline-offset: 2px;
+}
+
+.rent-single-tenant-card__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.rent-single-tenant-card__identity {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.rent-single-tenant-card__identity strong {
+  font-size: 1.05rem;
+}
+
+.rent-single-tenant-card__currency {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.68rem;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface), var(--card) 26%);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.rent-single-tenant-card__status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.78rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.rent-single-tenant-card__status--active {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent), var(--border) 64%);
+  background: color-mix(in oklab, var(--accent-soft), var(--surface) 24%);
+}
+
+.rent-single-tenant-card__status--inactive {
+  color: var(--muted);
+  background: color-mix(in oklab, var(--surface), var(--card) 28%);
+}
+
+.rent-single-tenant-summary-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.rent-single-tenant-summary-item {
+  padding: 0.9rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--surface), var(--card) 16%);
+}
+
+.rent-single-tenant-summary-item span {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.rent-single-tenant-summary-item strong {
+  display: block;
+  margin-top: 0.24rem;
+  font-size: 1rem;
+}
+
+.rent-single-tenant-details {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.rent-single-tenant-details__item {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.rent-single-tenant-details__item span {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.rent-single-tenant-details__item strong {
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.rent-single-tenant-card__notes {
+  margin: 0;
+  padding-top: 0.15rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.rent-single-tenant-card__hint {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
 .rent-currency-card h3 {
   margin: 0 0 0.8rem;
   font-size: 1rem;
@@ -57,6 +218,31 @@
   font-size: 0.88rem;
 }
 
+.rent-table__row--clickable {
+  cursor: pointer;
+  transition: transform 0.18s ease;
+}
+
+.rent-table__row--clickable td {
+  transition: background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.rent-table__row--clickable:hover td,
+.rent-table__row--clickable:focus-visible td,
+.rent-table__row--clickable.is-editing td {
+  background: color-mix(in oklab, var(--accent-soft), var(--surface) 56%);
+}
+
+.rent-table__row--clickable:focus-visible {
+  outline: none;
+}
+
+.rent-table__row--clickable:hover td:first-child,
+.rent-table__row--clickable:focus-visible td:first-child,
+.rent-table__row--clickable.is-editing td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .rent-tenant-cell {
   display: grid;
   gap: 0.15rem;
@@ -64,6 +250,28 @@
 
 .rent-admin-grid {
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+.rent-tenant-remove-button {
+  border-color: color-mix(in oklab, var(--danger), var(--border) 40%);
+  color: var(--danger);
+}
+
+.rent-tenant-remove-button:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--danger), var(--border) 12%);
+  box-shadow: 0 10px 22px color-mix(in oklab, var(--danger), transparent 84%);
+}
+
+.rent-tenant-remove-button .spinner {
+  width: 14px;
+  height: 14px;
+}
+
+.rent-table__actions-column,
+.rent-table__action-cell {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .rent-form-row {
@@ -82,8 +290,305 @@
   margin-top: 0;
 }
 
+.rent-metric-card-button {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 0.35rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.rent-metric-card-button:hover,
+.rent-metric-card-button:focus-visible {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 52%);
+  box-shadow: 0 12px 26px color-mix(in oklab, var(--accent-soft), transparent 24%);
+}
+
+.rent-metric-card-button.is-active {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 36%);
+  background: color-mix(in oklab, var(--accent-soft), var(--card) 38%);
+}
+
+.rent-metric-card__hint {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.rent-missed-months-panel {
+  gap: 1rem;
+}
+
+.rent-missed-months-list {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.rent-missed-months-item {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem 1.05rem;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--surface), var(--card) 16%), transparent),
+    color-mix(in oklab, var(--surface), var(--card) 20%);
+  box-shadow: 0 14px 28px color-mix(in oklab, var(--ink), transparent 92%);
+}
+
+.rent-missed-months-item__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.rent-missed-months-actions {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.rent-missed-month-button {
+  width: 100%;
+  border: 1px solid color-mix(in oklab, var(--accent), var(--border) 76%);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--surface), var(--accent-soft) 14%);
+  color: var(--ink);
+  padding: 0.85rem 0.95rem;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.rent-missed-month-button:hover:not(:disabled),
+.rent-missed-month-button:focus-visible {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 46%);
+  background: color-mix(in oklab, var(--surface), var(--accent-soft) 28%);
+  box-shadow: 0 12px 24px color-mix(in oklab, var(--accent), transparent 88%);
+  transform: translateY(-1px);
+}
+
+.rent-missed-month-button:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), var(--border) 20%);
+  outline-offset: 2px;
+}
+
+.rent-missed-month-button:disabled {
+  cursor: default;
+  opacity: 0.88;
+}
+
+.rent-missed-month-button__main {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.rent-missed-month-button__main strong {
+  font-size: 0.95rem;
+}
+
+.rent-missed-month-button__main span {
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.rent-missed-month-button__action {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.rent-payment-form {
+  gap: 0.9rem;
+}
+
+.rent-payment-main-row {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+  align-items: end;
+}
+
+.rent-payment-main-row > .form-field {
+  min-width: 0;
+}
+
+.rent-payment-main-row .input,
+.rent-payment-main-row select.input {
+  height: 2.8rem;
+}
+
+.rent-payment-summary {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--surface), var(--card) 22%);
+}
+
+.rent-payment-summary__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.rent-payment-summary__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  font-size: 0.88rem;
+}
+
+.rent-payment-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.rent-payment-quick-actions .button,
+.rent-payment-actions .button-primary {
+  height: 2.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rent-payment-fill-button {
+  padding: 0 0.9rem;
+  font-size: 0.82rem;
+}
+
+.rent-payment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.rent-payment-details {
+  display: grid;
+  gap: 0.8rem;
+  padding-top: 0.15rem;
+  border-top: 1px solid var(--border);
+}
+
+.rent-payment-helper {
+  margin: 0;
+  font-size: 0.84rem;
+}
+
+.rent-payments-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.rent-payments-history {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.rent-payment-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.rent-payment-history-item.is-editing .rent-payment-history-item__main {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 34%);
+  background: color-mix(in oklab, var(--accent-soft), var(--surface) 54%);
+  box-shadow: 0 12px 24px color-mix(in oklab, var(--accent), transparent 88%);
+}
+
+.rent-payment-history-item__main {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--surface), var(--card) 14%);
+  color: var(--ink);
+  padding: 0.9rem 1rem;
+  display: grid;
+  gap: 0.45rem;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.rent-payment-history-item__main:hover,
+.rent-payment-history-item__main:focus-visible {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 48%);
+  box-shadow: 0 10px 20px color-mix(in oklab, var(--accent), transparent 90%);
+  transform: translateY(-1px);
+}
+
+.rent-payment-history-item__main:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), var(--border) 18%);
+  outline-offset: 2px;
+}
+
+.rent-payment-history-item__top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.rent-payment-history-item__top span {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.rent-payment-history-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.rent-payment-history-item__delete {
+  align-self: center;
+}
+
+.rent-payment-history-item__delete .spinner {
+  width: 14px;
+  height: 14px;
+}
+
 @media (max-width: 900px) {
   .rent-table {
     min-width: 760px;
+  }
+
+  .rent-payment-main-row {
+    grid-template-columns: 1fr;
+  }
+
+  .rent-missed-month-button {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .rent-payment-history-item {
+    grid-template-columns: 1fr;
+  }
+
+  .rent-payment-history-item__delete {
+    justify-self: end;
   }
 }

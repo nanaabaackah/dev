@@ -26,7 +26,7 @@ test("buildRentTenantWhereForUser gives admins organization-wide access", () => 
   });
 });
 
-test("buildRentTenantWhereForUser scopes landlords by landlord email", () => {
+test("buildRentTenantWhereForUser gives landlords organization-wide access", () => {
   assert.deepEqual(
     buildRentTenantWhereForUser({
       roleName: "Landlord",
@@ -35,10 +35,6 @@ test("buildRentTenantWhereForUser scopes landlords by landlord email", () => {
     }),
     {
       organizationId: 9,
-      landlordEmail: {
-        equals: "owner@example.com",
-        mode: "insensitive",
-      },
     }
   );
 });
@@ -60,8 +56,8 @@ test("buildRentTenantWhereForUser scopes tenants by tenant email", () => {
   );
 });
 
-test("buildRentTenantWhereForUser blocks scoped users without an email", () => {
-  assert.deepEqual(buildRentTenantWhereForUser({ roleName: "Landlord", organizationId: 9 }), {
+test("buildRentTenantWhereForUser blocks tenant users without an email", () => {
+  assert.deepEqual(buildRentTenantWhereForUser({ roleName: "Tenant", organizationId: 9 }), {
     organizationId: 9,
     id: -1,
   });

@@ -29,7 +29,7 @@ export const buildRentTenantWhereForUser = (user) => {
   const baseWhere = { organizationId: user?.organizationId };
   const roleName = normalizeRoleName(readUserRoleName(user));
 
-  if (roleName === "admin") {
+  if (roleName === "admin" || roleName === "landlord") {
     return baseWhere;
   }
 
@@ -38,11 +38,9 @@ export const buildRentTenantWhereForUser = (user) => {
     return { ...baseWhere, id: -1 };
   }
 
-  const emailField = roleName === "landlord" ? "landlordEmail" : "tenantEmail";
-
   return {
     ...baseWhere,
-    [emailField]: {
+    tenantEmail: {
       equals: scopedEmail,
       mode: "insensitive",
     },

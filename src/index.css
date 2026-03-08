@@ -372,6 +372,21 @@ body.nav-open .mobile-tabbar {
   gap: 0.75rem;
   min-width: 0;
   overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.site-card:hover,
+.site-card:focus-visible {
+  transform: translateY(-1px);
+  border-color: color-mix(in oklab, var(--accent), var(--border) 54%);
+  box-shadow: 0 12px 24px rgba(59, 47, 47, 0.14);
+  outline: none;
+}
+
+.site-card.is-expanded {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 42%);
 }
 
 .site-card__header {
@@ -396,8 +411,28 @@ body.nav-open .mobile-tabbar {
   min-width: 0;
 }
 
-.site-card__toggle {
-  font-size: 0.8rem;
+.site-card__chevron {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklab, var(--card), var(--surface) 46%);
+  color: var(--muted);
+  border: 1px solid color-mix(in oklab, var(--border), var(--surface) 20%);
+  transition: transform 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.site-card:hover .site-card__chevron,
+.site-card:focus-visible .site-card__chevron,
+.site-card.is-expanded .site-card__chevron {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent), var(--border) 36%);
+}
+
+.site-card.is-expanded .site-card__chevron {
+  transform: rotate(180deg);
 }
 
 .site-card__list {
@@ -415,10 +450,6 @@ body.nav-open .mobile-tabbar {
 
 .site-card__row span:first-child {
   overflow-wrap: anywhere;
-}
-
-.site-card__collapsed {
-  font-size: 0.85rem;
 }
 
 .site-card.is-portal {

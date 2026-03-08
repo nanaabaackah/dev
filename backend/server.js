@@ -136,6 +136,7 @@ const APP_ENV = loadEnvironmentConfig();
 const isHttpStatusCode = (value) => Number.isInteger(value) && value >= 400 && value <= 599;
 const PRISMA_DB_UNAVAILABLE_CODES = new Set(["P1001", "P1002", "P1008", "P1017"]);
 const PRISMA_SCHEMA_MISMATCH_CODES = new Set(["P2021", "P2022"]);
+const PRISMA_TRANSACTION_CONTENTION_CODES = new Set(["P2024", "P2028"]);
 
 const app = express();
 app.disable("x-powered-by");
@@ -221,6 +222,26 @@ const API_RATE_LIMIT_MAX = parsePositiveInt(
     max: 5000,
   }
 );
+const PRISMA_TRANSACTION_MAX_WAIT_MS = parsePositiveInt(
+  process.env.PRISMA_TRANSACTION_MAX_WAIT_MS,
+  10000,
+  {
+    min: 1000,
+    max: 120000,
+  }
+);
+const PRISMA_TRANSACTION_TIMEOUT_MS = parsePositiveInt(
+  process.env.PRISMA_TRANSACTION_TIMEOUT_MS,
+  20000,
+  {
+    min: 1000,
+    max: 300000,
+  }
+);
+const PRISMA_INTERACTIVE_TRANSACTION_OPTIONS = {
+  maxWait: PRISMA_TRANSACTION_MAX_WAIT_MS,
+  timeout: PRISMA_TRANSACTION_TIMEOUT_MS,
+};
 const AI_RATE_LIMIT_WINDOW_MS = parsePositiveInt(
   process.env.AI_RATE_LIMIT_WINDOW_MS,
   60 * 1000,
@@ -1173,27 +1194,28 @@ const ACCOUNT_SETUP_TOKEN_TTL_HOURS = parsePositiveInt(
   }
 );
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
-const RENT_QUARTERLY_EMAIL_ENABLED = parseEnvBoolean(
-  process.env.RENT_QUARTERLY_EMAIL_ENABLED,
+const RENT_MONTHLY_EMAIL_ENABLED = parseEnvBoolean(
+  process.env.RENT_MONTHLY_EMAIL_ENABLED ?? process.env.RENT_QUARTERLY_EMAIL_ENABLED,
   true
 );
-const RENT_QUARTERLY_EMAIL_HOUR_UTC = parsePositiveInt(
-  process.env.RENT_QUARTERLY_EMAIL_HOUR_UTC,
+const RENT_MONTHLY_EMAIL_HOUR_UTC = parsePositiveInt(
+  process.env.RENT_MONTHLY_EMAIL_HOUR_UTC ?? process.env.RENT_QUARTERLY_EMAIL_HOUR_UTC,
   9,
   {
     min: 0,
     max: 23,
   }
 );
-const RENT_QUARTERLY_EMAIL_MINUTE_UTC = parsePositiveInt(
-  process.env.RENT_QUARTERLY_EMAIL_MINUTE_UTC,
+const RENT_MONTHLY_EMAIL_MINUTE_UTC = parsePositiveInt(
+  process.env.RENT_MONTHLY_EMAIL_MINUTE_UTC ?? process.env.RENT_QUARTERLY_EMAIL_MINUTE_UTC,
   0,
   {
     min: 0,
     max: 59,
   }
 );
-const RENT_QUARTERLY_FROM_EMAIL_RAW =
+const RENT_MONTHLY_FROM_EMAIL_RAW =
+  process.env.RENT_MONTHLY_FROM_EMAIL ??
   process.env.RENT_QUARTERLY_FROM_EMAIL ??
   process.env.ALERT_FROM_EMAIL ??
   DEFAULT_ADMIN_EMAIL;
@@ -1252,6 +1274,11 @@ const INVOICE_EMAIL_SUPPORT_MESSAGE =
 const INVOICE_EMAIL_CLOSING_NAME =
   String(process.env.INVOICE_EMAIL_CLOSING_NAME || INVOICE_EMAIL_SENDER_NAME).trim() ||
   INVOICE_EMAIL_SENDER_NAME;
+const INVOICE_FROM_EMAIL_RAW =
+  process.env.INVOICE_FROM_EMAIL ??
+  process.env.ALERT_FROM_EMAIL ??
+  process.env.ACCOUNT_INVITE_FROM_EMAIL ??
+  DEFAULT_ADMIN_EMAIL;
 const MIN_PASSWORD_LENGTH = 14;
 const PASSWORD_LOWERCASE_PATTERN = /[a-z]/;
 const PASSWORD_UPPERCASE_PATTERN = /[A-Z]/;
@@ -1491,15 +1518,17 @@ const rentOnlyModuleAccessMiddleware = createRentOnlyModuleAccessMiddleware({
   allowedPathMatchers: RENT_ONLY_ALLOWED_API_PATHS,
 });
 
-const rentQuarterlyFromEmail =
-  String(RENT_QUARTERLY_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+const rentMonthlyFromEmail =
+  String(RENT_MONTHLY_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
 const accountInviteFromEmail =
   String(ACCOUNT_INVITE_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+const invoiceFromEmail =
+  String(INVOICE_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
 
-const rentQuarterlyScheduleLabel = `Daily at ${String(RENT_QUARTERLY_EMAIL_HOUR_UTC).padStart(
+const rentMonthlyScheduleLabel = `Daily at ${String(RENT_MONTHLY_EMAIL_HOUR_UTC).padStart(
   2,
   "0"
-)}:${String(RENT_QUARTERLY_EMAIL_MINUTE_UTC).padStart(2, "0")} UTC`;
+)}:${String(RENT_MONTHLY_EMAIL_MINUTE_UTC).padStart(2, "0")} UTC`;
 
 const globalAdminEmailSet = new Set(
   parseRecipients(process.env.GLOBAL_ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAIL).map((email) =>
@@ -1710,6 +1739,256 @@ const sendAccountInvitationEmail = async ({ req, user }) => {
     invitationIntendedRecipient: deliveryTarget.intendedRecipient,
     invitationRerouted: deliveryTarget.wasRerouted,
   };
+};
+
+const createApiError = (message, statusCode = 400) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
+const buildTenantAccessNameParts = (tenantName) => {
+  const normalized = String(tenantName || "")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!normalized) {
+    return {
+      firstName: "Tenant",
+      lastName: "Account",
+      fullName: "Tenant Account",
+    };
+  }
+
+  const [firstName, ...rest] = normalized.split(" ");
+  const lastName = rest.join(" ") || "Tenant";
+  return {
+    firstName,
+    lastName,
+    fullName: `${firstName} ${lastName}`.trim(),
+  };
+};
+
+const provisionRentTenantAccessUser = async ({ tx, organizationId, tenantName, tenantEmail }) => {
+  const tenantRole = await tx.role.findFirst({
+    where: {
+      organizationId,
+      name: "Tenant",
+    },
+  });
+  if (!tenantRole) {
+    throw createApiError("Tenant role is not configured for this organization.", 500);
+  }
+
+  const existingUser = await tx.user.findUnique({
+    where: { email: tenantEmail },
+    include: {
+      role: true,
+      organization: {
+        select: { name: true },
+      },
+    },
+  });
+
+  if (existingUser) {
+    if (existingUser.organizationId !== organizationId) {
+      throw createApiError(
+        "A user with that tenant email already exists in another organization.",
+        409
+      );
+    }
+    if (existingUser.role?.name !== "Tenant") {
+      throw createApiError(
+        "A user with that tenant email already exists and is not assigned the Tenant role. Manage access from User Control.",
+        409
+      );
+    }
+
+    const resendBlocker = getResendInvitationBlocker({
+      targetStatus: existingUser.status,
+    });
+    if (resendBlocker) {
+      throw createApiError(resendBlocker, 400);
+    }
+
+    return {
+      user: existingUser,
+      createdUserId: null,
+      shouldSendInvitation: existingUser.status === "PENDING",
+      accessAlreadyExists: existingUser.status === "ACTIVE",
+    };
+  }
+
+  const nameParts = buildTenantAccessNameParts(tenantName);
+  const generatedPassword = generateRandomStrongPassword();
+  const hashedPassword = await bcrypt.hash(generatedPassword, 10);
+  const status = resolveUserStatusForPasswordState({
+    requestedStatus: "ACTIVE",
+    hasPassword: false,
+  });
+
+  const createdUser = await tx.user.create({
+    data: {
+      organizationId,
+      roleId: tenantRole.id,
+      firstName: nameParts.firstName,
+      lastName: nameParts.lastName,
+      fullName: nameParts.fullName,
+      email: tenantEmail,
+      password: hashedPassword,
+      status,
+    },
+    include: {
+      role: true,
+      organization: {
+        select: { name: true },
+      },
+    },
+  });
+
+  return {
+    user: createdUser,
+    createdUserId: createdUser.id,
+    shouldSendInvitation: true,
+    accessAlreadyExists: false,
+  };
+};
+
+const RENT_TENANT_SYNC_NOTE =
+  "Created from User Control. Complete rent details in the Rent module.";
+
+const ensureRentTenantProfileForAccessUser = async ({ tx, organizationId, fullName, email }) => {
+  const normalizedEmail = normalizeEmailAddress(email);
+  if (!normalizedEmail) {
+    throw createApiError("email must be a valid email address.", 400);
+  }
+
+  const existingTenant = await tx.rentTenant.findFirst({
+    where: {
+      organizationId,
+      tenantEmail: {
+        equals: normalizedEmail,
+        mode: "insensitive",
+      },
+    },
+    select: { id: true },
+  });
+
+  if (existingTenant) {
+    return {
+      tenantId: existingTenant.id,
+      created: false,
+      alreadyExists: true,
+    };
+  }
+
+  const tenant = await tx.rentTenant.create({
+    data: {
+      organizationId,
+      status: "INACTIVE",
+      tenantName: String(fullName || normalizedEmail).trim() || normalizedEmail,
+      tenantEmail: normalizedEmail,
+      landlordName: null,
+      landlordEmail: null,
+      currency: "GHS",
+      monthlyRent: 0,
+      leaseStartDate: new Date(),
+      leaseEndDate: null,
+      openingBalance: 0,
+      notes: RENT_TENANT_SYNC_NOTE,
+    },
+    select: { id: true },
+  });
+
+  return {
+    tenantId: tenant.id,
+    created: true,
+    alreadyExists: false,
+  };
+};
+
+const syncRentTenantAccessUsersForOrganization = async (organizationId) => {
+  if (!organizationId) {
+    return { createdCount: 0 };
+  }
+
+  const tenantRole = await prisma.role.findFirst({
+    where: {
+      organizationId,
+      name: "Tenant",
+    },
+    select: { id: true },
+  });
+  if (!tenantRole) {
+    return { createdCount: 0 };
+  }
+
+  const rentTenants = await prisma.rentTenant.findMany({
+    where: { organizationId },
+    select: {
+      tenantName: true,
+      tenantEmail: true,
+    },
+  });
+
+  const tenantEmailMap = new Map();
+  rentTenants.forEach((tenant) => {
+    const normalizedEmail = normalizeEmailAddress(tenant.tenantEmail);
+    if (!normalizedEmail || tenantEmailMap.has(normalizedEmail)) return;
+    tenantEmailMap.set(normalizedEmail, tenant.tenantName);
+  });
+
+  if (!tenantEmailMap.size) {
+    return { createdCount: 0 };
+  }
+
+  const existingUsers = await prisma.user.findMany({
+    where: {
+      email: { in: Array.from(tenantEmailMap.keys()) },
+    },
+    select: {
+      email: true,
+    },
+  });
+
+  const knownEmails = new Set(
+    existingUsers
+      .map((user) => normalizeEmailAddress(user.email))
+      .filter(Boolean)
+  );
+
+  let createdCount = 0;
+
+  for (const [tenantEmail, tenantName] of tenantEmailMap.entries()) {
+    if (knownEmails.has(tenantEmail)) continue;
+
+    const nameParts = buildTenantAccessNameParts(tenantName);
+    const hashedPassword = await bcrypt.hash(generateRandomStrongPassword(), 10);
+
+    try {
+      await prisma.user.create({
+        data: {
+          organizationId,
+          roleId: tenantRole.id,
+          firstName: nameParts.firstName,
+          lastName: nameParts.lastName,
+          fullName: nameParts.fullName,
+          email: tenantEmail,
+          password: hashedPassword,
+          status: "PENDING",
+        },
+      });
+      knownEmails.add(tenantEmail);
+      createdCount += 1;
+    } catch (error) {
+      if (error?.code === "P2002") {
+        knownEmails.add(tenantEmail);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return { createdCount };
 };
 
 const sendForgotPasswordEmail = async ({ req, user }) => {
@@ -2091,24 +2370,24 @@ const scheduleWeeklyReportEmail = () => {
   scheduleNext();
 };
 
-const rentQuarterlyUpdateState = {
+const rentMonthlyUpdateState = {
   lastRunAt: null,
   lastScheduledFor: null,
-  lastQuarterLabel: null,
+  lastMonthLabel: null,
   lastSentCount: 0,
 };
 
-const buildRentQuarterlyEmailContent = ({ summary, quarterLabel }) => {
-  const subject = `Rent quarterly update • ${quarterLabel}`;
+const buildRentMonthlyEmailContent = ({ summary, monthLabel }) => {
+  const subject = `Rent monthly update • ${monthLabel}`;
   const text = [
     `Hello ${summary.tenantName},`,
     "",
-    `Here is your rent summary for ${quarterLabel}.`,
+    `Here is your rent summary for ${monthLabel}.`,
     "",
     `Monthly rent: ${summary.currency} ${Number(summary.monthlyRent || 0).toFixed(2)}`,
-    `Paid this quarter: ${summary.currency} ${Number(summary.paidThisQuarter || 0).toFixed(2)}`,
-    `Expected this quarter: ${summary.currency} ${Number(summary.expectedThisQuarter || 0).toFixed(2)}`,
-    `Outstanding this quarter: ${summary.currency} ${Number(summary.outstandingThisQuarter || 0).toFixed(2)}`,
+    `Paid this month: ${summary.currency} ${Number(summary.paidThisMonth || 0).toFixed(2)}`,
+    `Expected this month: ${summary.currency} ${Number(summary.expectedThisMonth || 0).toFixed(2)}`,
+    `Outstanding this month: ${summary.currency} ${Number(summary.outstandingThisMonth || 0).toFixed(2)}`,
     `Total outstanding balance: ${summary.currency} ${Number(summary.outstandingTotal || 0).toFixed(2)}`,
     "",
     `Lease start: ${summary.leaseStartDate ? summary.leaseStartDate.slice(0, 10) : "N/A"}`,
@@ -2120,13 +2399,13 @@ const buildRentQuarterlyEmailContent = ({ summary, quarterLabel }) => {
   const html = `
     <div style="font-family:Arial,sans-serif;color:#2d2d2d;">
       <p>Hello ${escapeHtml(summary.tenantName)},</p>
-      <p>Here is your rent summary for <strong>${escapeHtml(quarterLabel)}</strong>.</p>
+      <p>Here is your rent summary for <strong>${escapeHtml(monthLabel)}</strong>.</p>
       <table style="border-collapse:collapse;border:1px solid #d0d0c8;">
         <tbody>
           <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Monthly rent</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.monthlyRent || 0).toFixed(2)}</td></tr>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Paid this quarter</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.paidThisQuarter || 0).toFixed(2)}</td></tr>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Expected this quarter</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.expectedThisQuarter || 0).toFixed(2)}</td></tr>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Outstanding this quarter</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.outstandingThisQuarter || 0).toFixed(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Paid this month</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.paidThisMonth || 0).toFixed(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Expected this month</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.expectedThisMonth || 0).toFixed(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Outstanding this month</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.outstandingThisMonth || 0).toFixed(2)}</td></tr>
           <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Total outstanding balance</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.outstandingTotal || 0).toFixed(2)}</td></tr>
         </tbody>
       </table>
@@ -2137,12 +2416,12 @@ const buildRentQuarterlyEmailContent = ({ summary, quarterLabel }) => {
   return { subject, text, html };
 };
 
-const runRentQuarterlyTenantUpdates = async () => {
-  if (!RENT_QUARTERLY_EMAIL_ENABLED) {
+const runRentMonthlyTenantUpdates = async () => {
+  if (!RENT_MONTHLY_EMAIL_ENABLED) {
     return {
       ok: true,
       skipped: true,
-      reason: "Quarterly rent updates are disabled.",
+      reason: "Monthly rent updates are disabled.",
     };
   }
   if (!resend) {
@@ -2152,16 +2431,16 @@ const runRentQuarterlyTenantUpdates = async () => {
       reason: "RESEND_API_KEY is not configured.",
     };
   }
-  if (!EMAIL_PATTERN.test(rentQuarterlyFromEmail)) {
+  if (!EMAIL_PATTERN.test(rentMonthlyFromEmail)) {
     return {
       ok: true,
       skipped: true,
-      reason: "Invalid RENT_QUARTERLY_FROM_EMAIL configuration.",
+      reason: "Invalid rent update from email configuration.",
     };
   }
 
-  const quarterRange = getLastCompletedQuarterRangeUtc();
-  const quarterLabel = formatQuarterLabel(quarterRange);
+  const monthRange = getLastCompletedMonthRangeUtc();
+  const monthLabel = formatMonthLabel(monthRange);
   const tenants = await prisma.rentTenant.findMany({
     where: {
       status: "ACTIVE",
@@ -2170,7 +2449,7 @@ const runRentQuarterlyTenantUpdates = async () => {
       payments: {
         where: {
           paidAt: {
-            lte: quarterRange.end,
+            lte: monthRange.end,
           },
         },
         orderBy: { paidAt: "desc" },
@@ -2181,8 +2460,9 @@ const runRentQuarterlyTenantUpdates = async () => {
   const dueTenants = tenants.filter((tenant) => {
     const email = normalizeEmailAddress(tenant.tenantEmail);
     if (!email) return false;
-    if (!tenant.lastQuarterlySummaryAt) return true;
-    return tenant.lastQuarterlySummaryAt.getTime() < quarterRange.end.getTime();
+    const lastSummarySentAt = getRentLastSummarySentAt(tenant);
+    if (!lastSummarySentAt) return true;
+    return lastSummarySentAt.getTime() < monthRange.end.getTime();
   });
 
   let sentCount = 0;
@@ -2190,17 +2470,17 @@ const runRentQuarterlyTenantUpdates = async () => {
 
   for (const tenant of dueTenants) {
     const summary = buildRentTenantSummary(tenant, {
-      quarterRange,
-      asOfDate: quarterRange.end,
+      monthRange,
+      asOfDate: monthRange.end,
     });
-    const { subject, text, html } = buildRentQuarterlyEmailContent({
+    const { subject, text, html } = buildRentMonthlyEmailContent({
       summary,
-      quarterLabel,
+      monthLabel,
     });
 
     try {
       await sendEmail({
-        fromEmail: rentQuarterlyFromEmail,
+        fromEmail: rentMonthlyFromEmail,
         recipients: [tenant.tenantEmail],
         subject,
         text,
@@ -2208,7 +2488,7 @@ const runRentQuarterlyTenantUpdates = async () => {
       });
       await prisma.rentTenant.update({
         where: { id: tenant.id },
-        data: { lastQuarterlySummaryAt: new Date() },
+        data: buildRentLastSummarySentAtUpdate(),
       });
       sentCount += 1;
     } catch (error) {
@@ -2220,17 +2500,17 @@ const runRentQuarterlyTenantUpdates = async () => {
     }
   }
 
-  rentQuarterlyUpdateState.lastRunAt = new Date().toISOString();
-  rentQuarterlyUpdateState.lastQuarterLabel = quarterLabel;
-  rentQuarterlyUpdateState.lastSentCount = sentCount;
+  rentMonthlyUpdateState.lastRunAt = new Date().toISOString();
+  rentMonthlyUpdateState.lastMonthLabel = monthLabel;
+  rentMonthlyUpdateState.lastSentCount = sentCount;
 
   if (errors.length) {
-    console.error("Quarterly rent update failures", errors);
+    console.error("Monthly rent update failures", errors);
   }
 
   return {
     ok: true,
-    quarterLabel,
+    monthLabel,
     sentCount,
     attempted: dueTenants.length,
     failedCount: errors.length,
@@ -2238,43 +2518,43 @@ const runRentQuarterlyTenantUpdates = async () => {
   };
 };
 
-const getNextRentQuarterlyRunDateUtc = (fromDate = new Date()) => {
+const getNextRentMonthlyRunDateUtc = (fromDate = new Date()) => {
   const now = new Date(fromDate);
   const next = new Date(now);
-  next.setUTCHours(RENT_QUARTERLY_EMAIL_HOUR_UTC, RENT_QUARTERLY_EMAIL_MINUTE_UTC, 0, 0);
+  next.setUTCHours(RENT_MONTHLY_EMAIL_HOUR_UTC, RENT_MONTHLY_EMAIL_MINUTE_UTC, 0, 0);
   if (next <= now) {
     next.setUTCDate(next.getUTCDate() + 1);
   }
   return next;
 };
 
-const scheduleRentQuarterlyUpdates = () => {
-  if (!RENT_QUARTERLY_EMAIL_ENABLED) return;
+const scheduleRentMonthlyUpdates = () => {
+  if (!RENT_MONTHLY_EMAIL_ENABLED) return;
   if (!resend) {
-    console.warn("Rent quarterly scheduler skipped: RESEND_API_KEY is not configured.");
+    console.warn("Rent monthly scheduler skipped: RESEND_API_KEY is not configured.");
     return;
   }
-  if (!EMAIL_PATTERN.test(rentQuarterlyFromEmail)) {
-    console.warn("Rent quarterly scheduler skipped: invalid from email configuration.");
+  if (!EMAIL_PATTERN.test(rentMonthlyFromEmail)) {
+    console.warn("Rent monthly scheduler skipped: invalid from email configuration.");
     return;
   }
 
   const scheduleNext = () => {
-    const nextRun = getNextRentQuarterlyRunDateUtc();
+    const nextRun = getNextRentMonthlyRunDateUtc();
     const delay = Math.max(nextRun.getTime() - Date.now(), 0);
-    rentQuarterlyUpdateState.lastScheduledFor = nextRun.toISOString();
+    rentMonthlyUpdateState.lastScheduledFor = nextRun.toISOString();
 
     setTimeout(async () => {
       try {
-        await runRentQuarterlyTenantUpdates();
+        await runRentMonthlyTenantUpdates();
       } catch (error) {
-        console.error("Quarterly rent update scheduler run failed", error);
+        console.error("Monthly rent update scheduler run failed", error);
       }
       scheduleNext();
     }, delay);
   };
 
-  console.info(`Rent quarterly scheduler active: ${rentQuarterlyScheduleLabel}`);
+  console.info(`Rent monthly scheduler active: ${rentMonthlyScheduleLabel}`);
   scheduleNext();
 };
 
@@ -2495,6 +2775,14 @@ const classifyApiError = (error) => {
     return {
       status: 503,
       message: "Database schema is out of date. Run `prisma migrate deploy` and restart the API.",
+      code: prismaCode,
+    };
+  }
+
+  if (prismaCode && PRISMA_TRANSACTION_CONTENTION_CODES.has(prismaCode)) {
+    return {
+      status: 503,
+      message: "Database is busy and could not start the transaction in time. Try again.",
       code: prismaCode,
     };
   }
@@ -2840,6 +3128,8 @@ app.patch("/api/access/roles/:id", authMiddleware, requireAdmin, async (req, res
 });
 
 app.get("/api/access/users", authMiddleware, requireAdmin, async (req, res) => {
+  await syncRentTenantAccessUsersForOrganization(req.user.organizationId);
+
   const users = await prisma.user.findMany({
     where: { organizationId: req.user.organizationId },
     include: { role: true },
@@ -2906,52 +3196,95 @@ app.post("/api/access/users", authMiddleware, requireAdmin, async (req, res) => 
   const hashedPassword = await bcrypt.hash(password, 10);
   const fullName = `${firstName} ${lastName}`.trim();
 
-  const createdUser = await prisma.user.create({
-    data: {
-      organizationId: req.user.organizationId,
-      roleId: role.id,
-      firstName,
-      lastName,
-      fullName,
-      email,
-      password: hashedPassword,
-      status,
-    },
-    include: {
-      role: true,
-      organization: {
-        select: { name: true },
+  let createdUserId = null;
+  let createdTenantProfileId = null;
+
+  const creationResult = await prisma.$transaction(async (tx) => {
+    const createdUser = await tx.user.create({
+      data: {
+        organizationId: req.user.organizationId,
+        roleId: role.id,
+        firstName,
+        lastName,
+        fullName,
+        email,
+        password: hashedPassword,
+        status,
       },
-    },
-  });
+      include: {
+        role: true,
+        organization: {
+          select: { name: true },
+        },
+      },
+    });
+
+    const tenantProfileResult =
+      role.name === "Tenant"
+        ? await ensureRentTenantProfileForAccessUser({
+            tx,
+            organizationId: req.user.organizationId,
+            fullName,
+            email,
+          })
+        : {
+            tenantId: null,
+            created: false,
+            alreadyExists: false,
+          };
+
+    return {
+      user: createdUser,
+      tenantProfileResult,
+    };
+  }, PRISMA_INTERACTIVE_TRANSACTION_OPTIONS);
+
+  createdUserId = creationResult.user.id;
+  createdTenantProfileId = creationResult.tenantProfileResult.created
+    ? creationResult.tenantProfileResult.tenantId
+    : null;
 
   try {
     const invitationResult = await sendAccountInvitationEmail({
       req,
-      user: createdUser,
+      user: creationResult.user,
     });
 
     return res.status(201).json({
-      user: serializeAccessUser(createdUser),
+      user: serializeAccessUser(creationResult.user),
       invitationSent: true,
+      tenantProfileCreated: creationResult.tenantProfileResult.created,
+      tenantProfileAlreadyExists: creationResult.tenantProfileResult.alreadyExists,
       ...invitationResult,
     });
   } catch (inviteError) {
     console.error("Account invitation email failed", {
-      userId: createdUser.id,
-      intendedRecipient: createdUser.email,
-      deliveryRecipient: resolveAccountInviteDeliveryTarget(createdUser.email).deliveryRecipient,
+      userId: creationResult.user.id,
+      intendedRecipient: creationResult.user.email,
+      deliveryRecipient: resolveAccountInviteDeliveryTarget(creationResult.user.email).deliveryRecipient,
       error: inviteError?.message || inviteError,
     });
     try {
       await prisma.user.delete({
-        where: { id: createdUser.id },
+        where: { id: createdUserId },
       });
     } catch (cleanupError) {
       console.error("Unable to rollback invited user after email failure", {
-        userId: createdUser.id,
+        userId: createdUserId,
         error: cleanupError?.message || cleanupError,
       });
+    }
+    if (createdTenantProfileId) {
+      try {
+        await prisma.rentTenant.delete({
+          where: { id: createdTenantProfileId },
+        });
+      } catch (cleanupError) {
+        console.error("Unable to rollback tenant profile after invitation failure", {
+          tenantId: createdTenantProfileId,
+          error: cleanupError?.message || cleanupError,
+        });
+      }
     }
     const status =
       Number.isInteger(Number(inviteError?.statusCode)) && Number(inviteError.statusCode) >= 400
@@ -3188,7 +3521,7 @@ app.delete("/api/access/users/:id", authMiddleware, requireAdmin, async (req, re
       deletedProductivityEntries: deletedEntries.count,
       deletedProductivityTodos: deletedTodos.count,
     };
-  });
+  }, PRISMA_INTERACTIVE_TRANSACTION_OPTIONS);
 
   return res.json({
     ok: true,
@@ -3354,10 +3687,10 @@ app.get("/api/rent/dashboard", authMiddleware, async (req, res) => {
     orderBy: [{ status: "asc" }, { tenantName: "asc" }],
   });
 
-  const quarterRange = getQuarterRangeUtc();
+  const monthRange = getMonthRangeUtc();
   const generatedAt = new Date().toISOString();
   const payload = buildRentDashboardPayload(tenants, {
-    quarterRange,
+    monthRange,
     generatedAt,
   });
   res.json(payload);
@@ -3374,20 +3707,20 @@ app.get("/api/rent/tenants", authMiddleware, async (req, res) => {
     },
     orderBy: [{ status: "asc" }, { tenantName: "asc" }],
   });
-  const quarterRange = getQuarterRangeUtc();
+  const monthRange = getMonthRangeUtc();
   const asOfDate = new Date();
   const summaries = tenants.map((tenant) =>
     buildRentTenantSummary(tenant, {
-      quarterRange,
+      monthRange,
       asOfDate,
     })
   );
   res.json({
     generatedAt: asOfDate.toISOString(),
-    quarter: {
-      label: formatQuarterLabel(quarterRange),
-      start: quarterRange.start.toISOString(),
-      end: quarterRange.end.toISOString(),
+    month: {
+      label: formatMonthLabel(monthRange),
+      start: monthRange.start.toISOString(),
+      end: monthRange.end.toISOString(),
     },
     tenants: summaries,
   });
@@ -3450,35 +3783,113 @@ app.post("/api/rent/tenants", authMiddleware, requireRentManager, async (req, re
     return res.status(400).json({ error: "leaseEndDate cannot be earlier than leaseStartDate." });
   }
 
-  const tenant = await prisma.rentTenant.create({
-    data: {
-      organizationId: req.user.organizationId,
-      status,
-      tenantName,
-      tenantEmail,
-      landlordName,
-      landlordEmail,
-      currency,
-      monthlyRent,
-      leaseStartDate,
-      leaseEndDate,
-      openingBalance,
-      notes,
-    },
-    include: {
-      payments: {
-        orderBy: { paidAt: "desc" },
-      },
-    },
-  });
+  let createdTenantId = null;
+  let createdAccessUserId = null;
 
-  const quarterRange = getQuarterRangeUtc();
-  res.status(201).json(
-    buildRentTenantSummary(tenant, {
-      quarterRange,
-      asOfDate: new Date(),
-    })
-  );
+  try {
+    const creationResult = await prisma.$transaction(async (tx) => {
+      const accessResult = await provisionRentTenantAccessUser({
+        tx,
+        organizationId: req.user.organizationId,
+        tenantName,
+        tenantEmail,
+      });
+
+      const tenant = await tx.rentTenant.create({
+        data: {
+          organizationId: req.user.organizationId,
+          status,
+          tenantName,
+          tenantEmail,
+          landlordName,
+          landlordEmail,
+          currency,
+          monthlyRent,
+          leaseStartDate,
+          leaseEndDate,
+          openingBalance,
+          notes,
+        },
+        include: {
+          payments: {
+            orderBy: { paidAt: "desc" },
+          },
+        },
+      });
+
+      return {
+        tenant,
+        accessResult,
+      };
+    }, PRISMA_INTERACTIVE_TRANSACTION_OPTIONS);
+
+    createdTenantId = creationResult.tenant.id;
+    createdAccessUserId = creationResult.accessResult.createdUserId;
+
+    let invitationResult = null;
+    if (creationResult.accessResult.shouldSendInvitation) {
+      invitationResult = await sendAccountInvitationEmail({
+        req,
+        user: creationResult.accessResult.user,
+      });
+    }
+
+    const monthRange = getMonthRangeUtc();
+    return res.status(201).json({
+      ...buildRentTenantSummary(creationResult.tenant, {
+        monthRange,
+        asOfDate: new Date(),
+      }),
+      invitationSent: Boolean(invitationResult),
+      invitationRecipient: invitationResult?.invitationRecipient || null,
+      invitationIntendedRecipient: invitationResult?.invitationIntendedRecipient || null,
+      invitationRerouted: invitationResult?.invitationRerouted || false,
+      tenantAccessAlreadyExists: creationResult.accessResult.accessAlreadyExists,
+    });
+  } catch (createError) {
+    if (createdTenantId) {
+      try {
+        await prisma.rentTenant.delete({
+          where: { id: createdTenantId },
+        });
+      } catch (cleanupError) {
+        console.error("Unable to rollback tenant after access provisioning failure", {
+          tenantId: createdTenantId,
+          error: cleanupError?.message || cleanupError,
+        });
+      }
+    }
+
+    if (createdAccessUserId) {
+      try {
+        await prisma.user.delete({
+          where: { id: createdAccessUserId },
+        });
+      } catch (cleanupError) {
+        console.error("Unable to rollback tenant access user after invitation failure", {
+          userId: createdAccessUserId,
+          error: cleanupError?.message || cleanupError,
+        });
+      }
+    }
+
+    if (typeof createError?.code === "string") {
+      const classified = classifyApiError(createError);
+      const payload = { error: classified.message };
+      if (!isProduction && classified.code) {
+        payload.code = classified.code;
+      }
+      return res.status(classified.status).json(payload);
+    }
+
+    const statusCode =
+      Number.isInteger(Number(createError?.statusCode)) && Number(createError.statusCode) >= 400
+        ? Number(createError.statusCode)
+        : 502;
+    return res.status(statusCode).json({
+      error: createError?.message || "Unable to create tenant access.",
+    });
+  }
 });
 
 app.patch("/api/rent/tenants/:id", authMiddleware, requireRentManager, async (req, res) => {
@@ -3617,13 +4028,58 @@ app.patch("/api/rent/tenants/:id", authMiddleware, requireRentManager, async (re
     },
   });
 
-  const quarterRange = getQuarterRangeUtc();
+  const monthRange = getMonthRangeUtc();
   res.json(
     buildRentTenantSummary(updatedTenant, {
-      quarterRange,
+      monthRange,
       asOfDate: new Date(),
     })
   );
+});
+
+app.delete("/api/rent/tenants/:id", authMiddleware, requireRentManager, async (req, res) => {
+  const tenantId = parseRentTenantId(req.params.id);
+  if (!tenantId) {
+    return res.status(400).json({ error: "Invalid tenant id." });
+  }
+
+  const tenantScopeWhere = buildRentTenantWhereForUser(req.user);
+  const tenant = await prisma.rentTenant.findFirst({
+    where: {
+      ...tenantScopeWhere,
+      id: tenantId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
+
+  const deletionResult = await prisma.$transaction(async (tx) => {
+    const deletedPayments = await tx.rentPayment.deleteMany({
+      where: {
+        organizationId: req.user.organizationId,
+        tenantId: tenant.id,
+      },
+    });
+
+    await tx.rentTenant.delete({
+      where: { id: tenant.id },
+    });
+
+    return {
+      deletedPayments: deletedPayments.count,
+    };
+  }, PRISMA_INTERACTIVE_TRANSACTION_OPTIONS);
+
+  return res.json({
+    ok: true,
+    deletedTenantId: tenant.id,
+    deletedPayments: deletionResult.deletedPayments,
+  });
 });
 
 app.get("/api/rent/payments", authMiddleware, async (req, res) => {
@@ -3705,8 +4161,138 @@ app.post("/api/rent/payments", authMiddleware, requireRentManager, async (req, r
   res.status(201).json(serializeRentPayment(payment));
 });
 
-app.post("/api/rent/quarterly-updates/send", authMiddleware, requireAdmin, async (req, res) => {
-  const result = await runRentQuarterlyTenantUpdates();
+app.patch("/api/rent/payments/:id", authMiddleware, requireRentManager, async (req, res) => {
+  const paymentId = parseRentTenantId(req.params.id);
+  if (!paymentId) {
+    return res.status(400).json({ error: "Invalid payment id." });
+  }
+
+  const payment = await prisma.rentPayment.findFirst({
+    where: {
+      id: paymentId,
+      organizationId: req.user.organizationId,
+    },
+  });
+  if (!payment) {
+    return res.status(404).json({ error: "Payment not found." });
+  }
+
+  const tenantScopeWhere = buildRentTenantWhereForUser(req.user);
+  const currentTenant = await prisma.rentTenant.findFirst({
+    where: {
+      ...tenantScopeWhere,
+      id: payment.tenantId,
+    },
+  });
+  if (!currentTenant) {
+    return res.status(404).json({ error: "Payment not found." });
+  }
+
+  const updates = {};
+
+  if (req.body?.tenantId !== undefined) {
+    const nextTenantId = parseRentTenantId(req.body.tenantId);
+    if (!nextTenantId) {
+      return res.status(400).json({ error: "tenantId must be a positive integer." });
+    }
+
+    const nextTenant = await prisma.rentTenant.findFirst({
+      where: {
+        ...tenantScopeWhere,
+        id: nextTenantId,
+      },
+    });
+    if (!nextTenant) {
+      return res.status(404).json({ error: "Tenant not found." });
+    }
+
+    updates.tenantId = nextTenant.id;
+    updates.currency = nextTenant.currency;
+  }
+
+  if (req.body?.amount !== undefined) {
+    const amount = parsePositiveAmount(req.body.amount);
+    if (!amount) {
+      return res.status(400).json({ error: "amount must be greater than zero." });
+    }
+    updates.amount = amount;
+  }
+
+  if (req.body?.paidAt !== undefined) {
+    const paidAt = parseDateValue(req.body.paidAt);
+    if (!paidAt) {
+      return res.status(400).json({ error: "paidAt must be a valid date." });
+    }
+    updates.paidAt = paidAt;
+  }
+
+  if (req.body?.method !== undefined) {
+    updates.method = String(req.body.method || "").trim() || null;
+  }
+
+  if (req.body?.reference !== undefined) {
+    updates.reference = String(req.body.reference || "").trim() || null;
+  }
+
+  if (req.body?.notes !== undefined) {
+    updates.notes = String(req.body.notes || "").trim() || null;
+  }
+
+  if (!Object.keys(updates).length) {
+    return res.status(400).json({
+      error: "Provide tenantId, amount, paidAt, method, reference, or notes to update the payment.",
+    });
+  }
+
+  const updatedPayment = await prisma.rentPayment.update({
+    where: { id: payment.id },
+    data: updates,
+  });
+
+  return res.json(serializeRentPayment(updatedPayment));
+});
+
+app.delete("/api/rent/payments/:id", authMiddleware, requireRentManager, async (req, res) => {
+  const paymentId = parseRentTenantId(req.params.id);
+  if (!paymentId) {
+    return res.status(400).json({ error: "Invalid payment id." });
+  }
+
+  const payment = await prisma.rentPayment.findFirst({
+    where: {
+      id: paymentId,
+      organizationId: req.user.organizationId,
+    },
+  });
+  if (!payment) {
+    return res.status(404).json({ error: "Payment not found." });
+  }
+
+  const tenantScopeWhere = buildRentTenantWhereForUser(req.user);
+  const tenant = await prisma.rentTenant.findFirst({
+    where: {
+      ...tenantScopeWhere,
+      id: payment.tenantId,
+    },
+    select: { id: true },
+  });
+  if (!tenant) {
+    return res.status(404).json({ error: "Payment not found." });
+  }
+
+  await prisma.rentPayment.delete({
+    where: { id: payment.id },
+  });
+
+  return res.json({
+    ok: true,
+    deletedPaymentId: payment.id,
+    tenantId: payment.tenantId,
+  });
+});
+
+app.post("/api/rent/monthly-updates/send", authMiddleware, requireAdmin, async (req, res) => {
+  const result = await runRentMonthlyTenantUpdates();
   res.json(result);
 });
 
@@ -4791,9 +5377,13 @@ app.post("/api/invoices/:id/send", authMiddleware, requireAdmin, async (req, res
       `.trim()
     : html;
 
+  if (!EMAIL_PATTERN.test(invoiceFromEmail)) {
+    return res.status(500).json({ error: "INVOICE_FROM_EMAIL is invalid." });
+  }
+
   try {
     await sendEmail({
-      fromEmail: DEFAULT_ADMIN_EMAIL,
+      fromEmail: invoiceFromEmail,
       recipients: [deliveryTarget.deliveryRecipient],
       subject: subjectLine,
       text: textBody,
@@ -6252,7 +6842,36 @@ const formatQuarterLabel = (range) => {
   return `Q${quarter} ${year}`;
 };
 
+const getMonthRangeUtc = (referenceDate = new Date()) => {
+  const year = referenceDate.getUTCFullYear();
+  const month = referenceDate.getUTCMonth();
+  const start = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+  return { start, end };
+};
+
+const getLastCompletedMonthRangeUtc = (referenceDate = new Date()) => {
+  const current = getMonthRangeUtc(referenceDate);
+  const end = new Date(current.start.getTime() - 1);
+  return getMonthRangeUtc(end);
+};
+
+const formatMonthLabel = (range) =>
+  range.start.toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+
 const getUtcMonthIndex = (date) => date.getUTCFullYear() * 12 + date.getUTCMonth();
+
+const getMonthRangeForUtcIndex = (monthIndex) => {
+  const year = Math.floor(monthIndex / 12);
+  const month = monthIndex % 12;
+  const start = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+  return { start, end };
+};
 
 const countBillableMonthsInRange = ({
   leaseStartDate,
@@ -6296,19 +6915,85 @@ const sumRentPaymentsToDate = (payments, asOfDate) =>
     }, 0)
   );
 
-const buildRentTenantSummary = (tenant, { quarterRange, asOfDate }) => {
+const buildRentMissedMonths = ({
+  leaseStartDate,
+  leaseEndDate = null,
+  asOfDate,
+  monthlyRent,
+  payments,
+}) => {
+  if (!(leaseStartDate instanceof Date) || !(asOfDate instanceof Date)) {
+    return [];
+  }
+  const normalizedMonthlyRent = roundCurrencyAmount(monthlyRent);
+  if (!Number.isFinite(normalizedMonthlyRent) || normalizedMonthlyRent <= 0) {
+    return [];
+  }
+
+  const effectiveEnd = new Date(
+    Math.min(
+      toUtcEndOfDay(asOfDate).getTime(),
+      leaseEndDate ? toUtcEndOfDay(leaseEndDate).getTime() : Number.POSITIVE_INFINITY
+    )
+  );
+  if (toUtcStartOfDay(leaseStartDate).getTime() > effectiveEnd.getTime()) {
+    return [];
+  }
+
+  const missedMonths = [];
+  const startMonthIndex = getUtcMonthIndex(toUtcStartOfDay(leaseStartDate));
+  const endMonthIndex = getUtcMonthIndex(effectiveEnd);
+
+  for (let monthIndex = startMonthIndex; monthIndex <= endMonthIndex; monthIndex += 1) {
+    const monthRange = getMonthRangeForUtcIndex(monthIndex);
+    if (
+      !countBillableMonthsInRange({
+        leaseStartDate,
+        leaseEndDate,
+        periodStart: monthRange.start,
+        periodEnd: monthRange.end,
+      })
+    ) {
+      continue;
+    }
+
+    const paidForMonth = sumRentPaymentsInWindow(payments, monthRange.start, monthRange.end);
+    const amountOutstanding = roundCurrencyAmount(
+      Math.max(normalizedMonthlyRent - paidForMonth, 0)
+    );
+
+    if (amountOutstanding > 0) {
+      missedMonths.push({
+        monthLabel: formatMonthLabel(monthRange),
+        periodStart: monthRange.start.toISOString(),
+        periodEnd: monthRange.end.toISOString(),
+        amountOutstanding,
+      });
+    }
+  }
+
+  return missedMonths;
+};
+
+const getRentLastSummarySentAt = (tenant) => tenant?.lastQuarterlySummaryAt ?? null;
+
+const buildRentLastSummarySentAtUpdate = (sentAt = new Date()) => ({
+  lastQuarterlySummaryAt: sentAt,
+});
+
+const buildRentTenantSummary = (tenant, { monthRange, asOfDate }) => {
   const monthlyRent = resolveDecimalAmount(tenant.monthlyRent);
   const openingBalance = resolveDecimalAmount(tenant.openingBalance);
   const payments = Array.isArray(tenant.payments) ? tenant.payments : [];
-  const paidThisQuarter = sumRentPaymentsInWindow(payments, quarterRange.start, quarterRange.end);
+  const paidThisMonth = sumRentPaymentsInWindow(payments, monthRange.start, monthRange.end);
   const paidToDate = sumRentPaymentsToDate(payments, asOfDate);
-  const expectedThisQuarter = roundCurrencyAmount(
+  const expectedThisMonth = roundCurrencyAmount(
     monthlyRent *
       countBillableMonthsInRange({
         leaseStartDate: tenant.leaseStartDate,
         leaseEndDate: tenant.leaseEndDate,
-        periodStart: quarterRange.start,
-        periodEnd: quarterRange.end,
+        periodStart: monthRange.start,
+        periodEnd: monthRange.end,
       })
   );
   const expectedToDate = roundCurrencyAmount(
@@ -6320,8 +7005,16 @@ const buildRentTenantSummary = (tenant, { quarterRange, asOfDate }) => {
         periodEnd: asOfDate,
       })
   );
-  const quarterNet = expectedThisQuarter - paidThisQuarter;
+  const monthNet = expectedThisMonth - paidThisMonth;
   const totalNet = openingBalance + expectedToDate - paidToDate;
+  const outstandingTotal = roundCurrencyAmount(Math.max(totalNet, 0));
+  const missedMonths = buildRentMissedMonths({
+    leaseStartDate: tenant.leaseStartDate,
+    leaseEndDate: tenant.leaseEndDate,
+    asOfDate,
+    monthlyRent,
+    payments,
+  });
   const lastPayment = [...payments]
     .sort((left, right) => new Date(right.paidAt).getTime() - new Date(left.paidAt).getTime())
     .at(0);
@@ -6341,30 +7034,39 @@ const buildRentTenantSummary = (tenant, { quarterRange, asOfDate }) => {
     leaseEndDate: tenant.leaseEndDate ? tenant.leaseEndDate.toISOString() : null,
     notes: tenant.notes ?? null,
     paymentsCount: payments.length,
-    paidThisQuarter,
-    expectedThisQuarter,
-    outstandingThisQuarter: roundCurrencyAmount(Math.max(quarterNet, 0)),
-    creditThisQuarter: roundCurrencyAmount(Math.max(-quarterNet, 0)),
+    paidThisMonth,
+    expectedThisMonth,
+    outstandingThisMonth: roundCurrencyAmount(Math.max(monthNet, 0)),
+    creditThisMonth: roundCurrencyAmount(Math.max(-monthNet, 0)),
     paidToDate,
     expectedToDate,
-    outstandingTotal: roundCurrencyAmount(Math.max(totalNet, 0)),
+    outstandingTotal,
     creditTotal: roundCurrencyAmount(Math.max(-totalNet, 0)),
+    periodsMissed: missedMonths.length,
+    missedMonths,
     lastPaymentAt: lastPayment?.paidAt ? new Date(lastPayment.paidAt).toISOString() : null,
-    lastQuarterlySummaryAt: tenant.lastQuarterlySummaryAt
-      ? tenant.lastQuarterlySummaryAt.toISOString()
-      : null,
+    lastMonthlySummaryAt: getRentLastSummarySentAt(tenant)?.toISOString() ?? null,
     createdAt: tenant.createdAt ? tenant.createdAt.toISOString() : null,
     updatedAt: tenant.updatedAt ? tenant.updatedAt.toISOString() : null,
   };
 };
 
-const buildRentDashboardPayload = (tenants, { quarterRange, generatedAt }) => {
+const buildRentDashboardPayload = (tenants, { monthRange, generatedAt }) => {
   const asOfDate = new Date(generatedAt);
   const summaries = tenants.map((tenant) =>
     buildRentTenantSummary(tenant, {
-      quarterRange,
+      monthRange,
       asOfDate,
     })
+  );
+  const missedMonths = summaries.flatMap((tenant) =>
+    (Array.isArray(tenant.missedMonths) ? tenant.missedMonths : []).map((entry) => ({
+      tenantId: tenant.id,
+      tenantName: tenant.tenantName,
+      tenantEmail: tenant.tenantEmail,
+      currency: tenant.currency,
+      ...entry,
+    }))
   );
 
   const currencyTotals = {};
@@ -6373,23 +7075,23 @@ const buildRentDashboardPayload = (tenants, { quarterRange, generatedAt }) => {
     if (!currencyTotals[currency]) {
       currencyTotals[currency] = {
         monthlyRent: 0,
-        paidThisQuarter: 0,
-        expectedThisQuarter: 0,
-        outstandingThisQuarter: 0,
+        paidThisMonth: 0,
+        expectedThisMonth: 0,
+        outstandingThisMonth: 0,
         outstandingTotal: 0,
       };
     }
     currencyTotals[currency].monthlyRent = roundCurrencyAmount(
       currencyTotals[currency].monthlyRent + Number(entry.monthlyRent || 0)
     );
-    currencyTotals[currency].paidThisQuarter = roundCurrencyAmount(
-      currencyTotals[currency].paidThisQuarter + Number(entry.paidThisQuarter || 0)
+    currencyTotals[currency].paidThisMonth = roundCurrencyAmount(
+      currencyTotals[currency].paidThisMonth + Number(entry.paidThisMonth || 0)
     );
-    currencyTotals[currency].expectedThisQuarter = roundCurrencyAmount(
-      currencyTotals[currency].expectedThisQuarter + Number(entry.expectedThisQuarter || 0)
+    currencyTotals[currency].expectedThisMonth = roundCurrencyAmount(
+      currencyTotals[currency].expectedThisMonth + Number(entry.expectedThisMonth || 0)
     );
-    currencyTotals[currency].outstandingThisQuarter = roundCurrencyAmount(
-      currencyTotals[currency].outstandingThisQuarter + Number(entry.outstandingThisQuarter || 0)
+    currencyTotals[currency].outstandingThisMonth = roundCurrencyAmount(
+      currencyTotals[currency].outstandingThisMonth + Number(entry.outstandingThisMonth || 0)
     );
     currencyTotals[currency].outstandingTotal = roundCurrencyAmount(
       currencyTotals[currency].outstandingTotal + Number(entry.outstandingTotal || 0)
@@ -6398,18 +7100,20 @@ const buildRentDashboardPayload = (tenants, { quarterRange, generatedAt }) => {
 
   return {
     generatedAt,
-    quarter: {
-      label: formatQuarterLabel(quarterRange),
-      start: quarterRange.start.toISOString(),
-      end: quarterRange.end.toISOString(),
+    month: {
+      label: formatMonthLabel(monthRange),
+      start: monthRange.start.toISOString(),
+      end: monthRange.end.toISOString(),
     },
     totals: {
       tenantsTracked: summaries.length,
       activeTenants: summaries.filter((tenant) => tenant.status === "ACTIVE").length,
+      periodsMissed: missedMonths.length,
       paymentsRecorded: summaries.reduce((total, tenant) => total + Number(tenant.paymentsCount || 0), 0),
       currencyTotals,
     },
     tenants: summaries,
+    missedMonths,
   };
 };
 
@@ -7376,7 +8080,7 @@ const ensureDefaults = async () => {
     { name: "Admin", description: "Full access to every endpoint", permissions: null },
     {
       name: "Landlord",
-      description: "Rent manager with access to landlord-linked tenants only",
+      description: "Rent manager with access to all tenant records in the organization",
       permissions: { modules: [RENT_MODULE_KEY] },
     },
     {
@@ -7503,7 +8207,7 @@ const start = async () => {
   if (databaseReady) {
     scheduleNightlyGoogleSync();
     scheduleWeeklyReportEmail();
-    scheduleRentQuarterlyUpdates();
+    scheduleRentMonthlyUpdates();
   } else {
     console.warn("Background jobs are disabled until database connectivity is restored.");
   }
