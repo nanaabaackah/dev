@@ -576,9 +576,9 @@ const UserControl = () => {
                 const isAdminRole = role.name === "Admin";
                 return (
                   <tr key={role.id}>
-                    <td>{role.name}</td>
-                    <td>{role.userCount ?? 0}</td>
-                    <td>
+                    <td data-label="Role">{role.name}</td>
+                    <td data-label="Users">{role.userCount ?? 0}</td>
+                    <td data-label="Modules">
                       <input
                         className="input"
                         value={draft.modulesInput || ""}
@@ -589,7 +589,7 @@ const UserControl = () => {
                         disabled={isAdminRole}
                       />
                     </td>
-                    <td>
+                    <td data-label="Description">
                       <input
                         className="input"
                         value={draft.description || ""}
@@ -598,7 +598,7 @@ const UserControl = () => {
                         }
                       />
                     </td>
-                    <td>
+                    <td className="user-control-action-cell" data-label="Action">
                       <button
                         className="button button-ghost"
                         type="button"
@@ -643,7 +643,7 @@ const UserControl = () => {
                 const isSuspendedUser = user.status === "SUSPENDED";
                 return (
                   <tr key={user.id}>
-                    <td>
+                    <td data-label="Name">
                       <div className="user-control-name-grid">
                         <input
                           className="input"
@@ -663,7 +663,7 @@ const UserControl = () => {
                         />
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Email">
                       <input
                         className="input"
                         type="email"
@@ -671,7 +671,7 @@ const UserControl = () => {
                         onChange={(event) => handleUserDraft(user.id, "email", event.target.value)}
                       />
                     </td>
-                    <td>
+                    <td data-label="Role">
                       <select
                         className="input"
                         value={draft.roleId || ""}
@@ -684,7 +684,7 @@ const UserControl = () => {
                         ))}
                       </select>
                     </td>
-                    <td>
+                    <td data-label="Status">
                       <select
                         className="input"
                         value={draft.status || "ACTIVE"}
@@ -695,7 +695,7 @@ const UserControl = () => {
                         <option value="PENDING">PENDING</option>
                       </select>
                     </td>
-                    <td>
+                    <td data-label="New password">
                       <div className="user-control-password-cell">
                         <div className="password-input-inline">
                           <input
@@ -742,7 +742,7 @@ const UserControl = () => {
                         ) : null}
                       </div>
                     </td>
-                    <td>
+                    <td className="user-control-action-cell" data-label="Action">
                       <div className="user-control-action-stack">
                         <button
                           className="icon-button"
