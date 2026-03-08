@@ -46,7 +46,30 @@ export const createLoginHandler =
       });
     }
 
-    const isValid = await bcrypt.compare(password, user.password);
+    if (!user.role) {
+      console.error("Login blocked: user is missing a role assignment.", {
+        userId: user.id,
+        email,
+      });
+      return res.status(503).json({
+        error: "Your account is not configured correctly. Contact an administrator.",
+      });
+    }
+
+    let isValid = false;
+    try {
+      isValid = await bcrypt.compare(password, user.password);
+    } catch (error) {
+      console.error("Login password verification failed.", {
+        userId: user.id,
+        email,
+        error: error?.message || error,
+      });
+      return res.status(503).json({
+        error: "Your account is not configured correctly. Contact an administrator.",
+      });
+    }
+
     if (!isValid) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
