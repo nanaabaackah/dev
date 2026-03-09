@@ -1369,6 +1369,18 @@ const ACCESS_MODULE_KEYS = [
 ];
 const ACCESS_MODULE_SET = new Set(ACCESS_MODULE_KEYS);
 const SUPPORTED_USER_ROLE_NAMES = ["Admin", "Landlord", "Tenant"];
+const SUPPORTED_ACCESS_ROLE_DEFINITIONS = [
+  { name: "Admin", description: "Full access to every endpoint", permissions: null },
+  {
+    name: "Landlord",
+    description: "Rent manager with access to all tenant records in the organization",
+    permissions: { modules: [RENT_MODULE_KEY] },
+  },
+  {
+    description: "External user with rent module access only",
+    permissions: { modules: [RENT_MODULE_KEY] },
+  },
+];
 const RENT_ONLY_ALLOWED_API_PATHS = [
   /^\/api\/rent(?:\/|$)/,
   /^\/api\/users\/me(?:\/|$)/,
@@ -1664,6 +1676,38 @@ const serializeAccessRole = (role) => ({
   userCount: role?._count?.users ?? 0,
 });
 
+const ensureSupportedRolesForOrganization = async (client, organizationId) => {
+  const normalizedOrganizationId = Number(organizationId);
+  if (!Number.isInteger(normalizedOrganizationId) || normalizedOrganizationId <= 0) {
+    return [];
+  }
+
+  const roles = [];
+  for (const roleDefinition of SUPPORTED_ACCESS_ROLE_DEFINITIONS) {
+    const role = await client.role.upsert({
+      where: {
+        organizationId_name: {
+          organizationId: normalizedOrganizationId,
+          name: roleDefinition.name,
+        },
+      },
+      update: {
+        description: roleDefinition.description,
+        permissions: roleDefinition.permissions,
+      },
+      create: {
+        organizationId: normalizedOrganizationId,
+        name: roleDefinition.name,
+        description: roleDefinition.description,
+        permissions: roleDefinition.permissions,
+      },
+    });
+    roles.push(role);
+  }
+
+  return roles;
+};
+
 const serializeAccessUser = (user) => ({
   id: user.id,
   organizationId: user.organizationId,
@@ -1957,12 +2001,8 @@ const buildTenantAccessNameParts = (tenantName) => {
 };
 
 const provisionRentTenantAccessUser = async ({ tx, organizationId, tenantName, tenantEmail }) => {
-  const tenantRole = await tx.role.findFirst({
-    where: {
-      organizationId,
-      name: "Tenant",
-    },
-  });
+  const supportedRoles = await ensureSupportedRolesForOrganization(tx, organizationId);
+  const tenantRole = supportedRoles.find((role) => role.name === "Tenant") || null;
   if (!tenantRole) {
     throw createApiError("Tenant role is not configured for this organization.", 500);
   }
@@ -2099,13 +2139,8 @@ const syncRentTenantAccessUsersForOrganization = async (organizationId) => {
     return { createdCount: 0 };
   }
 
-  const tenantRole = await prisma.role.findFirst({
-    where: {
-      organizationId,
-      name: "Tenant",
-    },
-    select: { id: true },
-  });
+  const supportedRoles = await ensureSupportedRolesForOrganization(prisma, organizationId);
+  const tenantRole = supportedRoles.find((role) => role.name === "Tenant") || null;
   if (!tenantRole) {
     return { createdCount: 0 };
   }
@@ -3253,6 +3288,8 @@ app.get("/api/organizations", authMiddleware, requireAdmin, async (req, res) => 
 });
 
 app.get("/api/roles", authMiddleware, async (req, res) => {
+  await ensureSupportedRolesForOrganization(prisma, req.user.organizationId);
+
   const roles = await prisma.role.findMany({
     where: {
       organizationId: req.user.organizationId,
@@ -3275,6 +3312,8 @@ app.get("/api/access/modules", authMiddleware, requireAdmin, (_req, res) => {
 });
 
 app.get("/api/access/roles", authMiddleware, requireAdmin, async (req, res) => {
+  await ensureSupportedRolesForOrganization(prisma, req.user.organizationId);
+
   const roles = await prisma.role.findMany({
     where: {
       organizationId: req.user.organizationId,
@@ -3400,6 +3439,8 @@ app.post("/api/access/users", authMiddleware, requireAdmin, async (req, res) => 
       });
     }
   }
+
+  await ensureSupportedRolesForOrganization(prisma, req.user.organizationId);
 
   const role = await prisma.role.findFirst({
     where: {
@@ -3574,6 +3615,7 @@ app.patch("/api/access/users/:id", authMiddleware, requireAdmin, async (req, res
     if (!roleId) {
       return res.status(400).json({ error: "roleId must be a valid role id." });
     }
+    await ensureSupportedRolesForOrganization(prisma, req.user.organizationId);
     const role = await prisma.role.findFirst({
       where: {
         id: roleId,
@@ -8320,20 +8362,6 @@ app.use((err, req, res, _next) => {
 });
 
 const ensureDefaults = async () => {
-  const roles = [
-    { name: "Admin", description: "Full access to every endpoint", permissions: null },
-    {
-      name: "Landlord",
-      description: "Rent manager with access to all tenant records in the organization",
-      permissions: { modules: [RENT_MODULE_KEY] },
-    },
-    {
-      name: "Tenant",
-      description: "External user with rent module access only",
-      permissions: { modules: [RENT_MODULE_KEY] },
-    },
-  ];
-
   const organizationDefinitions = [
     { name: DEFAULT_ORG_NAME, slug: DEFAULT_ORG_SLUG, seedAdmin: true },
     { name: REEBS_ORG_NAME, slug: REEBS_ORG_SLUG, seedAdmin: false },
@@ -8357,20 +8385,18 @@ const ensureDefaults = async () => {
     }
 
     seededOrganizations.push({ organization, seedAdmin: orgInfo.seedAdmin });
+  }
 
-    for (const role of roles) {
-      await prisma.role.upsert({
-        where: { organizationId_name: { organizationId: organization.id, name: role.name } },
-        update: { description: role.description, permissions: role.permissions },
-        create: {
-          name: role.name,
-          description: role.description,
-          permissions: role.permissions,
-          organizationId: organization.id,
-        },
-      });
-    }
+  const organizations = await prisma.organization.findMany({
+    select: { id: true, name: true, slug: true },
+    orderBy: { id: "asc" },
+  });
 
+  for (const organization of organizations) {
+    await ensureSupportedRolesForOrganization(prisma, organization.id);
+  }
+
+  for (const { organization } of seededOrganizations) {
     const legacyRoles = await prisma.role.findMany({
       where: {
         organizationId: organization.id,
