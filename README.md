@@ -49,6 +49,7 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
 ## Bootstrap commands
 
 - Frontend only: `npm install` then `npm run dev`
+- Production app start with automatic migrations: `npm start`
 - Local backend with local database sync: `npm install` then `npm run server:dev:with-migrate`
 - Local DB status check: `npm run db:status:dev`
 - Local DB sync/apply migrations: `npm run db:deploy:dev`
@@ -73,7 +74,7 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
 ## Useful commands
 
 - `npm run dev` starts the Vite frontend locally.
-- `npm run build` creates a production build.
+- `npm run build` regenerates the Prisma client, then creates a production build.
 - `npm test` runs the current backend unit tests with Node's built-in test runner.
 - `npm run db:generate` regenerates the Prisma client.
 - `npm run db:studio` opens Prisma Studio.
@@ -84,7 +85,7 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
 - `npm run db:deploy:prod` applies pending migrations to the production database.
 - `npm run migrate:status` checks Prisma migration status for the active environment.
 - `npm run migrate:deploy` applies pending Prisma migrations for the active environment.
-- `npm run server` starts the backend API.
+- `npm run server` applies pending migrations for the active environment, then starts the backend API.
 - `npm run server:dev` starts the backend with `APP_ENV=development`.
 - `npm run server:prod` starts the backend with `APP_ENV=production`.
 - `npm run server:dev:with-migrate` syncs the development DB, then starts the backend.
@@ -94,5 +95,5 @@ This folder builds the standalone KPI dashboard served at `dev.nanaabaackah.com`
 ## Deployment
 
 - Netlify redirects `/api/*` to `https://dev.nanaabaackah.com/api/:splat`, so every dashboard request lands on the upstream backend without requiring a separate server.
-- Before starting a production backend deploy, run `APP_ENV=production npm run migrate:deploy`.
+- Production deploys no longer need a manual migration step if they use `npm run start` or `npm run server`; both now run `prisma migrate deploy` first.
 - To verify production schema state after deploy, run `APP_ENV=production npm run migrate:status`.
