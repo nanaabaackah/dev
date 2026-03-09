@@ -25,6 +25,20 @@ const formatAmount = (amount, currency) =>
     maximumFractionDigits: 2,
   })}`;
 
+const formatCurrencySummary = (entries) => {
+  const normalizedEntries = Array.isArray(entries)
+    ? entries.filter(
+        ([currency]) => typeof currency === "string" && currency.trim()
+      )
+    : [];
+
+  if (!normalizedEntries.length) return "-";
+
+  return normalizedEntries
+    .map(([currency, amount]) => formatAmount(amount, currency))
+    .join(" · ");
+};
+
 const formatDate = (value) => {
   if (!value) return "-";
   const date = new Date(value);
@@ -678,6 +692,30 @@ const Rent = () => {
   }, [canManageRent]);
 
   const currencyTotals = Object.entries(dashboard?.totals?.currencyTotals || {});
+  const totalOutstandingLabel = useMemo(
+    () =>
+      formatCurrencySummary(
+        currencyTotals.map(([currency, totals]) => [currency, totals?.outstandingTotal ?? 0])
+      ),
+    [currencyTotals]
+  );
+  const totalPaidLabel = useMemo(() => {
+    const totals = new Map();
+
+    payments.forEach((payment) => {
+      const currency = String(payment?.currency || "").trim().toUpperCase();
+      if (!currency) return;
+      totals.set(currency, Number(totals.get(currency) || 0) + Number(payment?.amount || 0));
+    });
+
+    if (!totals.size && currencyTotals.length) {
+      currencyTotals.forEach(([currency]) => {
+        totals.set(currency, 0);
+      });
+    }
+
+    return formatCurrencySummary(Array.from(totals.entries()));
+  }, [currencyTotals, payments]);
   const singleTenant = tenants.length === 1 ? tenants[0] : null;
   const isSingleTenantView = Boolean(singleTenant);
 
@@ -725,12 +763,12 @@ const Rent = () => {
           <div className="kpi-value">{dashboard?.month?.label || "Current month"}</div>
         </article>
         <article className="panel metric-card">
-          <span className="kpi-label">Tenants tracked</span>
-          <div className="kpi-value">{dashboard?.totals?.tenantsTracked ?? 0}</div>
+          <span className="kpi-label">Total outstanding</span>
+          <div className="kpi-value">{totalOutstandingLabel}</div>
         </article>
         <article className="panel metric-card">
-          <span className="kpi-label">Active tenants</span>
-          <div className="kpi-value">{dashboard?.totals?.activeTenants ?? 0}</div>
+          <span className="kpi-label">Total paid</span>
+          <div className="kpi-value">{totalPaidLabel}</div>
         </article>
         <button
           className={`panel metric-card rent-metric-card-button ${isMissedMonthsOpen ? "is-active" : ""}`.trim()}

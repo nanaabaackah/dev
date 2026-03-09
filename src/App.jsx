@@ -63,6 +63,7 @@ const NAV_ITEMS = [
 const MOBILE_TAB_ITEMS = [
   { to: "/dashboard", label: "Home", Icon: Category, module: "dashboard" },
   { to: "/accounting", label: "Finance", Icon: WalletMoney, module: "accounting" },
+  { to: "/user-control", label: "User Control", Icon: Profile2User, module: "user-control" },
   { to: "/bookings", label: "Appointments", Icon: CalendarTick, module: "bookings" },
   { to: "/settings", label: "Settings", Icon: Setting2, module: "settings" },
 ];
