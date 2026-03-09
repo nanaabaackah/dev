@@ -7,15 +7,23 @@ const Reports = () => {
   const { data: kpiData, loading, isRefreshing, error, reload } = useDashboardData();
 
   const lastSyncedLabel = formatDateTime(kpiData?.lastSyncedAt);
+  const organizations = Array.isArray(kpiData?.organizations) ? kpiData.organizations : [];
 
   const handleExportSnapshot = () => {
     if (!kpiData) return;
     const rows = [
       ["Metric", "Value"],
       ["Total organizations", kpiData.totalOrganizations ?? 0],
-      ["By Nana organizations", kpiData.portfolio?.organizations ?? 0],
-      ["Reebs organizations", kpiData.reebs?.organizations ?? 0],
-      ["Faako organizations", kpiData.faako?.organizations ?? 0],
+      ["Top-level groups", kpiData.topLevelOrganizations ?? 0],
+      ["Child organizations", kpiData.childOrganizations ?? 0],
+      [],
+      ["Organization", "Parent", "Child orgs", "Manages"],
+      ...organizations.map((organization) => [
+        organization.name,
+        organization.parentOrganizationName || "",
+        organization.childOrganizationsCount ?? 0,
+        organization.managedOrganizationsCount ?? 0,
+      ]),
     ];
     downloadCsv("dashboard_snapshot.csv", rows);
   };

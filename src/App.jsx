@@ -13,7 +13,6 @@ import {
   WalletMoney,
   ReceiptItem,
   CalendarTick,
-  TaskSquare,
   Buildings2,
   Monitor,
   DocumentText,
@@ -38,7 +37,6 @@ import SetupAccount from "./pages/SetupAccount/SetupAccount";
 import ThemeToggle from "./components/ThemeToggle";
 import Accounting from "./pages/Accounting/Accounting";
 import Invoicing from "./pages/Invoicing/Invoicing";
-import Productivity from "./pages/Productivity/Productivity";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SideNav from "./components/SideNav";
 import ErrorPage from "./pages/ErrorPage/ErrorPage";
@@ -50,7 +48,6 @@ import { canAccessPath, hasModuleAccess, isRentOnlyUser } from "./utils/moduleAc
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", Icon: Category, module: "dashboard" },
   { to: "/rent", label: "Rent", Icon: WalletMoney, module: "rent" },
-  { to: "/productivity", label: "Productivity", Icon: TaskSquare, module: "productivity" },
   { to: "/accounting", label: "Accounting", Icon: WalletMoney, module: "accounting" },
   { to: "/invoicing", label: "Invoicing", Icon: ReceiptItem, module: "invoicing" },
   { to: "/bookings", label: "Appointments", Icon: CalendarTick, module: "bookings" },
@@ -65,7 +62,6 @@ const NAV_ITEMS = [
 
 const MOBILE_TAB_ITEMS = [
   { to: "/dashboard", label: "Home", Icon: Category, module: "dashboard" },
-  { to: "/productivity", label: "Focus", Icon: TaskSquare, module: "productivity" },
   { to: "/accounting", label: "Finance", Icon: WalletMoney, module: "accounting" },
   { to: "/bookings", label: "Appointments", Icon: CalendarTick, module: "bookings" },
   { to: "/settings", label: "Settings", Icon: Setting2, module: "settings" },
@@ -180,8 +176,6 @@ const getTopbarLabel = (pathname) => {
       return "Accounting";
     case "/rent":
       return "Rent";
-    case "/productivity":
-      return "Productivity";
     case "/bookings":
       return "Appointments";
     case "/invoicing":
@@ -550,8 +544,6 @@ const getTitleForPath = (pathname) => {
       return "Rent | Dev";
     case "/invoicing":
       return "Invoicing | Dev";
-    case "/productivity":
-      return "Productivity | Dev";
     case "/settings":
       return "Settings | Dev";
     case "/audit-logs":
@@ -746,14 +738,7 @@ function App() {
             </ShellPage>
           }
         />
-        <Route
-          path="/productivity"
-          element={
-            <ShellPage theme={theme} onToggleTheme={handleToggleTheme}>
-              <Productivity />
-            </ShellPage>
-          }
-        />
+        <Route path="/productivity" element={<Navigate to="/dashboard" replace />} />
         <Route
           path="/settings"
           element={

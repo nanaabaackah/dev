@@ -401,7 +401,7 @@ const UserControl = () => {
 
     const userLabel = String(user.fullName || "").trim() || user.email;
     const confirmed = window.confirm(
-      `Remove ${userLabel}? This permanently deletes the user account and any productivity history tied to it. This cannot be undone.`
+      `Remove ${userLabel}? This permanently deletes the user account. This cannot be undone.`
     );
     if (!confirmed) {
       return;
@@ -428,17 +428,11 @@ const UserControl = () => {
         throw new Error(getApiErrorMessage(payload, "Unable to remove user"));
       }
 
-      const deletedEntries = Number(payload?.deletedProductivityEntries || 0);
-      const deletedTodos = Number(payload?.deletedProductivityTodos || 0);
       const deletedUserEmail =
         payload && typeof payload === "object" && typeof payload.deletedUserEmail === "string"
           ? payload.deletedUserEmail
           : user.email;
-      const cleanupSummary =
-        deletedEntries || deletedTodos
-          ? ` Removed ${deletedEntries} productivity entr${deletedEntries === 1 ? "y" : "ies"} and ${deletedTodos} todo${deletedTodos === 1 ? "" : "s"}.`
-          : "";
-      const successMessage = `${deletedUserEmail} removed.${cleanupSummary}`;
+      const successMessage = `${deletedUserEmail} removed.`;
 
       setSavedUserPasswords((prev) => {
         const next = { ...prev };

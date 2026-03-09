@@ -1273,10 +1273,28 @@ const resolveTableName = async (poolInstance, tableNames) => {
 
 const DEFAULT_ORG_NAME = process.env.DEFAULT_ORG_NAME ?? "bynana-portfolio";
 const DEFAULT_ORG_SLUG = process.env.DEFAULT_ORG_SLUG ?? "bynana-portfolio";
+const BY_NANA_ORG_NAME = process.env.BY_NANA_ORG_NAME ?? "By Nana";
+const BY_NANA_ORG_SLUG = process.env.BY_NANA_ORG_SLUG ?? "bynana";
 const REEBS_ORG_NAME = process.env.REEBS_ORG_NAME ?? "Reebs";
 const REEBS_ORG_SLUG = process.env.REEBS_ORG_SLUG ?? "reebs";
 const FAAKO_ORG_NAME = process.env.FAAKO_ORG_NAME ?? "Faako";
 const FAAKO_ORG_SLUG = process.env.FAAKO_ORG_SLUG ?? "faako";
+const normalizeOrganizationSlug = (value) => String(value || "").trim().toLowerCase();
+const parseOrganizationSlugList = (value) =>
+  String(value || "")
+    .split(/[,\s;]+/)
+    .map((item) => normalizeOrganizationSlug(item))
+    .filter(Boolean);
+const FAAKO_CHILD_ORG_SLUGS = Array.from(
+  new Set(
+    [
+      ...parseOrganizationSlugList(process.env.FAAKO_CHILD_ORG_SLUGS),
+      normalizeOrganizationSlug(BY_NANA_ORG_SLUG),
+      normalizeOrganizationSlug(DEFAULT_ORG_SLUG),
+      normalizeOrganizationSlug(REEBS_ORG_SLUG),
+    ].filter(Boolean)
+  )
+).filter((slug) => slug !== normalizeOrganizationSlug(FAAKO_ORG_SLUG));
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ?? "dev@nanaabaackah.com";
 const ALERT_COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS ?? 15 * 60 * 1000);
 const WEEKLY_REPORT_EMAIL_ENABLED = parseEnvBoolean(
@@ -1355,7 +1373,6 @@ const RENT_MODULE_KEY = "rent";
 const ACCESS_MODULE_KEYS = [
   "dashboard",
   "rent",
-  "productivity",
   "accounting",
   "invoicing",
   "bookings",
@@ -1651,7 +1668,13 @@ const normalizeModuleName = (value) =>
 const extractAllowedModules = (permissions) => {
   const modules = permissions?.modules;
   if (!Array.isArray(modules)) return [];
-  return Array.from(new Set(modules.map((item) => normalizeModuleName(item)).filter(Boolean)));
+  return Array.from(
+    new Set(
+      modules
+        .map((item) => normalizeModuleName(item))
+        .filter((module) => module && ACCESS_MODULE_SET.has(module))
+    )
+  );
 };
 
 const serializeUserRole = (role) => ({
@@ -2357,24 +2380,7 @@ const formatReportNumber = (value) => {
 
 const buildWeeklyReportSnapshot = async () => {
   const now = new Date();
-  const portfolioOrgs = await prisma.organization.count();
-
-  const reebsMetrics = await fetchErpMetrics(reebsPool, "Reebs");
-
-  let faakoOrgs = 0;
-  let faakoStatus = faakoPool ? "ok" : "not_configured";
-  if (faakoPool) {
-    try {
-      const orgsResult = await resolveTableCount(faakoPool, ["Organization", "organization"]);
-      faakoOrgs = orgsResult.count ?? 0;
-      if (!orgsResult.qualifiedName) {
-        faakoStatus = "error";
-      }
-    } catch (error) {
-      console.warn("Faako KPI query failed", error);
-      faakoStatus = "error";
-    }
-  }
+  const organizationSummary = await buildOrganizationHierarchySummary();
 
   let siteStatusPayload = null;
   try {
@@ -2442,19 +2448,12 @@ const buildWeeklyReportSnapshot = async () => {
     generatedAt: now.toISOString(),
     schedule: weeklyReportScheduleLabel,
     recipients: weeklyReportRecipients,
-    totals: {
-      organizations: portfolioOrgs + reebsMetrics.organizations + faakoOrgs,
-    },
-    portfolio: {
-      organizations: portfolioOrgs,
-    },
-    reebs: {
-      organizations: reebsMetrics.organizations,
-      status: reebsMetrics.status,
-    },
-    faako: {
-      organizations: faakoOrgs,
-      status: faakoStatus,
+    organizations: {
+      total: organizationSummary.totalOrganizations,
+      topLevel: organizationSummary.topLevelOrganizationsCount,
+      childOrganizations: organizationSummary.childOrganizationsCount,
+      hierarchy: organizationSummary.organizations,
+      statuses: organizationSummary.organizationStatusBreakdown,
     },
     appointments: {
       today: appointmentsToday,
@@ -2475,13 +2474,19 @@ const buildWeeklyReportSnapshot = async () => {
 };
 
 const buildWeeklyReportEmailContent = (snapshot) => {
+  const organizationRows = Array.isArray(snapshot.organizations?.hierarchy)
+    ? snapshot.organizations.hierarchy.map((organization) => [
+        `${organization.name} manages`,
+        formatReportNumber(organization.managedOrganizationsCount ?? 0),
+      ])
+    : [];
   const rows = [
     ["Generated at", snapshot.generatedAt],
     ["Schedule", snapshot.schedule],
-    ["Total organizations", formatReportNumber(snapshot.totals.organizations)],
-    ["By Nana organizations", formatReportNumber(snapshot.portfolio.organizations)],
-    ["Reebs organizations", formatReportNumber(snapshot.reebs.organizations)],
-    ["Faako organizations", formatReportNumber(snapshot.faako.organizations)],
+    ["Total organizations", formatReportNumber(snapshot.organizations?.total ?? 0)],
+    ["Top-level org groups", formatReportNumber(snapshot.organizations?.topLevel ?? 0)],
+    ["Child organizations", formatReportNumber(snapshot.organizations?.childOrganizations ?? 0)],
+    ...organizationRows,
     ["Appointments today", formatReportNumber(snapshot.appointments.today)],
     ["Upcoming appointments (7 days)", formatReportNumber(snapshot.appointments.next7Days)],
     ["Pending payables", formatReportNumber(snapshot.accounting.pendingPayables)],
@@ -3306,11 +3311,8 @@ app.patch("/api/users/me", authMiddleware, async (req, res) => {
 });
 
 app.get("/api/organizations", authMiddleware, requireAdmin, async (req, res) => {
-  const organizations = await prisma.organization.findMany({
-    select: { id: true, name: true, slug: true, status: true },
-    orderBy: { name: "asc" },
-  });
-  res.json(organizations);
+  const organizationSummary = await buildOrganizationHierarchySummary();
+  res.json(organizationSummary.organizations);
 });
 
 app.get("/api/roles", authMiddleware, async (req, res) => {
@@ -3856,27 +3858,23 @@ app.post("/api/alerts/test-email", authMiddleware, requireAdmin, async (req, res
 });
 
 app.get("/api/dashboard", authMiddleware, async (req, res) => {
-  const portfolioOrgs = await prisma.organization.count();
+  const organizationSummary = await buildOrganizationHierarchySummary();
 
-  let reebsOrgs = 0;
   let reebsStatus = reebsPool ? "ok" : "not_configured";
 
   if (reebsPool) {
     try {
-      const orgsResult = await reebsPool.query('SELECT COUNT(*)::int AS count FROM "organization"');
-      reebsOrgs = orgsResult.rows[0]?.count ?? 0;
+      await reebsPool.query('SELECT COUNT(*)::int AS count FROM "organization"');
     } catch (error) {
       console.warn("Reebs KPI query failed", error);
       reebsStatus = "error";
     }
   }
 
-  let faakoOrgs = 0;
   let faakoStatus = faakoPool ? "ok" : "not_configured";
   if (faakoPool) {
     try {
       const orgsResult = await resolveTableCount(faakoPool, ["Organization", "organization"]);
-      faakoOrgs = orgsResult.count ?? 0;
       if (!orgsResult.qualifiedName) {
         faakoStatus = "error";
       }
@@ -3885,12 +3883,6 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
       faakoStatus = "error";
     }
   }
-
-  const organizationStatusBreakdown = await prisma.organization.groupBy({
-    by: ["status"],
-    _count: { _all: true },
-    orderBy: { status: "asc" },
-  });
 
   let siteStatusPayload = null;
   let siteStatusCheckedAt = null;
@@ -3907,7 +3899,7 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
 
   const systemEntries = [
     { id: "api", label: "API", status: "ok", note: "Auth + metrics" },
-    { id: "portfolio", label: "By Nana DB", status: "ok", note: "Primary org data" },
+    { id: "portfolio", label: "Primary DB", status: "ok", note: "Core organization data" },
     { id: "reebs", label: "Reebs DB", status: reebsStatus, note: "Operational data" },
     { id: "faako", label: "Faako DB", status: faakoStatus, note: "ERP members" },
   ];
@@ -3921,16 +3913,30 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
 
   maybeSendStatusAlerts(systemEntries, siteOverview);
 
+  const countManagedOrganizationsForSlug = (slug) => {
+    const normalizedSlug = normalizeOrganizationSlug(slug);
+    return (
+      organizationSummary.organizations.find(
+        (organization) => normalizeOrganizationSlug(organization.slug) === normalizedSlug
+      )?.managedOrganizationsCount ?? 0
+    );
+  };
+
   res.json({
-    totalOrganizations: portfolioOrgs + reebsOrgs + faakoOrgs,
+    totalOrganizations: organizationSummary.totalOrganizations,
+    topLevelOrganizations: organizationSummary.topLevelOrganizationsCount,
+    childOrganizations: organizationSummary.childOrganizationsCount,
+    leafOrganizations: organizationSummary.leafOrganizationsCount,
+    organizations: organizationSummary.organizations,
+    organizationHierarchy: organizationSummary.organizationHierarchy,
     portfolio: {
-      organizations: portfolioOrgs,
+      organizations: countManagedOrganizationsForSlug(BY_NANA_ORG_SLUG),
     },
     reebs: {
-      organizations: reebsOrgs,
+      organizations: countManagedOrganizationsForSlug(REEBS_ORG_SLUG),
     },
     faako: {
-      organizations: faakoOrgs,
+      organizations: countManagedOrganizationsForSlug(FAAKO_ORG_SLUG),
     },
     lastSyncedAt: new Date().toISOString(),
     status: {
@@ -3943,10 +3949,7 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
       checkedAt: siteStatusCheckedAt,
       sites: siteStatusPayload,
     },
-    organizationStatusBreakdown: organizationStatusBreakdown.map((group) => ({
-      status: group.status,
-      count: group._count._all,
-    })),
+    organizationStatusBreakdown: organizationSummary.organizationStatusBreakdown,
   });
 });
 
@@ -7099,18 +7102,151 @@ const sumPaidRevenueGhs = async ({ start, end }) => {
   return Number.isFinite(sum) ? sum : 0;
 };
 
-const resolveManagedOrganizationCount = async () => {
-  const portfolioActive = await prisma.organization.count({ where: { status: "ACTIVE" } });
-  const [reebsOrgs, faakoOrgs] = await Promise.all([
-    reebsPool ? resolveTableCount(reebsPool, ["organization", "Organization"]) : null,
-    faakoPool ? resolveTableCount(faakoPool, ["Organization", "organization"]) : null,
-  ]);
+const syncDefaultOrganizationHierarchy = async () => {
+  const faakoSlug = normalizeOrganizationSlug(FAAKO_ORG_SLUG);
+  if (!faakoSlug) {
+    return { parentOrganizationId: null, updatedCount: 0 };
+  }
 
-  return (
-    portfolioActive +
-    (reebsOrgs?.count ?? 0) +
-    (faakoOrgs?.count ?? 0)
+  const organizations = await prisma.organization.findMany({
+    select: {
+      id: true,
+      slug: true,
+      parentOrganizationId: true,
+    },
+  });
+  if (!organizations.length) {
+    return { parentOrganizationId: null, updatedCount: 0 };
+  }
+
+  const faakoOrganization =
+    organizations.find((organization) => normalizeOrganizationSlug(organization.slug) === faakoSlug) ||
+    null;
+  if (!faakoOrganization) {
+    return { parentOrganizationId: null, updatedCount: 0 };
+  }
+
+  let updatedCount = 0;
+
+  if (faakoOrganization.parentOrganizationId !== null) {
+    await prisma.organization.update({
+      where: { id: faakoOrganization.id },
+      data: { parentOrganizationId: null },
+    });
+    updatedCount += 1;
+  }
+
+  for (const organization of organizations) {
+    const slug = normalizeOrganizationSlug(organization.slug);
+    if (!slug || organization.id === faakoOrganization.id) continue;
+    if (!FAAKO_CHILD_ORG_SLUGS.includes(slug)) continue;
+    if (organization.parentOrganizationId === faakoOrganization.id) continue;
+
+    await prisma.organization.update({
+      where: { id: organization.id },
+      data: { parentOrganizationId: faakoOrganization.id },
+    });
+    updatedCount += 1;
+  }
+
+  return {
+    parentOrganizationId: faakoOrganization.id,
+    updatedCount,
+  };
+};
+
+const buildOrganizationHierarchySummary = async () => {
+  await syncDefaultOrganizationHierarchy();
+
+  const rawOrganizations = await prisma.organization.findMany({
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      status: true,
+      parentOrganizationId: true,
+      parentOrganization: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          status: true,
+        },
+      },
+    },
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+  });
+
+  const childOrganizationsByParent = new Map();
+  rawOrganizations.forEach((organization) => {
+    if (!organization.parentOrganizationId) return;
+    const bucket = childOrganizationsByParent.get(organization.parentOrganizationId) || [];
+    bucket.push(organization);
+    childOrganizationsByParent.set(organization.parentOrganizationId, bucket);
+  });
+
+  const organizations = rawOrganizations.map((organization) => {
+    const childOrganizations = (childOrganizationsByParent.get(organization.id) || []).map((child) => ({
+      id: child.id,
+      name: child.name,
+      slug: child.slug,
+      status: child.status,
+      parentOrganizationId: child.parentOrganizationId,
+    }));
+    const childOrganizationsCount = childOrganizations.length;
+
+    return {
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      status: organization.status,
+      parentOrganizationId: organization.parentOrganizationId ?? null,
+      parentOrganizationName: organization.parentOrganization?.name ?? null,
+      parentOrganizationSlug: organization.parentOrganization?.slug ?? null,
+      isTopLevel: organization.parentOrganizationId == null,
+      childOrganizationsCount,
+      managedOrganizationsCount: childOrganizationsCount ? childOrganizationsCount + 1 : 0,
+      childOrganizations,
+    };
+  });
+
+  const organizationStatusCounts = organizations.reduce((counts, organization) => {
+    const key = String(organization.status || "").trim().toLowerCase();
+    if (!key) return counts;
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
+
+  const topLevelOrganizations = organizations.filter((organization) => organization.isTopLevel);
+  const childOrganizationsCount = organizations.filter((organization) => organization.parentOrganizationId).length;
+  const leafOrganizationsCount = organizations.filter(
+    (organization) => (organization.childOrganizationsCount ?? 0) === 0
+  ).length;
+  const totalManagedOrganizations = topLevelOrganizations.reduce(
+    (total, organization) => total + organization.managedOrganizationsCount,
+    0
   );
+
+  return {
+    organizations,
+    organizationHierarchy: topLevelOrganizations,
+    totalOrganizations: organizations.length,
+    topLevelOrganizationsCount: topLevelOrganizations.length,
+    childOrganizationsCount,
+    leafOrganizationsCount,
+    totalManagedOrganizations: totalManagedOrganizations || organizations.length,
+    organizationStatusBreakdown: Object.entries(organizationStatusCounts)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([status, count]) => ({
+        status,
+        count,
+      })),
+  };
+};
+
+const resolveManagedOrganizationCount = async () => {
+  const organizationSummary = await buildOrganizationHierarchySummary();
+  return organizationSummary.totalManagedOrganizations;
 };
 
 const toUtcEndOfDay = (date) =>
@@ -8392,6 +8528,7 @@ app.use((err, req, res, _next) => {
 const ensureDefaults = async () => {
   const organizationDefinitions = [
     { name: DEFAULT_ORG_NAME, slug: DEFAULT_ORG_SLUG, seedAdmin: true },
+    { name: BY_NANA_ORG_NAME, slug: BY_NANA_ORG_SLUG, seedAdmin: false },
     { name: REEBS_ORG_NAME, slug: REEBS_ORG_SLUG, seedAdmin: false },
     { name: FAAKO_ORG_NAME, slug: FAAKO_ORG_SLUG, seedAdmin: false },
   ].filter(
@@ -8423,6 +8560,8 @@ const ensureDefaults = async () => {
   for (const organization of organizations) {
     await ensureSupportedRolesForOrganization(prisma, organization.id);
   }
+
+  await syncDefaultOrganizationHierarchy();
 
   for (const { organization } of seededOrganizations) {
     const legacyRoles = await prisma.role.findMany({

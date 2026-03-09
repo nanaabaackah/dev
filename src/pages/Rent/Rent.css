@@ -280,6 +280,15 @@
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
+.rent-form-row > .form-field {
+  min-width: 0;
+}
+
+.rent-form-row .input,
+.rent-form-row select.input {
+  min-width: 0;
+}
+
 .rent-form-actions {
   display: flex;
   flex-wrap: wrap;
@@ -573,6 +582,10 @@
 @media (max-width: 900px) {
   .rent-table {
     min-width: 760px;
+  }
+
+  .rent-form-row {
+    grid-template-columns: 1fr;
   }
 
   .rent-payment-main-row {

@@ -1,27 +1,45 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import useDashboardData from "../../hooks/useDashboardData";
 import { formatDateTime } from "../../utils/formatters";
 import { formatStatusLabel, getStatusTone, isHealthyStatus } from "../../utils/status";
 
 const INCIDENT_NOTES_KEY = "dev-incident-notes";
+const INCIDENT_NOTE_DISMISSED_KEY = "dev-incident-note-dismissed";
+
+const readStoredJsonArray = (storageKey) => {
+  if (typeof window === "undefined") return [];
+  const stored = localStorage.getItem(storageKey);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const toIncidentKey = (item) => `${item.id}:${item.status}`;
+
+const buildAutomaticIncidentNote = (item) => {
+  const statusLabel = formatStatusLabel(item.status).toLowerCase();
+  return `${item.label} marked ${statusLabel}. ${item.note}`;
+};
 
 const SystemHealth = () => {
   const { data: kpiData, loading, isRefreshing, error, reload } = useDashboardData();
   const [noteDraft, setNoteDraft] = useState("");
-  const [incidentNotes, setIncidentNotes] = useState(() => {
-    if (typeof window === "undefined") return [];
-    const stored = localStorage.getItem(INCIDENT_NOTES_KEY);
-    if (!stored) return [];
-    try {
-      return JSON.parse(stored);
-    } catch {
-      return [];
-    }
-  });
+  const [incidentNotes, setIncidentNotes] = useState(() => readStoredJsonArray(INCIDENT_NOTES_KEY));
+  const [dismissedIncidentKeys, setDismissedIncidentKeys] = useState(() =>
+    readStoredJsonArray(INCIDENT_NOTE_DISMISSED_KEY)
+  );
 
   useEffect(() => {
     localStorage.setItem(INCIDENT_NOTES_KEY, JSON.stringify(incidentNotes));
   }, [incidentNotes]);
+
+  useEffect(() => {
+    localStorage.setItem(INCIDENT_NOTE_DISMISSED_KEY, JSON.stringify(dismissedIncidentKeys));
+  }, [dismissedIncidentKeys]);
 
   const renderStatusPill = (status) => {
     const tone = getStatusTone(status);
@@ -37,64 +55,119 @@ const SystemHealth = () => {
   };
 
   const systemStatus = kpiData?.status ?? {};
-  const siteStatuses = kpiData?.siteStatus?.sites ?? [];
+  const rawSiteStatuses = kpiData?.siteStatus?.sites;
+  const siteStatuses = useMemo(
+    () => (Array.isArray(rawSiteStatuses) ? rawSiteStatuses : []),
+    [rawSiteStatuses]
+  );
   const lastSyncedLabel = formatDateTime(kpiData?.lastSyncedAt);
   const lastCheckedLabel = kpiData?.siteStatus?.checkedAt
     ? formatDateTime(kpiData.siteStatus.checkedAt)
     : "N/A";
 
-  const systemEntries = [
-    { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
-    {
-      id: "portfolio",
-      label: "By Nana DB",
-      status: systemStatus.portfolioDb,
-      note: "Primary org data",
-    },
-    {
-      id: "reebs",
-      label: "Reebs DB",
-      status: systemStatus.reebsDb,
-      note: "Operational data",
-    },
-    {
-      id: "faako",
-      label: "Faako DB",
-      status: systemStatus.faakoDb,
-      note: "ERP members",
-    },
-  ];
+  const systemEntries = useMemo(
+    () => [
+      { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
+      {
+        id: "portfolio",
+        label: "Primary DB",
+        status: systemStatus.portfolioDb,
+        note: "Core organization data",
+      },
+      {
+        id: "reebs",
+        label: "Reebs DB",
+        status: systemStatus.reebsDb,
+        note: "Operational data",
+      },
+      {
+        id: "faako",
+        label: "Faako DB",
+        status: systemStatus.faakoDb,
+        note: "ERP members",
+      },
+    ],
+    [systemStatus.api, systemStatus.faakoDb, systemStatus.portfolioDb, systemStatus.reebsDb]
+  );
 
-  const siteOverview = siteStatuses.map((site) => {
-    const pages = site.pages ?? [];
-    return {
-      id: site.id,
-      title: site.title,
-      pages,
-      aggregateStatus: getAggregateStatus(pages),
-    };
-  });
+  const siteOverview = useMemo(
+    () =>
+      siteStatuses.map((site) => {
+        const pages = site.pages ?? [];
+        return {
+          id: site.id,
+          title: site.title,
+          pages,
+          aggregateStatus: getAggregateStatus(pages),
+        };
+      }),
+    [siteStatuses]
+  );
 
-  const attentionItems = [
-    ...systemEntries
-      .filter((entry) => entry.status && !isHealthyStatus(entry.status))
-      .map((entry) => ({
-        id: `system-${entry.id}`,
-        label: entry.label,
-        status: entry.status,
-        note: entry.note,
-      })),
-    ...siteOverview
-      .filter(
-        (site) => site.aggregateStatus === "offline" || site.aggregateStatus === "degraded"
-      )
-      .map((site) => ({
-        id: `site-${site.id}`,
-        label: site.title,
-        status: site.aggregateStatus,
-        note: `${site.pages.length} pages tracked`,
-      })),
-  ];
+  const attentionItems = useMemo(
+    () => [
+      ...systemEntries
+        .filter((entry) => entry.status && !isHealthyStatus(entry.status))
+        .map((entry) => ({
+          id: `system-${entry.id}`,
+          label: entry.label,
+          status: entry.status,
+          note: entry.note,
+        })),
+      ...siteOverview
+        .filter(
+          (site) => site.aggregateStatus === "offline" || site.aggregateStatus === "degraded"
+        )
+        .map((site) => ({
+          id: `site-${site.id}`,
+          label: site.title,
+          status: site.aggregateStatus,
+          note: `${site.pages.length} pages tracked`,
+        })),
+    ],
+    [siteOverview, systemEntries]
+  );
+
+  useEffect(() => {
+    const activeIncidentKeys = attentionItems.map(toIncidentKey);
+    setDismissedIncidentKeys((prev) => {
+      const next = prev.filter((incidentKey) => activeIncidentKeys.includes(incidentKey));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [attentionItems]);
+
+  useEffect(() => {
+    if (!attentionItems.length) return;
+
+    setIncidentNotes((prev) => {
+      const existingIncidentKeys = new Set(
+        prev
+          .map((note) => String(note?.incidentKey || "").trim())
+          .filter(Boolean)
+      );
+      const suppressedIncidentKeys = new Set(
+        dismissedIncidentKeys.map((incidentKey) => String(incidentKey || "").trim()).filter(Boolean)
+      );
+      const createdAt = new Date().toISOString();
+      const automaticNotes = attentionItems
+        .filter((item) => {
+          const incidentKey = toIncidentKey(item);
+          return (
+            !existingIncidentKeys.has(incidentKey) &&
+            !suppressedIncidentKeys.has(incidentKey)
+          );
+        })
+        .map((item) => ({
+          id: `incident-${item.id}-${item.status}-${Date.now()}`,
+          text: buildAutomaticIncidentNote(item),
+          createdAt,
+          incidentKey: toIncidentKey(item),
+          kind: "auto",
+        }));
+
+      return automaticNotes.length ? [...automaticNotes, ...prev] : prev;
+    });
+  }, [attentionItems, dismissedIncidentKeys]);
 
   const handleAddNote = (event) => {
     event.preventDefault();
@@ -104,12 +177,14 @@ const SystemHealth = () => {
       id: `${Date.now()}`,
       text: trimmed,
       createdAt: new Date().toISOString(),
+      kind: "manual",
     };
     setIncidentNotes((prev) => [newNote, ...prev]);
     setNoteDraft("");
   };
 
   const handleClearNotes = () => {
+    setDismissedIncidentKeys(attentionItems.map(toIncidentKey));
     setIncidentNotes([]);
   };
 
@@ -221,7 +296,7 @@ const SystemHealth = () => {
                 {attentionItems.length ? (
                   attentionItems.map((item) => (
                     <div className="list-row is-split" key={item.id}>
-                      <div>
+                      <div className="table-cell-stack">
                         <span className="table-strong">{item.label}</span>
                         <span className="muted">{item.note}</span>
                       </div>
@@ -270,7 +345,12 @@ const SystemHealth = () => {
                 {incidentNotes.length ? (
                   incidentNotes.map((note) => (
                     <div className="list-row" key={note.id}>
-                      <span className="table-strong">{note.text}</span>
+                      <div className="table-cell-stack">
+                        <span className="table-strong">{note.text}</span>
+                        {note.kind === "auto" ? (
+                          <span className="muted">Automatic incident note</span>
+                        ) : null}
+                      </div>
                       <span className="muted">{formatDateTime(note.createdAt)}</span>
                     </div>
                   ))

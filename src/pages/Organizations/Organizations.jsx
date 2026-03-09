@@ -6,34 +6,20 @@ import { formatStatusLabel, getStatusTone } from "../../utils/status";
 
 const Organizations = () => {
   const { data: kpiData, loading, isRefreshing, error, reload } = useDashboardData();
-
-  const sources = [
-    {
-      id: "portfolio",
-      label: "By Nana",
-      count: kpiData?.portfolio?.organizations ?? 0,
-      note: "Primary org data",
-    },
-    {
-      id: "reebs",
-      label: "Reebs",
-      count: kpiData?.reebs?.organizations ?? 0,
-      note: "Commerce tenants",
-    },
-    {
-      id: "faako",
-      label: "Faako",
-      count: kpiData?.faako?.organizations ?? 0,
-      note: "ERP workspace",
-    },
-  ];
-
+  const organizations = Array.isArray(kpiData?.organizations) ? kpiData.organizations : [];
   const organizationStatusBreakdown = kpiData?.organizationStatusBreakdown ?? [];
   const lastSyncedLabel = formatDateTime(kpiData?.lastSyncedAt);
-  const totalOrganizations = kpiData?.totalOrganizations ?? "N/A";
+  const totalOrganizations = kpiData?.totalOrganizations ?? 0;
+  const topLevelOrganizations =
+    kpiData?.topLevelOrganizations ?? organizations.filter((item) => item.isTopLevel).length;
+  const childOrganizations =
+    kpiData?.childOrganizations ??
+    organizations.filter((item) => item.parentOrganizationId).length;
 
-  const getStatusCount = (status) =>
-    organizationStatusBreakdown.find((item) => item.status === status)?.count ?? 0;
+  const renderStatusPill = (status) => {
+    const tone = getStatusTone(status);
+    return <span className={`status-pill is-${tone}`}>{formatStatusLabel(status)}</span>;
+  };
 
   const renderStatusCount = (status, count) => {
     const tone = getStatusTone(status);
@@ -41,13 +27,15 @@ const Organizations = () => {
   };
 
   const handleExport = () => {
-    if (!kpiData) return;
-    const rows = [["Section", "Label", "Count"]];
-    sources.forEach((source) => {
-      rows.push(["Source", source.label, source.count]);
-    });
-    organizationStatusBreakdown.forEach((status) => {
-      rows.push(["Status", formatStatusLabel(status.status), status.count ?? 0]);
+    const rows = [["Organization", "Parent", "Child orgs", "Manages", "Status"]];
+    organizations.forEach((organization) => {
+      rows.push([
+        organization.name,
+        organization.parentOrganizationName || "",
+        organization.childOrganizationsCount ?? 0,
+        organization.managedOrganizationsCount ?? 0,
+        formatStatusLabel(organization.status),
+      ]);
     });
     downloadCsv("organizations_summary.csv", rows);
   };
@@ -56,7 +44,7 @@ const Organizations = () => {
     <section className="page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">By Nana coverage</p>
+          <p className="eyebrow">Organization hierarchy</p>
           <h1>Organizations</h1>
           <p className="muted">Last synced {lastSyncedLabel}</p>
         </div>
@@ -98,8 +86,8 @@ const Organizations = () => {
           <div className="panel-grid">
             {[
               { id: "total", label: "Total organizations", value: totalOrganizations },
-              { id: "active", label: "Active orgs", value: getStatusCount("active") },
-              { id: "pending", label: "Pending orgs", value: getStatusCount("pending") },
+              { id: "top-level", label: "Top-level groups", value: topLevelOrganizations },
+              { id: "child", label: "Child organizations", value: childOrganizations },
             ].map((metric) => (
               <article className="panel metric-card" key={metric.id}>
                 <span className="kpi-label">{metric.label}</span>
@@ -112,21 +100,34 @@ const Organizations = () => {
             <article className="panel panel-span-2">
               <div className="panel-header">
                 <div>
-                  <h3>Organization sources</h3>
-                  <p className="muted">Totals by database.</p>
+                  <h3>Organization structure</h3>
+                  <p className="muted">Parent-child hierarchy and managed organization totals.</p>
                 </div>
               </div>
               <div className="data-table">
-                <div className="table-row table-head is-3">
-                  <span>Source</span>
-                  <span>Organizations</span>
-                  <span>Notes</span>
+                <div className="table-row table-head is-5">
+                  <span>Organization</span>
+                  <span>Parent</span>
+                  <span>Child orgs</span>
+                  <span>Manages</span>
+                  <span>Status</span>
                 </div>
-                {sources.map((source) => (
-                  <div className="table-row is-3" key={source.id}>
-                    <span className="table-strong">{source.label}</span>
-                    <span>{source.count}</span>
-                    <span className="muted">{source.note}</span>
+                {organizations.map((organization) => (
+                  <div className="table-row is-5" key={organization.id}>
+                    <div className="table-cell-stack">
+                      <span className="table-strong">{organization.name}</span>
+                      <span className="muted">{organization.slug}</span>
+                      {organization.childOrganizationsCount ? (
+                        <span className="muted">
+                          Children:{" "}
+                          {organization.childOrganizations.map((child) => child.name).join(", ")}
+                        </span>
+                      ) : null}
+                    </div>
+                    <span>{organization.parentOrganizationName || "—"}</span>
+                    <span>{organization.childOrganizationsCount ?? 0}</span>
+                    <span>{organization.managedOrganizationsCount ?? 0}</span>
+                    {renderStatusPill(organization.status)}
                   </div>
                 ))}
               </div>
@@ -136,7 +137,7 @@ const Organizations = () => {
               <div className="panel-header">
                 <div>
                   <h3>Organization statuses</h3>
-                  <p className="muted">Active, pending, suspended.</p>
+                  <p className="muted">Status counts across all organizations.</p>
                 </div>
               </div>
               <div className="list">

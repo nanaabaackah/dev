@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { DocumentDownload, NoteText, ReceiptItem, TaskSquare, Timer1 } from "iconsax-react";
+import { DocumentDownload, NoteText, ReceiptItem } from "iconsax-react";
 import { FiPlus, FiTrash2 } from "react-icons/fi";
 import { buildApiUrl } from "../../api-url";
 import { calculateInvoiceTotals, downloadInvoicePdf } from "../../utils/invoicePdf";
@@ -93,28 +93,6 @@ const buildFutureDate = (offsetDays = 0) => {
   return date.toISOString().slice(0, 10);
 };
 
-const DEFAULT_PRODUCTIVITY_STATE = {
-  entryDate: buildTodayDate(),
-  plannedTasks: "5",
-  completedTasks: "0",
-  deepWorkMinutes: "0",
-  focusBlocks: "0",
-  blockers: "",
-  updatedAt: null,
-};
-
-const DEFAULT_PRODUCTIVITY_SUMMARY = {
-  plannedTasks: 0,
-  completedTasks: 0,
-  deepWorkMinutes: 0,
-  focusBlocks: 0,
-  completionRate: 0,
-  focusScore: 0,
-  streakDays: 0,
-  momentumLabel: "Start a focus block",
-  entriesLogged: 0,
-};
-
 const buildInvoiceFormFromEntry = (entry = null) => ({
   clientName: entry?.organization?.name || "",
   clientEmail: "",
@@ -157,7 +135,6 @@ const Accounting = () => {
   const [actionNotice, setActionNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState("");
-  const [productivityNotice, setProductivityNotice] = useState("");
   const [invoiceComposer, setInvoiceComposer] = useState(null);
   const [invoiceForm, setInvoiceForm] = useState(() => buildInvoiceFormFromEntry());
   const [invoiceError, setInvoiceError] = useState("");
@@ -363,14 +340,6 @@ const Accounting = () => {
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
-
-  useEffect(() => {
-    if (!productivityNotice) return undefined;
-    const timeout = window.setTimeout(() => {
-      setProductivityNotice("");
-    }, 2400);
-    return () => window.clearTimeout(timeout);
-  }, [productivityNotice]);
 
   const summary = useMemo(() => {
     const base = {
@@ -757,8 +726,8 @@ const Accounting = () => {
           <p className="eyebrow">Finance</p>
           <h1>Accounting</h1>
           <p className="muted">
-            Paid services revenue and expenses, pending payables, productivity metrics, and
-            invoice-ready PDFs. Window: {RANGE_LABELS[timeRange] || "Month to date"}.
+            Paid services revenue and expenses, pending payables, and invoice-ready PDFs.
+            Window: {RANGE_LABELS[timeRange] || "Month to date"}.
           </p>
         </div>
         <div className="header-actions">

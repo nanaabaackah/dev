@@ -1,7 +1,6 @@
 /* eslint-disable jsx-a11y/no-noninteractive-element-to-interactive-role */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ReceiptItem, TaskSquare, Timer1 } from "iconsax-react";
 import { FiArrowRight, FiChevronDown } from "react-icons/fi";
 import KPICard from "../../components/KPICard/KPICard";
 import useDashboardData from "../../hooks/useDashboardData";
@@ -101,38 +100,6 @@ const readStoredUser = () => {
 };
 
 const buildTodayDate = () => new Date().toISOString().slice(0, 10);
-
-const DEFAULT_PRODUCTIVITY_STATE = {
-  entryDate: buildTodayDate(),
-  plannedTasks: "5",
-  completedTasks: "0",
-  deepWorkMinutes: "0",
-  focusBlocks: "0",
-  blockers: "",
-  updatedAt: null,
-};
-
-const DEFAULT_PRODUCTIVITY_SUMMARY = {
-  plannedTasks: 0,
-  completedTasks: 0,
-  deepWorkMinutes: 0,
-  focusBlocks: 0,
-  completionRate: 0,
-  focusScore: 0,
-  streakDays: 0,
-  momentumLabel: "Start a focus block",
-  entriesLogged: 0,
-};
-
-const buildProductivityState = (entry) => ({
-  entryDate: entry?.entryDate || buildTodayDate(),
-  plannedTasks: String(entry?.plannedTasks ?? DEFAULT_PRODUCTIVITY_STATE.plannedTasks),
-  completedTasks: String(entry?.completedTasks ?? DEFAULT_PRODUCTIVITY_STATE.completedTasks),
-  deepWorkMinutes: String(entry?.deepWorkMinutes ?? DEFAULT_PRODUCTIVITY_STATE.deepWorkMinutes),
-  focusBlocks: String(entry?.focusBlocks ?? DEFAULT_PRODUCTIVITY_STATE.focusBlocks),
-  blockers: String(entry?.blockers ?? DEFAULT_PRODUCTIVITY_STATE.blockers),
-  updatedAt: entry?.updatedAt ?? null,
-});
 
 const DEFAULT_DAILY_VERSE = {
   status: "idle",
@@ -341,11 +308,6 @@ const Dashboard = () => {
   const [isSlotSaving, setIsSlotSaving] = useState(false);
   const [expandedSites, setExpandedSites] = useState({});
   const [selectedAvailabilityDayKey, setSelectedAvailabilityDayKey] = useState("");
-  const [productivityState, setProductivityState] = useState(() => buildProductivityState());
-  const [productivitySummary, setProductivitySummary] = useState(DEFAULT_PRODUCTIVITY_SUMMARY);
-  const [productivityError, setProductivityError] = useState("");
-  const [productivityNotice, setProductivityNotice] = useState("");
-  const [isProductivitySaving, setIsProductivitySaving] = useState(false);
   const [verseOfDay, setVerseOfDay] = useState(DEFAULT_DAILY_VERSE);
   const [dailyWeather, setDailyWeather] = useState(DEFAULT_DAILY_WEATHER);
   const [briefRefreshTick, setBriefRefreshTick] = useState(0);
@@ -364,10 +326,6 @@ const Dashboard = () => {
   );
   const accountingCacheKey = useMemo(
     () => buildUserScopedCacheKey("dashboard:accounting-summary"),
-    []
-  );
-  const productivityCacheKey = useMemo(
-    () => buildUserScopedCacheKey("dashboard:productivity"),
     []
   );
   const verseCacheKey = useMemo(() => buildUserScopedCacheKey("dashboard:verse"), []);
@@ -628,51 +586,6 @@ const Dashboard = () => {
   }, [loadAccountingSummary]);
 
   useEffect(() => {
-    if (!productivityNotice) return undefined;
-    const timeout = window.setTimeout(() => {
-      setProductivityNotice("");
-    }, 2400);
-    return () => window.clearTimeout(timeout);
-  }, [productivityNotice]);
-
-  const loadProductivity = useCallback(async () => {
-    const token = localStorage.getItem("token");
-    if (!token) return;
-    setProductivityError("");
-
-    try {
-      const query = new URLSearchParams({ range: "14d" });
-      const response = await fetch(buildApiUrl(`/api/productivity/entries?${query.toString()}`), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const payload = await readJsonResponse(response);
-      if (!response.ok) {
-        throw new Error(getApiErrorMessage(payload, "Unable to load productivity data"));
-      }
-
-      setProductivitySummary(payload?.summary || DEFAULT_PRODUCTIVITY_SUMMARY);
-      setProductivityState(buildProductivityState(payload?.activeEntry));
-      writeOfflineCache(productivityCacheKey, {
-        summary: payload?.summary || DEFAULT_PRODUCTIVITY_SUMMARY,
-        activeEntry: payload?.activeEntry || null,
-      });
-    } catch (err) {
-      const cached = readOfflineCache(productivityCacheKey);
-      if (cached?.payload) {
-        setProductivitySummary(cached.payload.summary || DEFAULT_PRODUCTIVITY_SUMMARY);
-        setProductivityState(buildProductivityState(cached.payload.activeEntry));
-        setProductivityError("Offline mode: showing cached productivity data.");
-      } else {
-        setProductivityError(err.message || "Unable to load productivity data");
-      }
-    }
-  }, [productivityCacheKey]);
-
-  useEffect(() => {
-    loadProductivity();
-  }, [loadProductivity]);
-
-  useEffect(() => {
     let isActive = true;
     const token = localStorage.getItem("token");
     if (!token) {
@@ -861,7 +774,6 @@ const Dashboard = () => {
     }
     loadAvailability();
     loadAccountingSummary({ silent: true });
-    loadProductivity();
     setBriefRefreshTick((previous) => previous + 1);
   };
 
@@ -898,6 +810,14 @@ const Dashboard = () => {
   };
 
   const organizationStatusBreakdown = kpiData?.organizationStatusBreakdown ?? [];
+  const organizations = Array.isArray(kpiData?.organizations) ? kpiData.organizations : [];
+  const topLevelOrganizations =
+    kpiData?.topLevelOrganizations ?? organizations.filter((organization) => organization.isTopLevel).length;
+  const childOrganizations =
+    kpiData?.childOrganizations ?? organizations.filter((organization) => organization.parentOrganizationId).length;
+  const organizationManagedSummary = organizations.length
+    ? organizations.map((organization) => `${organization.name} ${organization.managedOrganizationsCount ?? 0}`).join(" | ")
+    : "No organizations tracked";
 
   const siteStatuses = kpiData?.siteStatus?.sites ?? [];
   const systemStatus = kpiData?.status ?? {};
@@ -910,9 +830,9 @@ const Dashboard = () => {
     { id: "api", label: "API", status: systemStatus.api, note: "Auth + metrics" },
     {
       id: "portfolio",
-      label: "By Nana DB",
+      label: "Primary DB",
       status: systemStatus.portfolioDb,
-      note: "Primary org data",
+      note: "Core organization data",
     },
     {
       id: "reebs",
@@ -962,39 +882,6 @@ const Dashboard = () => {
       GHS: accountingSummary.paidRevenue.GHS - accountingSummary.paidExpenses.GHS,
     };
   }, [accountingSummary]);
-  const productivityMetrics = useMemo(() => {
-    const plannedTasks = Math.max(Number(productivityState.plannedTasks) || 0, 0);
-    const completedTasks = Math.max(Number(productivityState.completedTasks) || 0, 0);
-    const deepWorkMinutes = Math.max(Number(productivityState.deepWorkMinutes) || 0, 0);
-    const focusBlocks = Math.max(Number(productivityState.focusBlocks) || 0, 0);
-    const completionRate = plannedTasks ? Math.round((completedTasks / plannedTasks) * 100) : 0;
-    const focusScore = Math.min(
-      100,
-      Math.round(completionRate * 0.5 + Math.min(deepWorkMinutes, 240) * 0.2 + focusBlocks * 8)
-    );
-
-    let momentumLabel = "Start a focus block";
-    if (completionRate >= 80 && deepWorkMinutes >= 90) momentumLabel = "Strong momentum";
-    else if (completionRate >= 60 || deepWorkMinutes >= 60) momentumLabel = "On track";
-
-    return {
-      plannedTasks,
-      completedTasks,
-      deepWorkMinutes,
-      focusBlocks,
-      completionRate,
-      focusScore,
-      momentumLabel,
-    };
-  }, [productivityState]);
-  const productivitySavedLabel = productivityState.updatedAt
-    ? new Date(productivityState.updatedAt).toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      })
-    : "Not saved yet";
   const verseTextLabel =
     verseOfDay.status === "ready" && verseOfDay.text
       ? `"${verseOfDay.text}"`
@@ -1023,68 +910,6 @@ const Dashboard = () => {
     dailyWeather.status === "ready" && Number.isFinite(dailyWeather.feelsLike)
       ? `Feels like ${formatTemperatureValue(dailyWeather.feelsLike, dailyWeather.temperatureUnit)}`
       : dailyWeather.warning || "Current forecast";
-
-  const handleProductivityField = (field, value) => {
-    setProductivityState((prev) => ({
-      ...prev,
-      [field]: value,
-      updatedAt: prev.updatedAt,
-    }));
-  };
-
-  const bumpProductivityMetric = (field, amount) => {
-    setProductivityState((prev) => {
-      const current = Math.max(Number(prev[field]) || 0, 0);
-      return {
-        ...prev,
-        [field]: String(Math.max(current + amount, 0)),
-      };
-    });
-  };
-
-  const handleSaveProductivity = () => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setProductivityError("Missing session. Please sign in again.");
-      return;
-    }
-
-    const payload = {
-      entryDate: productivityState.entryDate || buildTodayDate(),
-      plannedTasks: Number(productivityState.plannedTasks || 0),
-      completedTasks: Number(productivityState.completedTasks || 0),
-      deepWorkMinutes: Number(productivityState.deepWorkMinutes || 0),
-      focusBlocks: Number(productivityState.focusBlocks || 0),
-      blockers: productivityState.blockers,
-    };
-
-    setIsProductivitySaving(true);
-    setProductivityError("");
-
-    fetch(buildApiUrl("/api/productivity/entries"), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-      .then(async (response) => {
-        const result = await readJsonResponse(response);
-        if (!response.ok) {
-          throw new Error(getApiErrorMessage(result, "Unable to save productivity entry"));
-        }
-        setProductivityState(buildProductivityState(result));
-        setProductivityNotice("Productivity tracker saved.");
-        loadProductivity();
-      })
-      .catch((saveError) => {
-        setProductivityError(saveError.message || "Unable to save productivity entry");
-      })
-      .finally(() => {
-        setIsProductivitySaving(false);
-      });
-  };
 
   const attentionItems = [
     ...systemEntries
@@ -1231,152 +1056,6 @@ const Dashboard = () => {
           {error}
         </div>
       ) : null}
-
-      <section
-        className="panel dashboard-productivity dashboard-module-panel dashboard-module-panel--interactive"
-        id="productivity"
-      >
-        <div className="panel-header">
-          <div>
-            <h3>Productivity tracker</h3>
-            <p className="muted">Track daily execution from the dashboard.</p>
-          </div>
-          <div className="dashboard-productivity__header-actions">
-            <span className="status-pill is-info">
-              {productivitySummary.momentumLabel || productivityMetrics.momentumLabel}
-            </span>
-          </div>
-        </div>
-
-        {productivityError ? (
-          <div className="notice is-error" role="alert">
-            {productivityError}
-          </div>
-        ) : null}
-
-        <div className="productivity-grid">
-          <div className="productivity-card">
-            <span className="productivity-card__meta">
-              <TaskSquare size={14} variant="Linear" />
-              Completion
-            </span>
-            <div className="kpi-value">{productivityMetrics.completionRate}%</div>
-            <span className="muted">
-              {productivityMetrics.completedTasks}/{productivityMetrics.plannedTasks} tasks
-            </span>
-          </div>
-          <div className="productivity-card">
-            <span className="productivity-card__meta">
-              <Timer1 size={14} variant="Linear" />
-              Deep work
-            </span>
-            <div className="kpi-value">{productivityMetrics.deepWorkMinutes}m</div>
-            <span className="muted">{productivityMetrics.focusBlocks} blocks</span>
-          </div>
-          <div className="productivity-card">
-            <span className="productivity-card__meta">
-              <ReceiptItem size={14} variant="Linear" />
-              Focus score
-            </span>
-            <div className="kpi-value">{productivityMetrics.focusScore}</div>
-            <span className="muted">
-              {Math.max(productivityMetrics.plannedTasks - productivityMetrics.completedTasks, 0)} left
-            </span>
-          </div>
-        </div>
-
-        <div className="dashboard-productivity__workspace">
-          <div className="dashboard-productivity__fields">
-            <label className="form-field dashboard-productivity__field">
-              <span>Planned</span>
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={productivityState.plannedTasks}
-                onChange={(event) => handleProductivityField("plannedTasks", event.target.value)}
-                aria-label="Planned tasks"
-              />
-            </label>
-            <label className="form-field dashboard-productivity__field">
-              <span>Done</span>
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={productivityState.completedTasks}
-                onChange={(event) => handleProductivityField("completedTasks", event.target.value)}
-                aria-label="Completed tasks"
-              />
-            </label>
-            <label className="form-field dashboard-productivity__field">
-              <span>Focus min</span>
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={productivityState.deepWorkMinutes}
-                onChange={(event) => handleProductivityField("deepWorkMinutes", event.target.value)}
-                aria-label="Deep work minutes"
-              />
-            </label>
-          </div>
-
-          <div className="dashboard-productivity__notes">
-            <label className="form-field">
-              <span>Blockers</span>
-              <textarea
-                className="input"
-                value={productivityState.blockers}
-                onChange={(event) => handleProductivityField("blockers", event.target.value)}
-                placeholder="What is slowing you down?"
-              />
-            </label>
-            <div className="productivity-quick-actions">
-              <button
-                className="button button-ghost"
-                type="button"
-                onClick={() => bumpProductivityMetric("deepWorkMinutes", 25)}
-              >
-                +25m focus
-              </button>
-              <button
-                className="button button-ghost"
-                type="button"
-                onClick={() => bumpProductivityMetric("completedTasks", 1)}
-              >
-                +1 task
-              </button>
-              <button
-                className="button button-ghost"
-                type="button"
-                onClick={() => bumpProductivityMetric("focusBlocks", 1)}
-              >
-                +1 block
-              </button>
-            </div>
-            <div className="dashboard-productivity__save">
-              <button
-                className="button button-primary"
-                type="button"
-                onClick={handleSaveProductivity}
-                disabled={isProductivitySaving}
-              >
-                {isProductivitySaving ? "Saving..." : "Save update"}
-              </button>
-              <span className="muted">Last saved {productivitySavedLabel}</span>
-            </div>
-          </div>
-        </div>
-
-        {productivityNotice ? (
-          <div className="notice is-success" role="status">
-            {productivityNotice}
-          </div>
-        ) : null}
-
-        <ModulePanelLink to="/productivity" label="Open productivity module" />
-      </section>
 
       <section
         className="panel availability-panel dashboard-module-panel dashboard-module-panel--interactive"
@@ -1760,9 +1439,7 @@ const Dashboard = () => {
                 id: "orgs",
                 label: "Organizations",
                 value: kpiData.totalOrganizations,
-                delta: `By Nana ${kpiData.portfolio?.organizations ?? 0} | Reebs ${
-                  kpiData.reebs?.organizations ?? 0
-                } | Faako ${kpiData.faako?.organizations ?? 0}`,
+                delta: organizationManagedSummary,
               },
               {
                 id: "services",
@@ -1811,7 +1488,7 @@ const Dashboard = () => {
                 id: "tracked-organizations",
                 label: "Tracked organizations",
                 value: kpiData.totalOrganizations ?? 0,
-                hint: "By Nana + ERP sources",
+                hint: `${topLevelOrganizations} top-level • ${childOrganizations} child orgs`,
               },
             ].map((insight) => (
               <article className="panel metric-card" key={insight.id}>
@@ -1826,40 +1503,28 @@ const Dashboard = () => {
             <article className="panel panel-span-2">
               <div className="panel-header">
                 <div>
-                  <h3>Data sources</h3>
-                  <p className="muted">By Nana, Reebs, and Faako totals.</p>
+                  <h3>Organization hierarchy</h3>
+                  <p className="muted">Parent-child structure and managed organization counts.</p>
                 </div>
               </div>
               <div className="data-table">
-                <div className="table-row table-head is-3">
-                  <span>Source</span>
-                  <span>Orgs</span>
+                <div className="table-row table-head is-5">
+                  <span>Organization</span>
+                  <span>Parent</span>
+                  <span>Child orgs</span>
+                  <span>Manages</span>
                   <span>Status</span>
                 </div>
-                {[
-                  {
-                    id: "portfolio",
-                    label: "By Nana",
-                    orgs: kpiData.portfolio?.organizations ?? 0,
-                    status: systemStatus.portfolioDb,
-                  },
-                  {
-                    id: "reebs",
-                    label: "Reebs",
-                    orgs: kpiData.reebs?.organizations ?? 0,
-                    status: systemStatus.reebsDb,
-                  },
-                  {
-                    id: "faako",
-                    label: "Faako",
-                    orgs: kpiData.faako?.organizations ?? 0,
-                    status: systemStatus.faakoDb,
-                  },
-                ].map((row) => (
-                  <div className="table-row is-3" key={row.id}>
-                    <span className="table-strong">{row.label}</span>
-                    <span>{row.orgs}</span>
-                    {renderStatusPill(row.status)}
+                {organizations.map((organization) => (
+                  <div className="table-row is-5" key={organization.id}>
+                    <div className="table-cell-stack">
+                      <span className="table-strong">{organization.name}</span>
+                      <span className="muted">{organization.slug}</span>
+                    </div>
+                    <span>{organization.parentOrganizationName || "—"}</span>
+                    <span>{organization.childOrganizationsCount ?? 0}</span>
+                    <span>{organization.managedOrganizationsCount ?? 0}</span>
+                    {renderStatusPill(organization.status)}
                   </div>
                 ))}
               </div>
@@ -1937,7 +1602,7 @@ const Dashboard = () => {
                 {attentionItems.length ? (
                   attentionItems.map((item) => (
                     <div className="list-row is-split" key={item.id}>
-                      <div>
+                      <div className="table-cell-stack">
                         <span className="table-strong">{item.label}</span>
                         <span className="muted">{item.note}</span>
                       </div>

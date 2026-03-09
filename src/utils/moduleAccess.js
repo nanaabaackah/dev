@@ -3,6 +3,21 @@ const normalizeModuleName = (value) =>
     .trim()
     .toLowerCase();
 
+const ACTIVE_MODULE_KEYS = new Set([
+  "dashboard",
+  "rent",
+  "accounting",
+  "invoicing",
+  "bookings",
+  "organizations",
+  "system-health",
+  "reports",
+  "audit-logs",
+  "profile",
+  "settings",
+  "user-control",
+]);
+
 export const getAllowedModules = (user) => {
   const modulesFromRole = user?.role?.permissions?.modules;
   const modulesFromUser = user?.allowedModules;
@@ -12,7 +27,13 @@ export const getAllowedModules = (user) => {
       ? modulesFromUser
       : [];
 
-  return Array.from(new Set(source.map((module) => normalizeModuleName(module)).filter(Boolean)));
+  return Array.from(
+    new Set(
+      source
+        .map((module) => normalizeModuleName(module))
+        .filter((module) => module && ACTIVE_MODULE_KEYS.has(module))
+    )
+  );
 };
 
 export const isModuleRestrictedUser = (user) => getAllowedModules(user).length > 0;
