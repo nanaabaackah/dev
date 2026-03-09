@@ -1,0 +1,72 @@
+{
+  "sourceFile": "/Users/Nana/Library/Mobile Documents/com~apple~CloudDocs/Sakumono%20Regimanuel%20Rent%20Tracker.pdf.pdf",
+  "label": "Sakumono Regimanuel Rent Tracker",
+  "period": {
+    "from": "2023-01",
+    "to": "2025-12"
+  },
+  "notes": [
+    "This file stores the decoded month and amount data extracted from the PDF.",
+    "Use insertablePayments when importing into RentPayment later.",
+    "Months with null recordedAmount had no payment amount shown in the PDF for that month.",
+    "To mirror the current rent tracker behavior, do not insert zero-amount rows for unpaid months."
+  ],
+  "pdfSummary": {
+    "totalAmountOwed": 72000,
+    "totalPaid": 49000,
+    "amountDue": 23000
+  },
+  "monthlyTimeline": [
+    { "month": "2023-01", "paidAt": "2023-01-01", "recordedAmount": null },
+    { "month": "2023-02", "paidAt": "2023-02-01", "recordedAmount": null },
+    { "month": "2023-03", "paidAt": "2023-03-01", "recordedAmount": null },
+    { "month": "2023-04", "paidAt": "2023-04-01", "recordedAmount": null },
+    { "month": "2023-05", "paidAt": "2023-05-01", "recordedAmount": null },
+    { "month": "2023-06", "paidAt": "2023-06-01", "recordedAmount": null },
+    { "month": "2023-07", "paidAt": "2023-07-01", "recordedAmount": null },
+    { "month": "2023-08", "paidAt": "2023-08-01", "recordedAmount": null },
+    { "month": "2023-09", "paidAt": "2023-09-01", "recordedAmount": null },
+    { "month": "2023-10", "paidAt": "2023-10-01", "recordedAmount": null },
+    { "month": "2023-11", "paidAt": "2023-11-01", "recordedAmount": null },
+    { "month": "2023-12", "paidAt": "2023-12-01", "recordedAmount": null },
+    { "month": "2024-01", "paidAt": "2024-01-01", "recordedAmount": null },
+    { "month": "2024-02", "paidAt": "2024-02-01", "recordedAmount": null },
+    { "month": "2024-03", "paidAt": "2024-03-01", "recordedAmount": null },
+    { "month": "2024-04", "paidAt": "2024-04-01", "recordedAmount": null },
+    { "month": "2024-05", "paidAt": "2024-05-01", "recordedAmount": null },
+    { "month": "2024-06", "paidAt": "2024-06-01", "recordedAmount": 2000 },
+    { "month": "2024-07", "paidAt": "2024-07-01", "recordedAmount": 4000 },
+    { "month": "2024-08", "paidAt": "2024-08-01", "recordedAmount": 3000 },
+    { "month": "2024-09", "paidAt": "2024-09-01", "recordedAmount": 3000 },
+    { "month": "2024-10", "paidAt": "2024-10-01", "recordedAmount": 3000 },
+    { "month": "2024-11", "paidAt": "2024-11-01", "recordedAmount": 3000 },
+    { "month": "2024-12", "paidAt": "2024-12-01", "recordedAmount": 4000 },
+    { "month": "2025-01", "paidAt": "2025-01-01", "recordedAmount": null },
+    { "month": "2025-02", "paidAt": "2025-02-01", "recordedAmount": null },
+    { "month": "2025-03", "paidAt": "2025-03-01", "recordedAmount": 5000 },
+    { "month": "2025-04", "paidAt": "2025-04-01", "recordedAmount": null },
+    { "month": "2025-05", "paidAt": "2025-05-01", "recordedAmount": 10000 },
+    { "month": "2025-06", "paidAt": "2025-06-01", "recordedAmount": 2000 },
+    { "month": "2025-07", "paidAt": "2025-07-01", "recordedAmount": 4000 },
+    { "month": "2025-08", "paidAt": "2025-08-01", "recordedAmount": null },
+    { "month": "2025-09", "paidAt": "2025-09-01", "recordedAmount": 4000 },
+    { "month": "2025-10", "paidAt": "2025-10-01", "recordedAmount": null },
+    { "month": "2025-11", "paidAt": "2025-11-01", "recordedAmount": 2000 },
+    { "month": "2025-12", "paidAt": "2025-12-01", "recordedAmount": null }
+  ],
+  "insertablePayments": [
+    { "paidAt": "2024-06-01", "amount": 2000 },
+    { "paidAt": "2024-07-01", "amount": 4000 },
+    { "paidAt": "2024-08-01", "amount": 3000 },
+    { "paidAt": "2024-09-01", "amount": 3000 },
+    { "paidAt": "2024-10-01", "amount": 3000 },
+    { "paidAt": "2024-11-01", "amount": 3000 },
+    { "paidAt": "2024-12-01", "amount": 4000 },
+    { "paidAt": "2025-03-01", "amount": 5000 },
+    { "paidAt": "2025-05-01", "amount": 10000 },
+    { "paidAt": "2025-06-01", "amount": 2000 },
+    { "paidAt": "2025-07-01", "amount": 4000 },
+    { "paidAt": "2025-09-01", "amount": 4000 },
+    { "paidAt": "2025-11-01", "amount": 2000 }
+  ]
+}
