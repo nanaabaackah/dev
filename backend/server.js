@@ -1419,6 +1419,9 @@ const INVOICE_EMAIL_SUPPORT_MESSAGE =
 const INVOICE_EMAIL_CLOSING_NAME =
   String(process.env.INVOICE_EMAIL_CLOSING_NAME || INVOICE_EMAIL_SENDER_NAME).trim() ||
   INVOICE_EMAIL_SENDER_NAME;
+const DEFAULT_EMAIL_SENDER_NAME =
+  String(process.env.EMAIL_SENDER_NAME || DEFAULT_ORG_NAME || INVOICE_EMAIL_SENDER_NAME).trim() ||
+  INVOICE_EMAIL_SENDER_NAME;
 const INVOICE_FROM_EMAIL_RAW =
   process.env.INVOICE_FROM_EMAIL ??
   process.env.ALERT_FROM_EMAIL ??
@@ -1884,7 +1887,19 @@ const buildAlertEmailContent = (changes) => {
   return { text, html };
 };
 
-const sendEmail = async ({ fromEmail, recipients, subject, text, html }) => {
+const sanitizeEmailDisplayName = (value) =>
+  String(value || "")
+    .replace(/[\r\n<>"]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const buildEmailFromHeader = ({ fromEmail, fromName }) => {
+  const email = String(fromEmail || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+  const displayName = sanitizeEmailDisplayName(fromName);
+  return displayName ? `${displayName} <${email}>` : email;
+};
+
+const sendEmail = async ({ fromEmail, fromName, recipients, subject, text, html }) => {
   if (!resend) {
     throw new Error("RESEND_API_KEY is not configured");
   }
@@ -1899,7 +1914,7 @@ const sendEmail = async ({ fromEmail, recipients, subject, text, html }) => {
   }
 
   const result = await resend.emails.send({
-    from: String(fromEmail || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL,
+    from: buildEmailFromHeader({ fromEmail, fromName }),
     to: delivery.deliveryRecipients,
     subject,
     text,
@@ -1939,6 +1954,7 @@ const sendAccountInvitationEmail = async ({ req, user }) => {
     organizationName: user.organization?.name,
   });
   const deliveryTarget = resolveAccountInviteDeliveryTarget(user.email);
+  const fromName = user.organization?.name || DEFAULT_EMAIL_SENDER_NAME;
   const subjectLine = deliveryTarget.wasRerouted ? `[DEV] ${subject}` : subject;
   const textBody = deliveryTarget.wasRerouted
     ? [
@@ -1961,6 +1977,7 @@ const sendAccountInvitationEmail = async ({ req, user }) => {
 
   await sendEmail({
     fromEmail: accountInviteFromEmail,
+    fromName,
     recipients: [deliveryTarget.deliveryRecipient],
     subject: subjectLine,
     text: textBody,
@@ -2234,6 +2251,7 @@ const sendForgotPasswordEmail = async ({ req, user }) => {
     isProduction,
     defaultAdminEmail: DEFAULT_ADMIN_EMAIL,
   });
+  const fromName = user.organization?.name || DEFAULT_EMAIL_SENDER_NAME;
   const subjectLine = deliveryTarget.wasRerouted ? `[DEV] ${subject}` : subject;
   const textBody = deliveryTarget.wasRerouted
     ? [
@@ -2256,6 +2274,7 @@ const sendForgotPasswordEmail = async ({ req, user }) => {
 
   await sendEmail({
     fromEmail: accountInviteFromEmail,
+    fromName,
     recipients: [deliveryTarget.deliveryRecipient],
     subject: subjectLine,
     text: textBody,
@@ -2272,6 +2291,7 @@ const sendForgotPasswordEmail = async ({ req, user }) => {
 const sendAlertEmail = async ({ subject, text, html, recipients }) => {
   const result = await sendEmail({
     fromEmail: alertPreferences.fromEmail,
+    fromName: DEFAULT_EMAIL_SENDER_NAME,
     recipients,
     subject,
     text,
@@ -2533,6 +2553,7 @@ const runWeeklyReportEmail = async () => {
     const { subject, text, html } = buildWeeklyReportEmailContent(snapshot);
     await sendEmail({
       fromEmail: weeklyReportFromEmail,
+      fromName: DEFAULT_EMAIL_SENDER_NAME,
       recipients: weeklyReportRecipients,
       subject,
       text,
@@ -2670,6 +2691,9 @@ const runRentMonthlyTenantUpdates = async () => {
       status: "ACTIVE",
     },
     include: {
+      organization: {
+        select: { name: true },
+      },
       payments: {
         where: {
           paidAt: {
@@ -2705,6 +2729,7 @@ const runRentMonthlyTenantUpdates = async () => {
     try {
       await sendEmail({
         fromEmail: rentMonthlyFromEmail,
+        fromName: tenant.organization?.name || DEFAULT_EMAIL_SENDER_NAME,
         recipients: [tenant.tenantEmail],
         subject,
         text,
@@ -5616,13 +5641,14 @@ app.post("/api/invoices/:id/send", authMiddleware, requireAdmin, async (req, res
     return res.status(400).json({ error: "Invoice has an invalid client email address." });
   }
 
+  const invoiceSenderName = invoice.organization?.name || INVOICE_EMAIL_SENDER_NAME;
   const { subject, text, html } = buildInvoiceEmailContent(invoice, {
-    senderName: INVOICE_EMAIL_SENDER_NAME,
+    senderName: invoiceSenderName,
     headerTagline: INVOICE_EMAIL_HEADER_TAGLINE,
     deliveryLead: INVOICE_EMAIL_DELIVERY_LEAD,
     introMessage: INVOICE_EMAIL_INTRO_MESSAGE,
     supportMessage: INVOICE_EMAIL_SUPPORT_MESSAGE,
-    closingName: INVOICE_EMAIL_CLOSING_NAME,
+    closingName: invoice.organization?.name || INVOICE_EMAIL_CLOSING_NAME,
   });
   const deliveryTarget = resolveInvoiceDeliveryTarget(recipient);
   const subjectLine = deliveryTarget.wasRerouted ? `[DEV] ${subject}` : subject;
@@ -5652,6 +5678,7 @@ app.post("/api/invoices/:id/send", authMiddleware, requireAdmin, async (req, res
   try {
     await sendEmail({
       fromEmail: invoiceFromEmail,
+      fromName: invoiceSenderName,
       recipients: [deliveryTarget.deliveryRecipient],
       subject: subjectLine,
       text: textBody,
