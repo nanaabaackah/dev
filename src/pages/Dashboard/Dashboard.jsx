@@ -972,7 +972,7 @@ const Dashboard = () => {
 
   return (
     <section className="page dashboard">
-      <div className="panel dashboard-hero availability-hero">
+      <div className="dashboard-hero availability-hero">
         <div className="dashboard-hero__intro">
           <p className="eyebrow">Daily brief</p>
           <h1>Welcome Baaba</h1>

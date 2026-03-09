@@ -805,7 +805,7 @@ const Rent = () => {
       ) : null}
 
       {isSingleTenantView ? (
-        <article className="rent-single-tenant-panel">
+        <article className="rent-single-tenant-panel rent-overview-panel">
           <div className="panel-header">
             <div>
               <h3>Tenant overview</h3>
@@ -908,7 +908,7 @@ const Rent = () => {
         </article>
       ) : (
         <>
-          <div className="panel-grid rent-currency-grid">
+          <div className="panel-grid rent-currency-grid rent-overview-grid">
             {currencyTotals.length ? (
               currencyTotals.map(([currency, totals]) => (
                 <article className="panel rent-currency-card" key={currency}>
@@ -940,7 +940,7 @@ const Rent = () => {
             )}
           </div>
 
-          <article className="panel">
+          <article className="panel rent-breakdown-panel">
             <div className="panel-header">
               <div>
                 <h3>Tenant payment breakdown</h3>
@@ -1031,7 +1031,7 @@ const Rent = () => {
 
       {canManageRent ? (
         <>
-          <article className="panel">
+          <article className="panel rent-recent-payments-panel">
             <div className="panel-header">
               <div>
                 <h3>Recent payments</h3>
@@ -1101,7 +1101,7 @@ const Rent = () => {
           </article>
 
           <div className="panel-grid rent-admin-grid">
-            <article className="panel" ref={tenantEditorRef}>
+            <article className="panel rent-tenant-editor-panel" ref={tenantEditorRef}>
             <div className="panel-header">
               <div>
                 <h3>{editingTenantId ? "Edit tenant" : "Add tenant"}</h3>
@@ -1278,7 +1278,7 @@ const Rent = () => {
             </form>
           </article>
 
-          <article className="panel" ref={paymentEditorRef}>
+          <article className="panel rent-payment-editor-panel" ref={paymentEditorRef}>
             <div className="panel-header">
               <div>
                 <h3>{editingPaymentId ? "Edit payment" : "Record payment"}</h3>

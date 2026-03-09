@@ -55,6 +55,7 @@ import {
 } from "./utils/rentAccess.js";
 import { resolveRequestBaseUrl as resolveFrontendBaseUrl } from "./utils/requestBaseUrl.js";
 import { buildInvoiceEmailContent } from "./invoiceEmailTemplate.js";
+import { buildRentMonthlySummaryEmailContent } from "./rentMonthlySummaryEmailTemplate.js";
 
 const parsePositiveInt = (
   value,
@@ -2625,45 +2626,21 @@ const rentMonthlyUpdateState = {
   lastScheduledFor: null,
   lastMonthLabel: null,
   lastSentCount: 0,
+  lastRecipientCount: 0,
 };
 
-const buildRentMonthlyEmailContent = ({ summary, monthLabel }) => {
-  const subject = `Rent monthly update • ${monthLabel}`;
-  const text = [
-    `Hello ${summary.tenantName},`,
-    "",
-    `Here is your rent summary for ${monthLabel}.`,
-    "",
-    `Monthly rent: ${summary.currency} ${Number(summary.monthlyRent || 0).toFixed(2)}`,
-    `Paid this month: ${summary.currency} ${Number(summary.paidThisMonth || 0).toFixed(2)}`,
-    `Expected this month: ${summary.currency} ${Number(summary.expectedThisMonth || 0).toFixed(2)}`,
-    `Outstanding this month: ${summary.currency} ${Number(summary.outstandingThisMonth || 0).toFixed(2)}`,
-    `Total outstanding balance: ${summary.currency} ${Number(summary.outstandingTotal || 0).toFixed(2)}`,
-    "",
-    `Lease start: ${summary.leaseStartDate ? summary.leaseStartDate.slice(0, 10) : "N/A"}`,
-    `Lease end: ${summary.leaseEndDate ? summary.leaseEndDate.slice(0, 10) : "Open-ended"}`,
-    "",
-    "Please contact your landlord if anything looks incorrect.",
-  ].join("\n");
+const resolveRentMonthlySummaryRecipients = (tenant) => {
+  const recipients = [];
+  const seen = new Set();
 
-  const html = `
-    <div style="font-family:Arial,sans-serif;color:#2d2d2d;">
-      <p>Hello ${escapeHtml(summary.tenantName)},</p>
-      <p>Here is your rent summary for <strong>${escapeHtml(monthLabel)}</strong>.</p>
-      <table style="border-collapse:collapse;border:1px solid #d0d0c8;">
-        <tbody>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Monthly rent</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.monthlyRent || 0).toFixed(2)}</td></tr>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Paid this month</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.paidThisMonth || 0).toFixed(2)}</td></tr>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Expected this month</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.expectedThisMonth || 0).toFixed(2)}</td></tr>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Outstanding this month</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.outstandingThisMonth || 0).toFixed(2)}</td></tr>
-          <tr><td style="padding:8px 10px;border:1px solid #d0d0c8;"><strong>Total outstanding balance</strong></td><td style="padding:8px 10px;border:1px solid #d0d0c8;">${escapeHtml(summary.currency)} ${Number(summary.outstandingTotal || 0).toFixed(2)}</td></tr>
-        </tbody>
-      </table>
-      <p style="margin-top:14px;">Please contact your landlord if anything looks incorrect.</p>
-    </div>
-  `.trim();
+  [tenant?.tenantEmail, tenant?.landlordEmail].forEach((value) => {
+    const email = normalizeEmailAddress(value);
+    if (!email || seen.has(email)) return;
+    seen.add(email);
+    recipients.push(email);
+  });
 
-  return { subject, text, html };
+  return recipients;
 };
 
 const runRentMonthlyTenantUpdates = async () => {
@@ -2711,14 +2688,15 @@ const runRentMonthlyTenantUpdates = async () => {
   });
 
   const dueTenants = tenants.filter((tenant) => {
-    const email = normalizeEmailAddress(tenant.tenantEmail);
-    if (!email) return false;
+    const recipients = resolveRentMonthlySummaryRecipients(tenant);
+    if (!recipients.length) return false;
     const lastSummarySentAt = getRentLastSummarySentAt(tenant);
     if (!lastSummarySentAt) return true;
     return lastSummarySentAt.getTime() < monthRange.end.getTime();
   });
 
   let sentCount = 0;
+  let recipientCount = 0;
   const errors = [];
 
   for (const tenant of dueTenants) {
@@ -2726,16 +2704,19 @@ const runRentMonthlyTenantUpdates = async () => {
       monthRange,
       asOfDate: monthRange.end,
     });
-    const { subject, text, html } = buildRentMonthlyEmailContent({
+    const recipients = resolveRentMonthlySummaryRecipients(tenant);
+    if (!recipients.length) continue;
+    const { subject, text, html } = buildRentMonthlySummaryEmailContent({
       summary,
       monthLabel,
+      organizationName: tenant.organization?.name,
     });
 
     try {
       await sendEmail({
         fromEmail: rentMonthlyFromEmail,
         fromName: tenant.organization?.name || DEFAULT_EMAIL_SENDER_NAME,
-        recipients: [tenant.tenantEmail],
+        recipients,
         subject,
         text,
         html,
@@ -2745,10 +2726,11 @@ const runRentMonthlyTenantUpdates = async () => {
         data: buildRentLastSummarySentAtUpdate(),
       });
       sentCount += 1;
+      recipientCount += recipients.length;
     } catch (error) {
       errors.push({
         tenantId: tenant.id,
-        email: tenant.tenantEmail,
+        recipients,
         message: error?.message || "Unknown email failure",
       });
     }
@@ -2757,6 +2739,7 @@ const runRentMonthlyTenantUpdates = async () => {
   rentMonthlyUpdateState.lastRunAt = new Date().toISOString();
   rentMonthlyUpdateState.lastMonthLabel = monthLabel;
   rentMonthlyUpdateState.lastSentCount = sentCount;
+  rentMonthlyUpdateState.lastRecipientCount = recipientCount;
 
   if (errors.length) {
     console.error("Monthly rent update failures", errors);
@@ -2766,6 +2749,7 @@ const runRentMonthlyTenantUpdates = async () => {
     ok: true,
     monthLabel,
     sentCount,
+    recipientCount,
     attempted: dueTenants.length,
     failedCount: errors.length,
     errors,

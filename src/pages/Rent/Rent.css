@@ -580,6 +580,31 @@
 }
 
 @media (max-width: 900px) {
+  .rent-admin-grid {
+    display: contents;
+  }
+
+  .rent-payment-editor-panel {
+    order: 3;
+  }
+
+  .rent-overview-panel,
+  .rent-overview-grid {
+    order: 4;
+  }
+
+  .rent-breakdown-panel {
+    order: 5;
+  }
+
+  .rent-recent-payments-panel {
+    order: 6;
+  }
+
+  .rent-tenant-editor-panel {
+    order: 7;
+  }
+
   .rent-table {
     min-width: 760px;
   }
