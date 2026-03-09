@@ -22,6 +22,10 @@ const loadEnvironmentConfig = () => {
   return runtimeEnvironment;
 };
 
+const isPrismaGenerateCommand = () => process.argv.some((arg) => String(arg).trim() === "generate");
+
+const PLACEHOLDER_DATABASE_URL = "postgresql://placeholder:placeholder@localhost:5432/placeholder";
+
 const resolveDatabaseUrl = () => {
   const environment = loadEnvironmentConfig();
   const runtimeUrl =
@@ -29,8 +33,17 @@ const resolveDatabaseUrl = () => {
       ? process.env.DATABASE_URL_PRODUCTION
       : process.env.DATABASE_URL_DEVELOPMENT;
   const fallbackUrl = process.env.DATABASE_URL;
-  const resolvedUrl = String(runtimeUrl || fallbackUrl || "").trim();
+  const alternateRuntimeUrl =
+    environment === "production"
+      ? process.env.DATABASE_URL_DEVELOPMENT
+      : process.env.DATABASE_URL_PRODUCTION;
+  const resolvedUrl = String(
+    runtimeUrl || fallbackUrl || (isPrismaGenerateCommand() ? alternateRuntimeUrl : "") || ""
+  ).trim();
   if (!resolvedUrl) {
+    if (isPrismaGenerateCommand()) {
+      return PLACEHOLDER_DATABASE_URL;
+    }
     const expectedVar =
       environment === "production" ? "DATABASE_URL_PRODUCTION" : "DATABASE_URL_DEVELOPMENT";
     throw new Error(
