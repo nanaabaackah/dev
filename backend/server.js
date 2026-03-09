@@ -1377,6 +1377,7 @@ const SUPPORTED_ACCESS_ROLE_DEFINITIONS = [
     permissions: { modules: [RENT_MODULE_KEY] },
   },
   {
+    name: "Tenant",
     description: "External user with rent module access only",
     permissions: { modules: [RENT_MODULE_KEY] },
   },
