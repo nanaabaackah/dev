@@ -61,6 +61,7 @@ import {
 import { resolveRequestBaseUrl as resolveFrontendBaseUrl } from "./utils/requestBaseUrl.js";
 import { buildInvoiceEmailContent } from "./invoiceEmailTemplate.js";
 import { buildRentMonthlySummaryEmailContent } from "./rentMonthlySummaryEmailTemplate.js";
+import { buildRentPaymentRecordedEmailContent } from "./rentPaymentRecordedEmailTemplate.js";
 import { buildAccountingScheduledReminderEmailContent } from "./accountingScheduledReminderEmailTemplate.js";
 
 const parsePositiveInt = (
@@ -1836,6 +1837,10 @@ const loadSessionUser = async (payload) => {
 
 const rentMonthlyFromEmail =
   String(RENT_MONTHLY_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+const RENT_EMAIL_SENDER_NAME =
+  String(process.env.RENT_EMAIL_SENDER_NAME || "Regimanuel rent tracker").trim() ||
+  "Regimanuel rent tracker";
+const RENT_REPLY_TO_EMAIL = String(process.env.RENT_REPLY_TO_EMAIL || "").trim();
 const accountingReminderFromEmail =
   String(ACCOUNTING_REMINDER_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
 const accountInviteFromEmail =
@@ -2124,7 +2129,7 @@ const buildEmailFromHeader = ({ fromEmail, fromName }) => {
   return displayName ? `${displayName} <${email}>` : email;
 };
 
-const sendEmail = async ({ fromEmail, fromName, recipients, subject, text, html }) => {
+const sendEmail = async ({ fromEmail, fromName, recipients, subject, text, html, replyTo }) => {
   if (!resend) {
     throw new Error("RESEND_API_KEY is not configured");
   }
@@ -2138,13 +2143,19 @@ const sendEmail = async ({ fromEmail, fromName, recipients, subject, text, html 
     throw new Error("No valid email recipients configured");
   }
 
-  const result = await resend.emails.send({
+  const emailPayload = {
     from: buildEmailFromHeader({ fromEmail, fromName }),
     to: delivery.deliveryRecipients,
     subject,
     text,
     html,
-  });
+  };
+  const normalizedReplyTo = String(replyTo || "").trim();
+  if (EMAIL_PATTERN.test(normalizedReplyTo)) {
+    emailPayload.replyTo = normalizedReplyTo;
+  }
+
+  const result = await resend.emails.send(emailPayload);
 
   if (result?.error) {
     const statusCode = Number.isInteger(Number(result.error?.statusCode))
@@ -3680,6 +3691,91 @@ const resolveRentMonthlySummaryRecipients = (tenant) => {
   return recipients;
 };
 
+const resolveRentReplyToEmail = (tenant) => {
+  if (EMAIL_PATTERN.test(RENT_REPLY_TO_EMAIL)) {
+    return RENT_REPLY_TO_EMAIL;
+  }
+  const landlordEmail = String(tenant?.landlordEmail || "").trim();
+  return EMAIL_PATTERN.test(landlordEmail) ? landlordEmail : "";
+};
+
+const sendRentPaymentRecordedNotification = async ({ tenant, payment }) => {
+  const intendedRecipients = resolveRentMonthlySummaryRecipients(tenant);
+  const recipients = intendedRecipients.length
+    ? intendedRecipients
+    : parseRecipients(DEFAULT_ADMIN_EMAIL);
+
+  if (!recipients.length) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: "No valid payment notification recipients configured.",
+    };
+  }
+  if (!resend) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: "RESEND_API_KEY is not configured.",
+    };
+  }
+  if (!EMAIL_PATTERN.test(rentMonthlyFromEmail)) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: "Invalid rent notification from email configuration.",
+    };
+  }
+
+  const paymentDate =
+    payment?.paidAt instanceof Date ? payment.paidAt : parseDateValue(payment?.paidAt) || new Date();
+  const monthRange = getMonthRangeUtc(paymentDate);
+  const paymentMonthLabel = formatMonthLabel(monthRange);
+  const summary = buildRentTenantSummary(tenant, {
+    monthRange,
+    asOfDate: paymentDate,
+  });
+  const serializedPayment = serializeRentPayment(payment);
+  const { subject, text, html } = buildRentPaymentRecordedEmailContent({
+    summary,
+    payment: serializedPayment,
+    paymentMonthLabel,
+    organizationName: tenant.organization?.name,
+  });
+
+  try {
+    const result = await sendEmail({
+      fromEmail: rentMonthlyFromEmail,
+      fromName: RENT_EMAIL_SENDER_NAME,
+      replyTo: resolveRentReplyToEmail(tenant),
+      recipients,
+      subject,
+      text,
+      html,
+    });
+
+    return {
+      sent: true,
+      skipped: false,
+      intendedRecipients: result.intendedRecipients,
+      deliveryRecipients: result.deliveryRecipients,
+      wasRerouted: result.wasRerouted,
+    };
+  } catch (error) {
+    console.error("Rent payment notification failure", {
+      tenantId: tenant?.id ?? null,
+      paymentId: payment?.id ?? null,
+      recipients,
+      message: error?.message || "Unknown email failure",
+    });
+    return {
+      sent: false,
+      skipped: false,
+      error: error?.message || "Unable to send payment notification",
+    };
+  }
+};
+
 const resolveAccountingReminderRecipientsByOrganization = async (organizationIds) => {
   const normalizedOrganizationIds = Array.from(
     new Set(
@@ -3957,7 +4053,8 @@ const runRentMonthlyTenantUpdates = async ({ ignoreEnabled = false } = {}) => {
     try {
       await sendEmail({
         fromEmail: rentMonthlyFromEmail,
-        fromName: tenant.organization?.name || DEFAULT_EMAIL_SENDER_NAME,
+        fromName: RENT_EMAIL_SENDER_NAME,
+        replyTo: resolveRentReplyToEmail(tenant),
         recipients,
         subject,
         text,
@@ -5862,7 +5959,36 @@ app.post("/api/rent/payments", authMiddleware, requireRentManager, async (req, r
     },
   });
 
-  res.status(201).json(serializeRentPayment(payment));
+  const tenantWithSummary = await prisma.rentTenant.findFirst({
+    where: {
+      ...tenantScopeWhere,
+      id: tenant.id,
+    },
+    include: {
+      organization: {
+        select: { name: true },
+      },
+      payments: {
+        orderBy: [{ paidAt: "desc" }, { id: "desc" }],
+      },
+    },
+  });
+
+  const notification = tenantWithSummary
+    ? await sendRentPaymentRecordedNotification({
+        tenant: tenantWithSummary,
+        payment,
+      })
+    : {
+        sent: false,
+        skipped: true,
+        reason: "Tenant summary unavailable for payment notification.",
+      };
+
+  res.status(201).json({
+    ...serializeRentPayment(payment),
+    notification,
+  });
 });
 
 app.patch("/api/rent/payments/:id", authMiddleware, requireRentManager, async (req, res) => {

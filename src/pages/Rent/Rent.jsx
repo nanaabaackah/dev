@@ -592,7 +592,24 @@ const Rent = () => {
         );
       }
 
-      setPaymentNotice(editingPaymentId ? "Payment updated." : "Payment recorded.");
+      const notificationMessage = (() => {
+        if (editingPaymentId) return "Payment updated.";
+        if (payload?.notification?.sent && payload?.notification?.wasRerouted) {
+          return "Payment recorded. Email notification rerouted to the default admin email in local dev.";
+        }
+        if (payload?.notification?.sent) {
+          return "Payment recorded. Email notification sent.";
+        }
+        if (payload?.notification?.skipped) {
+          return "Payment recorded. Email notification skipped.";
+        }
+        if (payload?.notification?.error) {
+          return "Payment recorded. Email notification could not be sent.";
+        }
+        return "Payment recorded.";
+      })();
+
+      setPaymentNotice(notificationMessage);
       setEditingPaymentId(null);
       setIsPaymentDetailsOpen(false);
       setPaymentForm({
