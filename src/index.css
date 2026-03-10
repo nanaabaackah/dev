@@ -1693,6 +1693,7 @@ body.nav-open .mobile-tabbar {
   display: grid;
   gap: 0.35rem;
   font-size: 0.9rem;
+  min-width: 0;
 }
 
 .form-field span {
@@ -1713,6 +1714,8 @@ body.nav-open .mobile-tabbar {
 
 .input {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--ink);
@@ -1720,11 +1723,23 @@ body.nav-open .mobile-tabbar {
   min-height: 2.62rem;
   border-radius: 10px;
   font-size: 0.95rem;
+  font: inherit;
+  line-height: 1.25;
   outline: none;
+  display: block;
 }
 
 select.input {
   height: 2.62rem;
+}
+
+.input[type="date"],
+.input[type="month"],
+.input[type="time"],
+.input[type="datetime-local"] {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
 }
 
 textarea.input {
@@ -1735,6 +1750,52 @@ textarea.input {
 .input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+@supports (-webkit-touch-callout: none) {
+  .input[type="date"],
+  .input[type="month"],
+  .input[type="time"],
+  .input[type="datetime-local"] {
+    height: auto;
+    min-height: 2.8rem;
+    padding-block: 0.72rem;
+  }
+
+  .input[type="date"]::-webkit-date-and-time-value,
+  .input[type="month"]::-webkit-date-and-time-value,
+  .input[type="time"]::-webkit-date-and-time-value,
+  .input[type="datetime-local"]::-webkit-date-and-time-value {
+    min-height: 1.25em;
+    width: 100%;
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .input[type="date"]::-webkit-datetime-edit,
+  .input[type="month"]::-webkit-datetime-edit,
+  .input[type="time"]::-webkit-datetime-edit,
+  .input[type="datetime-local"]::-webkit-datetime-edit {
+    padding: 0;
+    min-height: 1.25em;
+  }
+
+  .input[type="date"]::-webkit-datetime-edit-fields-wrapper,
+  .input[type="month"]::-webkit-datetime-edit-fields-wrapper,
+  .input[type="time"]::-webkit-datetime-edit-fields-wrapper,
+  .input[type="datetime-local"]::-webkit-datetime-edit-fields-wrapper {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .input[type="date"]::-webkit-calendar-picker-indicator,
+  .input[type="month"]::-webkit-calendar-picker-indicator,
+  .input[type="time"]::-webkit-calendar-picker-indicator,
+  .input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    margin: 0;
+  }
 }
 
 .password-input-inline {
