@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { DocumentDownload } from "iconsax-react";
-import { FiMail, FiPlus, FiTrash2 } from "react-icons/fi";
+import { FiDownload, FiMail, FiPlus, FiTrash2 } from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import { buildApiUrl } from "../../api-url";
 import { getApiErrorMessage, readJsonResponse } from "../../utils/http";
+import { buildInvoiceNotes } from "../../utils/invoiceNotes";
 import { calculateInvoiceTotals, downloadInvoicePdf } from "../../utils/invoicePdf";
 
 const INVOICE_STATUS_OPTIONS = [
@@ -200,7 +200,7 @@ const buildInvoiceForm = ({ organizationId = "", invoice = null } = {}) => ({
   clientName: invoice?.clientName || "",
   clientEmail: invoice?.clientEmail || "",
   clientAddress: invoice?.clientAddress || "",
-  notes: invoice?.notes || "",
+  notes: typeof invoice?.notes === "string" && invoice.notes.trim() ? invoice.notes : buildInvoiceNotes(),
   taxRate: invoice?.taxRate !== undefined ? String(invoice.taxRate) : "0",
   discount: invoice?.discount !== undefined ? String(invoice.discount) : "0",
   lineItems:
@@ -957,7 +957,7 @@ const Invoicing = () => {
                       }}
                       disabled={isPdfDownloading}
                     >
-                      <DocumentDownload size={14} variant="Linear" aria-hidden="true" />
+                      <FiDownload size={14} aria-hidden="true" />
                     </button>
                   </div>
                 </div>
@@ -1172,7 +1172,7 @@ const Invoicing = () => {
                       type="button"
                       onClick={() => handleDownloadPdf(selectedInvoice)}
                     >
-                      <DocumentDownload size={16} variant="Linear" aria-hidden="true" />
+                      <FiDownload size={16} aria-hidden="true" />
                       <span>Download PDF</span>
                     </button>
                   </div>

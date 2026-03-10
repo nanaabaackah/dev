@@ -695,7 +695,10 @@ const Rent = () => {
   const totalOutstandingLabel = useMemo(
     () =>
       formatCurrencySummary(
-        currencyTotals.map(([currency, totals]) => [currency, totals?.outstandingTotal ?? 0])
+        currencyTotals.map(([currency, totals]) => [
+          currency,
+          totals?.outstandingYear ?? totals?.outstandingTotal ?? 0,
+        ])
       ),
     [currencyTotals]
   );
@@ -763,7 +766,7 @@ const Rent = () => {
           <div className="kpi-value">{dashboard?.month?.label || "Current month"}</div>
         </article>
         <article className="panel metric-card">
-          <span className="kpi-label">Total outstanding</span>
+          <span className="kpi-label">Year-end outstanding</span>
           <div className="kpi-value">{totalOutstandingLabel}</div>
         </article>
         <article className="panel metric-card">
@@ -915,8 +918,13 @@ const Rent = () => {
                 <strong>{formatAmount(singleTenant.outstandingThisMonth, singleTenant.currency)}</strong>
               </div>
               <div className="rent-single-tenant-summary-item">
-                <span>Total outstanding</span>
-                <strong>{formatAmount(singleTenant.outstandingTotal, singleTenant.currency)}</strong>
+                <span>Year-end outstanding</span>
+                <strong>
+                  {formatAmount(
+                    singleTenant.outstandingYear ?? singleTenant.outstandingTotal,
+                    singleTenant.currency
+                  )}
+                </strong>
               </div>
             </div>
 
@@ -965,8 +973,8 @@ const Rent = () => {
                       <dd>{formatAmount(totals.outstandingThisMonth, currency)}</dd>
                     </div>
                     <div>
-                      <dt>Total outstanding</dt>
-                      <dd>{formatAmount(totals.outstandingTotal, currency)}</dd>
+                      <dt>Year-end outstanding</dt>
+                      <dd>{formatAmount(totals.outstandingYear ?? totals.outstandingTotal, currency)}</dd>
                     </div>
                   </dl>
                 </article>
@@ -997,7 +1005,7 @@ const Rent = () => {
                       <th>Monthly rent</th>
                       <th>Paid this month</th>
                       <th>Outstanding this month</th>
-                      <th>Total outstanding</th>
+                      <th>Year-end outstanding</th>
                       <th>Last payment</th>
                       <th>Last monthly update</th>
                       {canManageRent ? <th className="rent-table__actions-column">Remove</th> : null}
@@ -1024,7 +1032,12 @@ const Rent = () => {
                         <td>{formatAmount(tenant.monthlyRent, tenant.currency)}</td>
                         <td>{formatAmount(tenant.paidThisMonth, tenant.currency)}</td>
                         <td>{formatAmount(tenant.outstandingThisMonth, tenant.currency)}</td>
-                        <td>{formatAmount(tenant.outstandingTotal, tenant.currency)}</td>
+                        <td>
+                          {formatAmount(
+                            tenant.outstandingYear ?? tenant.outstandingTotal,
+                            tenant.currency
+                          )}
+                        </td>
                         <td>{formatDate(tenant.lastPaymentAt)}</td>
                         <td>{formatDate(tenant.lastMonthlySummaryAt)}</td>
                         {canManageRent ? (

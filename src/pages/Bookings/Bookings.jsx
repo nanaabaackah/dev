@@ -392,7 +392,7 @@ const Bookings = () => {
               <span className="spinner" aria-hidden="true" />
               <span>Loading appointments...</span>
             </div>
-          ) : (
+          ) : upcomingBookings.length ? (
             <div className="data-table bookings-table">
               <div className="table-row table-head is-7">
                 <span>Client</span>
@@ -403,41 +403,51 @@ const Bookings = () => {
                 <span>Status</span>
                 <span>Source</span>
               </div>
-              {upcomingBookings.length ? (
-                upcomingBookings.map((booking) => {
-                  const statusConfig = STATUS_MAP[booking.status] || STATUS_MAP.TENTATIVE;
-                  const holidayLabels = getHolidayLabelsForDate(new Date(booking.startAt));
-                  const safeMeetingLink = getSafeExternalUrl(booking.meetingLink);
-                  return (
-                    <div className="table-row is-7" key={booking.id}>
-                      <span className="table-strong">
-                        {booking.attendeeName || booking.attendeeEmail || "Customer"}
-                      </span>
-                      <span>{booking.title}</span>
-                      <span>
-                        <span>{formatDateTime(booking.startAt)}</span>
-                        {holidayLabels.length ? (
-                          <span className="bookings-holiday-label">{holidayLabels.join(" • ")}</span>
-                        ) : null}
-                      </span>
-                      <span>{formatDuration(booking.startAt, booking.endAt)}</span>
-                      <span>
-                        {safeMeetingLink ? (
-                          <a href={safeMeetingLink} target="_blank" rel="noreferrer">
-                            Meeting link
-                          </a>
-                        ) : (
-                          booking.location || settings.defaultLocation || "TBD"
-                        )}
-                      </span>
-                      <span className={`status-pill is-${statusConfig.tone}`}>{statusConfig.label}</span>
-                      <span>{SOURCE_LABELS[booking.source] || booking.source}</span>
-                    </div>
-                  );
-                })
-              ) : (
-                <p className="muted">No appointments yet.</p>
-              )}
+              {upcomingBookings.map((booking) => {
+                const statusConfig = STATUS_MAP[booking.status] || STATUS_MAP.TENTATIVE;
+                const holidayLabels = getHolidayLabelsForDate(new Date(booking.startAt));
+                const safeMeetingLink = getSafeExternalUrl(booking.meetingLink);
+                return (
+                  <div className="table-row is-7" key={booking.id}>
+                    <span className="table-strong">
+                      {booking.attendeeName || booking.attendeeEmail || "Customer"}
+                    </span>
+                    <span>{booking.title}</span>
+                    <span>
+                      <span>{formatDateTime(booking.startAt)}</span>
+                      {holidayLabels.length ? (
+                        <span className="bookings-holiday-label">{holidayLabels.join(" • ")}</span>
+                      ) : null}
+                    </span>
+                    <span>{formatDuration(booking.startAt, booking.endAt)}</span>
+                    <span>
+                      {safeMeetingLink ? (
+                        <a href={safeMeetingLink} target="_blank" rel="noreferrer">
+                          Meeting link
+                        </a>
+                      ) : (
+                        booking.location || settings.defaultLocation || "TBD"
+                      )}
+                    </span>
+                    <span className={`status-pill is-${statusConfig.tone}`}>{statusConfig.label}</span>
+                    <span>{SOURCE_LABELS[booking.source] || booking.source}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="bookings-empty-state">
+              <span className={`status-pill is-${hasBookingLink ? "success" : "warning"}`}>
+                {hasBookingLink ? "Appointment link ready" : "Add your appointment link"}
+              </span>
+              <div>
+                <span className="table-strong">No upcoming appointments yet</span>
+                <p className="muted">
+                  {hasBookingLink
+                    ? "New bookings will appear here as soon as someone picks a time."
+                    : "Add your appointment link below so new bookings have a place to land."}
+                </p>
+              </div>
             </div>
           )}
         </article>

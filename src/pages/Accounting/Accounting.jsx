@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { DocumentDownload, NoteText, ReceiptItem } from "iconsax-react";
 import { FiPlus, FiTrash2 } from "react-icons/fi";
 import { buildApiUrl } from "../../api-url";
+import { buildInvoiceNotes } from "../../utils/invoiceNotes";
 import { calculateInvoiceTotals, downloadInvoicePdf } from "../../utils/invoicePdf";
 
 const RANGE_OPTIONS = [
@@ -102,7 +103,7 @@ const buildInvoiceFormFromEntry = (entry = null) => ({
   currency: entry?.currency || "CAD",
   taxRate: "0",
   discount: "0",
-  notes: entry?.detail || "Thank you for your business.",
+  notes: buildInvoiceNotes(entry?.detail || ""),
   lineItems: [
     {
       id: createLineItemId(),
@@ -656,19 +657,33 @@ const Accounting = () => {
     const invoiceLabel = entry.invoiceNumber ? `Invoice ${entry.invoiceNumber}` : null;
     const organizationLabel = entry.organization?.name ? `Org: ${entry.organization.name}` : null;
     const canManage = entry.source === "MANUAL";
+    const openEntryEditor = () => {
+      if (!canManage) return;
+      handleEditEntry(entry);
+    };
+    const serviceContent = (
+      <>
+        <span className="table-strong">{entry.serviceName}</span>
+        <span className="muted">
+          {[entry.detail, cadenceLabel, invoiceLabel].filter(Boolean).join(" • ") || "—"}
+        </span>
+        {organizationLabel ? <span className="muted">{organizationLabel}</span> : null}
+      </>
+    );
+
     return (
       <div
         className={`table-row is-7${openActionId === entry.id ? " is-menu-open" : ""}`}
         key={entry.id}
       >
         <span className="table-strong">{entry.id}</span>
-        <div>
-          <div className="table-strong">{entry.serviceName}</div>
-          <div className="muted">
-            {[entry.detail, cadenceLabel, invoiceLabel].filter(Boolean).join(" • ") || "—"}
-          </div>
-          {organizationLabel ? <div className="muted">{organizationLabel}</div> : null}
-        </div>
+        {canManage ? (
+          <button className="accounting-entry-link" type="button" onClick={openEntryEditor}>
+            {serviceContent}
+          </button>
+        ) : (
+          <div className="accounting-entry-link is-static">{serviceContent}</div>
+        )}
         <span>{entry.type}</span>
         <div>
           <div className="table-strong">{formatDate(resolveEntryDate(entry))}</div>

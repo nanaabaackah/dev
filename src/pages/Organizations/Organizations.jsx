@@ -41,7 +41,7 @@ const Organizations = () => {
   };
 
   return (
-    <section className="page">
+    <section className="page organizations-page">
       <header className="page-header">
         <div>
           <p className="eyebrow">Organization hierarchy</p>
@@ -96,7 +96,7 @@ const Organizations = () => {
             ))}
           </div>
 
-          <div className="dashboard-grid">
+          <div className="dashboard-grid organizations-grid">
             <article className="panel panel-span-2">
               <div className="panel-header">
                 <div>

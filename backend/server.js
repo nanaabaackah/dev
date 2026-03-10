@@ -49,6 +49,11 @@ import {
   resolveSingleEmailDeliveryTarget,
 } from "./utils/emailDelivery.js";
 import {
+  normalizeSmsRecipient,
+  parseSmsRecipients,
+  resolveSmsDeliveryRecipients,
+} from "./utils/smsDelivery.js";
+import {
   buildRentTenantWhereForUser,
   getManagedLandlordEmail,
   isRentManagerUser,
@@ -56,6 +61,7 @@ import {
 import { resolveRequestBaseUrl as resolveFrontendBaseUrl } from "./utils/requestBaseUrl.js";
 import { buildInvoiceEmailContent } from "./invoiceEmailTemplate.js";
 import { buildRentMonthlySummaryEmailContent } from "./rentMonthlySummaryEmailTemplate.js";
+import { buildAccountingScheduledReminderEmailContent } from "./accountingScheduledReminderEmailTemplate.js";
 
 const parsePositiveInt = (
   value,
@@ -1298,6 +1304,16 @@ const FAAKO_CHILD_ORG_SLUGS = Array.from(
 ).filter((slug) => slug !== normalizeOrganizationSlug(FAAKO_ORG_SLUG));
 const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ?? "dev@nanaabaackah.com";
 const ALERT_COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS ?? 15 * 60 * 1000);
+const SMS_NOTIFICATIONS_AVAILABLE = parseEnvBoolean(
+  process.env.SMS_NOTIFICATIONS_AVAILABLE,
+  false
+);
+const ALERT_SMS_ENABLED = parseEnvBoolean(process.env.ALERT_SMS_ENABLED, false);
+const ALERT_SMS_RECIPIENTS_RAW = process.env.ALERT_SMS_RECIPIENTS ?? "";
+const SMS_ALLOW_NON_PRODUCTION = parseEnvBoolean(process.env.SMS_ALLOW_NON_PRODUCTION, false);
+const TWILIO_ACCOUNT_SID = String(process.env.TWILIO_ACCOUNT_SID || "").trim();
+const TWILIO_AUTH_TOKEN = String(process.env.TWILIO_AUTH_TOKEN || "").trim();
+const TWILIO_PHONE_NUMBER = normalizeSmsRecipient(process.env.TWILIO_PHONE_NUMBER);
 const WEEKLY_REPORT_EMAIL_ENABLED = parseEnvBoolean(
   process.env.WEEKLY_REPORT_EMAIL_ENABLED,
   true
@@ -1357,6 +1373,14 @@ const RENT_MONTHLY_EMAIL_HOUR_UTC = parsePositiveInt(
     max: 23,
   }
 );
+const RENT_MONTHLY_EMAIL_DAY_UTC = parsePositiveInt(
+  process.env.RENT_MONTHLY_EMAIL_DAY_UTC ?? process.env.RENT_QUARTERLY_EMAIL_DAY_UTC,
+  1,
+  {
+    min: 1,
+    max: 28,
+  }
+);
 const RENT_MONTHLY_EMAIL_MINUTE_UTC = parsePositiveInt(
   process.env.RENT_MONTHLY_EMAIL_MINUTE_UTC ?? process.env.RENT_QUARTERLY_EMAIL_MINUTE_UTC,
   0,
@@ -1368,6 +1392,38 @@ const RENT_MONTHLY_EMAIL_MINUTE_UTC = parsePositiveInt(
 const RENT_MONTHLY_FROM_EMAIL_RAW =
   process.env.RENT_MONTHLY_FROM_EMAIL ??
   process.env.RENT_QUARTERLY_FROM_EMAIL ??
+  process.env.ALERT_FROM_EMAIL ??
+  DEFAULT_ADMIN_EMAIL;
+const ACCOUNTING_REMINDER_EMAIL_ENABLED = parseEnvBoolean(
+  process.env.ACCOUNTING_REMINDER_EMAIL_ENABLED,
+  true
+);
+const ACCOUNTING_REMINDER_EMAIL_HOUR_UTC = parsePositiveInt(
+  process.env.ACCOUNTING_REMINDER_EMAIL_HOUR_UTC,
+  9,
+  {
+    min: 0,
+    max: 23,
+  }
+);
+const ACCOUNTING_REMINDER_EMAIL_MINUTE_UTC = parsePositiveInt(
+  process.env.ACCOUNTING_REMINDER_EMAIL_MINUTE_UTC,
+  0,
+  {
+    min: 0,
+    max: 59,
+  }
+);
+const ACCOUNTING_REMINDER_DAYS_BEFORE_DUE = parsePositiveInt(
+  process.env.ACCOUNTING_REMINDER_DAYS_BEFORE_DUE,
+  2,
+  {
+    min: 1,
+    max: 30,
+  }
+);
+const ACCOUNTING_REMINDER_FROM_EMAIL_RAW =
+  process.env.ACCOUNTING_REMINDER_FROM_EMAIL ??
   process.env.ALERT_FROM_EMAIL ??
   DEFAULT_ADMIN_EMAIL;
 const RENT_MODULE_KEY = "rent";
@@ -1780,15 +1836,12 @@ const loadSessionUser = async (payload) => {
 
 const rentMonthlyFromEmail =
   String(RENT_MONTHLY_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
+const accountingReminderFromEmail =
+  String(ACCOUNTING_REMINDER_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
 const accountInviteFromEmail =
   String(ACCOUNT_INVITE_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
 const invoiceFromEmail =
   String(INVOICE_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
-
-const rentMonthlyScheduleLabel = `Daily at ${String(RENT_MONTHLY_EMAIL_HOUR_UTC).padStart(
-  2,
-  "0"
-)}:${String(RENT_MONTHLY_EMAIL_MINUTE_UTC).padStart(2, "0")} UTC`;
 
 const globalAdminEmailSet = new Set(
   parseRecipients(process.env.GLOBAL_ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAIL).map((email) =>
@@ -1823,46 +1876,185 @@ const weeklyReportRecipients = (() => {
 const weeklyReportFromEmail =
   String(WEEKLY_REPORT_FROM_EMAIL_RAW || DEFAULT_ADMIN_EMAIL).trim() || DEFAULT_ADMIN_EMAIL;
 
-const weeklyReportScheduleLabel = `Every ${
-  WEEKDAY_LABELS[WEEKLY_REPORT_DAY_UTC]
-} at ${String(WEEKLY_REPORT_HOUR_UTC).padStart(2, "0")}:${String(
-  WEEKLY_REPORT_MINUTE_UTC
-).padStart(2, "0")} UTC`;
+const REPORT_SCHEDULE_TYPES = {
+  DAILY: "daily",
+  WEEKLY: "weekly",
+  MONTHLY: "monthly",
+  REMINDER: "reminder",
+};
+const ALERT_PREFERENCES_KEY = "global";
+
+const formatUtcTimeLabel = (hourUtc, minuteUtc) =>
+  `${String(hourUtc).padStart(2, "0")}:${String(minuteUtc).padStart(2, "0")} UTC`;
+
+const formatDailyScheduleLabel = ({ hourUtc, minuteUtc }) =>
+  `Daily at ${formatUtcTimeLabel(hourUtc, minuteUtc)}`;
+
+const formatWeeklyScheduleLabel = ({ weekdayUtc, hourUtc, minuteUtc }) =>
+  `Every ${WEEKDAY_LABELS[weekdayUtc] ?? "Monday"} at ${formatUtcTimeLabel(hourUtc, minuteUtc)}`;
+
+const formatMonthlyScheduleLabel = ({ monthDayUtc, hourUtc, minuteUtc }) =>
+  `Monthly on day ${monthDayUtc} at ${formatUtcTimeLabel(hourUtc, minuteUtc)}`;
+
+const formatReminderScheduleLabel = ({ hourUtc, minuteUtc, daysBeforeDue }) =>
+  `Daily at ${formatUtcTimeLabel(hourUtc, minuteUtc)} (${daysBeforeDue} days before due date)`;
 
 const normalizeAlertPreferences = (input = {}, base = {}) => {
   const emailRecipients = parseRecipients(
     input.emailRecipients ?? base.emailRecipients ?? DEFAULT_ADMIN_EMAIL
   );
+  const smsRecipients = SMS_NOTIFICATIONS_AVAILABLE
+    ? parseSmsRecipients(input.smsRecipients ?? base.smsRecipients ?? "")
+    : [];
   return {
     emailEnabled: coerceBoolean(input.emailEnabled, base.emailEnabled ?? false),
+    smsEnabled: SMS_NOTIFICATIONS_AVAILABLE
+      ? coerceBoolean(input.smsEnabled, base.smsEnabled ?? false)
+      : false,
     notifyOffline: coerceBoolean(input.notifyOffline, base.notifyOffline ?? true),
     notifyDegraded: coerceBoolean(input.notifyDegraded, base.notifyDegraded ?? true),
     emailRecipients: emailRecipients.length ? emailRecipients : parseRecipients(DEFAULT_ADMIN_EMAIL),
+    smsRecipients,
     fromEmail: String(input.fromEmail ?? base.fromEmail ?? DEFAULT_ADMIN_EMAIL).trim(),
   };
 };
 
-const serializeAlertPreferences = (prefs, lastEmailSentAt = null) => ({
+const serializeAlertPreferences = (prefs, lastEmailSentAt = null, lastSmsSentAt = null) => ({
   emailEnabled: prefs.emailEnabled,
+  smsEnabled: prefs.smsEnabled,
+  smsAvailable: SMS_NOTIFICATIONS_AVAILABLE,
+  storageMode: alertPreferencesStorageMode,
   notifyOffline: prefs.notifyOffline,
   notifyDegraded: prefs.notifyDegraded,
   emailRecipients: prefs.emailRecipients.join(", "),
+  smsRecipients: prefs.smsRecipients.join(", "),
   fromEmail: prefs.fromEmail,
   lastEmailSentAt,
+  lastSmsSentAt,
 });
 
 let alertPreferences = normalizeAlertPreferences({
   emailEnabled: coerceBoolean(process.env.ALERT_EMAIL_ENABLED, false),
+  smsEnabled: SMS_NOTIFICATIONS_AVAILABLE && ALERT_SMS_ENABLED,
   notifyOffline: coerceBoolean(process.env.ALERT_NOTIFY_OFFLINE, true),
   notifyDegraded: coerceBoolean(process.env.ALERT_NOTIFY_DEGRADED, true),
   emailRecipients: process.env.ALERT_EMAIL_RECIPIENTS ?? DEFAULT_ADMIN_EMAIL,
+  smsRecipients: ALERT_SMS_RECIPIENTS_RAW,
   fromEmail: process.env.ALERT_FROM_EMAIL ?? DEFAULT_ADMIN_EMAIL,
 });
+let alertPreferencesLoadedFromStore = false;
+let hasWarnedAboutMissingAlertPreferenceTable = false;
+let alertPreferencesStorageMode = "memory";
 
 const alertState = {
   snapshot: {},
   lastSentAt: {},
   lastEmailSentAt: null,
+  lastSmsSentAt: null,
+};
+
+const isMissingAlertPreferenceTableError = (error) => {
+  const message = String(error?.message || "");
+  return (
+    error?.code === "P2021" ||
+    error?.code === "P2022" ||
+    message.includes('"AlertPreference"') ||
+    message.includes("alertPreference")
+  );
+};
+
+const isAlertPreferenceFallbackPersistenceError = (error) =>
+  isMissingAlertPreferenceTableError(error) ||
+  isPrismaErrorInstance(error, "PrismaClientValidationError");
+
+const warnMissingAlertPreferenceTable = () => {
+  if (hasWarnedAboutMissingAlertPreferenceTable) return;
+  hasWarnedAboutMissingAlertPreferenceTable = true;
+  console.warn("Alert preference table missing. Falling back to in-memory alert settings.");
+};
+
+const buildAlertPreferencePersistenceData = (prefs) => ({
+  emailEnabled: prefs.emailEnabled,
+  smsEnabled: prefs.smsEnabled,
+  notifyOffline: prefs.notifyOffline,
+  notifyDegraded: prefs.notifyDegraded,
+  emailRecipients: prefs.emailRecipients.join(", "),
+  smsRecipients: prefs.smsRecipients.join(", "),
+  fromEmail: prefs.fromEmail || null,
+});
+
+const hasAlertPreferenceModel = () =>
+  Boolean(
+    prisma?.alertPreference &&
+      typeof prisma.alertPreference.findUnique === "function" &&
+      typeof prisma.alertPreference.upsert === "function"
+  );
+
+const loadPersistedAlertPreferences = async ({ force = false } = {}) => {
+  if (alertPreferencesLoadedFromStore && !force) {
+    return alertPreferences;
+  }
+
+  if (!hasAlertPreferenceModel()) {
+    warnMissingAlertPreferenceTable();
+    alertPreferencesLoadedFromStore = true;
+    alertPreferencesStorageMode = "memory";
+    return alertPreferences;
+  }
+
+  try {
+    const storedPreferences = await prisma.alertPreference.findUnique({
+      where: { key: ALERT_PREFERENCES_KEY },
+    });
+    if (storedPreferences) {
+      alertPreferences = normalizeAlertPreferences(storedPreferences, alertPreferences);
+    }
+    alertPreferencesLoadedFromStore = true;
+    alertPreferencesStorageMode = "database";
+    return alertPreferences;
+  } catch (error) {
+    if (isMissingAlertPreferenceTableError(error)) {
+      warnMissingAlertPreferenceTable();
+      alertPreferencesLoadedFromStore = true;
+      alertPreferencesStorageMode = "memory";
+      return alertPreferences;
+    }
+    throw error;
+  }
+};
+
+const savePersistedAlertPreferences = async (input = {}) => {
+  alertPreferences = normalizeAlertPreferences(input, alertPreferences);
+
+  if (!hasAlertPreferenceModel()) {
+    warnMissingAlertPreferenceTable();
+    alertPreferencesLoadedFromStore = true;
+    alertPreferencesStorageMode = "memory";
+    return alertPreferences;
+  }
+
+  try {
+    const storedPreferences = await prisma.alertPreference.upsert({
+      where: { key: ALERT_PREFERENCES_KEY },
+      update: buildAlertPreferencePersistenceData(alertPreferences),
+      create: {
+        key: ALERT_PREFERENCES_KEY,
+        ...buildAlertPreferencePersistenceData(alertPreferences),
+      },
+    });
+    alertPreferences = normalizeAlertPreferences(storedPreferences, alertPreferences);
+    alertPreferencesLoadedFromStore = true;
+    alertPreferencesStorageMode = "database";
+    return alertPreferences;
+  } catch (error) {
+    if (isAlertPreferenceFallbackPersistenceError(error)) {
+      warnMissingAlertPreferenceTable();
+      alertPreferencesLoadedFromStore = true;
+      alertPreferencesStorageMode = "memory";
+      return alertPreferences;
+    }
+    throw error;
+  }
 };
 
 const getAlertLevel = (status) => {
@@ -1909,6 +2101,15 @@ const buildAlertEmailContent = (changes) => {
     .join("");
   const html = `<p><strong>Dev KPI alert</strong></p><ul>${htmlList}</ul><p>Generated at ${new Date().toISOString()}</p>`;
   return { text, html };
+};
+
+const buildAlertSmsContent = (changes) => {
+  const summary = changes
+    .slice(0, 3)
+    .map((change) => `${change.label}: ${String(change.status || "").toUpperCase()}`)
+    .join("; ");
+  const remainder = changes.length > 3 ? ` +${changes.length - 3} more` : "";
+  return `Dev KPI alert (${changes.length}): ${summary}${remainder}`.trim();
 };
 
 const sanitizeEmailDisplayName = (value) =>
@@ -1959,6 +2160,79 @@ const sendEmail = async ({ fromEmail, fromName, recipients, subject, text, html 
     intendedRecipients: delivery.intendedRecipients,
     deliveryRecipients: delivery.deliveryRecipients,
     wasRerouted: delivery.wasRerouted,
+  };
+};
+
+const sendSms = async ({ recipients, body }) => {
+  if (!SMS_NOTIFICATIONS_AVAILABLE) {
+    throw new Error("SMS notifications are currently disabled");
+  }
+  const delivery = resolveSmsDeliveryRecipients({
+    recipients,
+    parseRecipients: parseSmsRecipients,
+    isProduction,
+    allowNonProduction: SMS_ALLOW_NON_PRODUCTION,
+  });
+
+  if (!delivery.intendedRecipients.length) {
+    throw new Error("No valid SMS recipients configured");
+  }
+
+  if (delivery.wasSimulated) {
+    console.info("SMS delivery simulated outside production", {
+      intendedRecipients: delivery.intendedRecipients,
+      body,
+    });
+    return {
+      intendedRecipients: delivery.intendedRecipients,
+      deliveryRecipients: [],
+      wasSimulated: true,
+      results: [],
+    };
+  }
+
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+    throw new Error("Twilio SMS is not fully configured");
+  }
+
+  const authorization = `Basic ${Buffer.from(
+    `${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`
+  ).toString("base64")}`;
+  const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+
+  const results = [];
+  for (const recipient of delivery.deliveryRecipients) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: authorization,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: recipient,
+        From: TWILIO_PHONE_NUMBER,
+        Body: body,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(payload?.message || "Twilio SMS request failed");
+      error.statusCode = response.status;
+      throw error;
+    }
+    results.push({
+      sid: payload?.sid ?? null,
+      to: payload?.to ?? recipient,
+      status: payload?.status ?? null,
+    });
+  }
+
+  return {
+    intendedRecipients: delivery.intendedRecipients,
+    deliveryRecipients: delivery.deliveryRecipients,
+    wasSimulated: false,
+    results,
   };
 };
 
@@ -2325,6 +2599,15 @@ const sendAlertEmail = async ({ subject, text, html, recipients }) => {
   return result;
 };
 
+const sendAlertSms = async ({ body, recipients }) => {
+  const result = await sendSms({
+    recipients,
+    body,
+  });
+  alertState.lastSmsSentAt = new Date().toISOString();
+  return result;
+};
+
 const maybeSendStatusAlerts = (systemEntries, siteOverview) => {
   const entries = buildAlertEntries(systemEntries, siteOverview);
   const nextSnapshot = {};
@@ -2345,24 +2628,40 @@ const maybeSendStatusAlerts = (systemEntries, siteOverview) => {
 
   alertState.snapshot = nextSnapshot;
 
-  if (!alertPreferences.emailEnabled || !changes.length) return;
-  if (!alertPreferences.emailRecipients.length) {
-    console.warn("Alert email recipients missing; skipping email.");
-    return;
-  }
+  if (!changes.length) return;
 
   const { text, html } = buildAlertEmailContent(changes);
   const subject = `Dev KPI alert (${changes.length})`;
-  sendAlertEmail({ subject, text, html, recipients: alertPreferences.emailRecipients }).catch(
-    (error) => {
-      console.error("Alert email failed", error);
+  if (alertPreferences.emailEnabled) {
+    if (!alertPreferences.emailRecipients.length) {
+      console.warn("Alert email recipients missing; skipping email.");
+    } else {
+      sendAlertEmail({ subject, text, html, recipients: alertPreferences.emailRecipients }).catch(
+        (error) => {
+          console.error("Alert email failed", error);
+        }
+      );
     }
-  );
+  }
+
+  if (alertPreferences.smsEnabled) {
+    if (!alertPreferences.smsRecipients.length) {
+      console.warn("Alert SMS recipients missing; skipping SMS.");
+    } else {
+      sendAlertSms({
+        body: buildAlertSmsContent(changes),
+        recipients: alertPreferences.smsRecipients,
+      }).catch((error) => {
+        console.error("Alert SMS failed", error);
+      });
+    }
+  }
 };
 
 const weeklyReportState = {
   lastSentAt: null,
   lastScheduledFor: null,
+  timeoutId: null,
 };
 
 const escapeHtml = (value) =>
@@ -2373,6 +2672,8 @@ const escapeHtml = (value) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
+const escapeHtmlWithLineBreaks = (value) => escapeHtml(value).replace(/\n/g, "<br />");
+
 const formatReportNumber = (value) => {
   const amount = Number(value ?? 0);
   if (!Number.isFinite(amount)) return "0";
@@ -2382,6 +2683,7 @@ const formatReportNumber = (value) => {
 const buildWeeklyReportSnapshot = async () => {
   const now = new Date();
   const organizationSummary = await buildOrganizationHierarchySummary();
+  const weeklySchedule = await getResolvedReportSchedule(REPORT_KEYS.WEEKLY_KPI);
 
   let siteStatusPayload = null;
   try {
@@ -2447,7 +2749,7 @@ const buildWeeklyReportSnapshot = async () => {
 
   return {
     generatedAt: now.toISOString(),
-    schedule: weeklyReportScheduleLabel,
+    schedule: formatWeeklyScheduleLabel(weeklySchedule),
     recipients: weeklyReportRecipients,
     organizations: {
       total: organizationSummary.totalOrganizations,
@@ -2474,42 +2776,74 @@ const buildWeeklyReportSnapshot = async () => {
   };
 };
 
-const buildWeeklyReportEmailContent = (snapshot) => {
-  const organizationRows = Array.isArray(snapshot.organizations?.hierarchy)
-    ? snapshot.organizations.hierarchy.map((organization) => [
-        `${organization.name} manages`,
-        formatReportNumber(organization.managedOrganizationsCount ?? 0),
-      ])
-    : [];
+const buildWeeklyReportEmailContent = (snapshot, templateOptions = {}, contentOptions = {}) => {
+  const subjectPrefix =
+    String(templateOptions?.subjectPrefix || "Weekly KPI rollup").trim() || "Weekly KPI rollup";
+  const heading =
+    String(templateOptions?.heading || "Dev KPI weekly report").trim() ||
+    "Dev KPI weekly report";
+  const introText = String(templateOptions?.introText || "").trim();
+  const footerText = String(templateOptions?.footerText || "").trim();
   const rows = [
     ["Generated at", snapshot.generatedAt],
     ["Schedule", snapshot.schedule],
-    ["Total organizations", formatReportNumber(snapshot.organizations?.total ?? 0)],
-    ["Top-level org groups", formatReportNumber(snapshot.organizations?.topLevel ?? 0)],
-    ["Child organizations", formatReportNumber(snapshot.organizations?.childOrganizations ?? 0)],
-    ...organizationRows,
-    ["Appointments today", formatReportNumber(snapshot.appointments.today)],
-    ["Upcoming appointments (7 days)", formatReportNumber(snapshot.appointments.next7Days)],
-    ["Pending payables", formatReportNumber(snapshot.accounting.pendingPayables)],
-    ["Overdue payables", formatReportNumber(snapshot.accounting.overduePayables)],
-    [
-      "Paid revenue (GHS, last 7 days)",
-      Number(snapshot.accounting.paidRevenueGhsLast7Days || 0).toFixed(2),
-    ],
-    [
-      "Site health",
-      `${snapshot.siteHealth.onlineSites}/${snapshot.siteHealth.totalSites} online • ${snapshot.siteHealth.degradedSites} degraded • ${snapshot.siteHealth.offlineSites} offline`,
-    ],
   ];
 
+  if (contentOptions.organizations !== false) {
+    rows.push(
+      ["Total organizations", formatReportNumber(snapshot.organizations?.total ?? 0)],
+      ["Top-level org groups", formatReportNumber(snapshot.organizations?.topLevel ?? 0)],
+      ["Child organizations", formatReportNumber(snapshot.organizations?.childOrganizations ?? 0)]
+    );
+    if (Array.isArray(snapshot.organizations?.hierarchy)) {
+      snapshot.organizations.hierarchy.forEach((organization) => {
+        rows.push([
+          `${organization.name} manages`,
+          formatReportNumber(organization.managedOrganizationsCount ?? 0),
+        ]);
+      });
+    }
+  }
+
+  if (contentOptions.appointments !== false) {
+    rows.push(
+      ["Appointments today", formatReportNumber(snapshot.appointments.today)],
+      ["Upcoming appointments (7 days)", formatReportNumber(snapshot.appointments.next7Days)]
+    );
+  }
+
+  if (contentOptions.accounting !== false) {
+    rows.push(
+      ["Pending payables", formatReportNumber(snapshot.accounting.pendingPayables)],
+      ["Overdue payables", formatReportNumber(snapshot.accounting.overduePayables)],
+      [
+        "Paid revenue (GHS, last 7 days)",
+        Number(snapshot.accounting.paidRevenueGhsLast7Days || 0).toFixed(2),
+      ]
+    );
+  }
+
+  if (contentOptions.siteHealth !== false) {
+    rows.push([
+      "Site health",
+      `${snapshot.siteHealth.onlineSites}/${snapshot.siteHealth.totalSites} online • ${snapshot.siteHealth.degradedSites} degraded • ${snapshot.siteHealth.offlineSites} offline`,
+    ]);
+  }
+
   const text = [
-    "Dev KPI weekly report",
+    heading,
     `Recipients: ${snapshot.recipients.join(", ")}`,
+    introText ? "" : null,
+    introText || null,
     "",
     ...rows.map(([label, value]) => `${label}: ${value}`),
+    footerText ? "" : null,
+    footerText || null,
     "",
     `Generated at ${snapshot.generatedAt}`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const htmlRows = rows
     .map(
@@ -2524,39 +2858,74 @@ const buildWeeklyReportEmailContent = (snapshot) => {
 
   const html = `
     <div style="font-family:Arial,sans-serif;color:#2d2d2d;">
-      <p><strong>Dev KPI weekly report</strong></p>
+      <p><strong>${escapeHtml(heading)}</strong></p>
       <p>Recipients: ${escapeHtml(snapshot.recipients.join(", "))}</p>
+      ${
+        introText
+          ? `<p>${escapeHtmlWithLineBreaks(introText)}</p>`
+          : ""
+      }
       <table style="border-collapse:collapse;border:1px solid #d0d0c8;">
         <tbody>
           ${htmlRows}
         </tbody>
       </table>
+      ${
+        footerText
+          ? `<p style="margin-top:14px;">${escapeHtmlWithLineBreaks(footerText)}</p>`
+          : ""
+      }
       <p style="margin-top:14px;">Generated at ${escapeHtml(snapshot.generatedAt)}</p>
     </div>
   `.trim();
 
   const subjectDate = snapshot.generatedAt.slice(0, 10);
   return {
-    subject: `Weekly KPI rollup • ${subjectDate}`,
+    subject: `${subjectPrefix} • ${subjectDate}`,
     text,
     html,
   };
 };
 
-const runWeeklyReportEmail = async () => {
-  if (!WEEKLY_REPORT_EMAIL_ENABLED) return;
+const runWeeklyReportEmail = async ({ ignoreEnabled = false } = {}) => {
+  const isEnabled = await getResolvedReportEnabled(REPORT_KEYS.WEEKLY_KPI);
+  if (!ignoreEnabled && !isEnabled) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "Weekly KPI email is disabled.",
+    };
+  }
   if (!weeklyReportRecipients.length) {
-    console.warn("Weekly KPI report email skipped: no recipients configured.");
-    return;
+    const reason = "Weekly KPI report email skipped: no recipients configured.";
+    console.warn(reason);
+    return {
+      ok: true,
+      skipped: true,
+      reason,
+    };
   }
   if (!EMAIL_PATTERN.test(weeklyReportFromEmail)) {
-    console.warn("Weekly KPI report email skipped: invalid from email configuration.");
-    return;
+    const reason = "Weekly KPI report email skipped: invalid from email configuration.";
+    console.warn(reason);
+    return {
+      ok: true,
+      skipped: true,
+      reason,
+    };
   }
 
   try {
     const snapshot = await buildWeeklyReportSnapshot();
-    const { subject, text, html } = buildWeeklyReportEmailContent(snapshot);
+    const templateOptions = await getResolvedReportTemplate(REPORT_KEYS.WEEKLY_KPI);
+    const reportContentOptions = await getResolvedReportContentOptions(REPORT_KEYS.WEEKLY_KPI);
+    const weeklySchedule = await getResolvedReportSchedule(REPORT_KEYS.WEEKLY_KPI);
+    const weeklyScheduleType = await getResolvedReportScheduleType(REPORT_KEYS.WEEKLY_KPI);
+    const { subject, text, html } = buildWeeklyReportEmailContent(
+      snapshot,
+      templateOptions,
+      reportContentOptions
+    );
     await sendEmail({
       fromEmail: weeklyReportFromEmail,
       fromName: DEFAULT_EMAIL_SENDER_NAME,
@@ -2567,21 +2936,54 @@ const runWeeklyReportEmail = async () => {
     });
     weeklyReportState.lastSentAt = new Date().toISOString();
     console.info(
-      `Weekly KPI report sent (${weeklyReportScheduleLabel}) -> ${weeklyReportRecipients.join(
+      `Weekly KPI report sent (${formatReportScheduleLabel(
+        weeklyScheduleType,
+        weeklySchedule
+      )}) -> ${weeklyReportRecipients.join(
         ", "
       )}`
     );
+    return {
+      ok: true,
+      sentAt: weeklyReportState.lastSentAt,
+      recipientCount: weeklyReportRecipients.length,
+      subject,
+      generatedAt: snapshot.generatedAt,
+    };
   } catch (error) {
     console.error("Weekly KPI report email failed", error);
+    return {
+      ok: false,
+      error: error?.message || "Weekly KPI report email failed",
+    };
   }
 };
 
-const getNextWeeklyReportDateUtc = (fromDate = new Date()) => {
+const getNextDailyRunDateUtc = (fromDate = new Date(), scheduleInput = null) => {
+  const schedule = {
+    hourUtc: 9,
+    minuteUtc: 0,
+    ...(scheduleInput || {}),
+  };
   const now = new Date(fromDate);
   const next = new Date(now);
-  next.setUTCHours(WEEKLY_REPORT_HOUR_UTC, WEEKLY_REPORT_MINUTE_UTC, 0, 0);
+  next.setUTCHours(schedule.hourUtc, schedule.minuteUtc, 0, 0);
+  if (next <= now) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  return next;
+};
 
-  const dayOffset = (WEEKLY_REPORT_DAY_UTC - next.getUTCDay() + 7) % 7;
+const getNextWeeklyReportDateUtc = (fromDate = new Date(), scheduleInput = null) => {
+  const schedule = {
+    ...getReportDefaultSchedule(REPORT_KEYS.WEEKLY_KPI),
+    ...(scheduleInput || {}),
+  };
+  const now = new Date(fromDate);
+  const next = new Date(now);
+  next.setUTCHours(schedule.hourUtc, schedule.minuteUtc, 0, 0);
+
+  const dayOffset = (schedule.weekdayUtc - next.getUTCDay() + 7) % 7;
   next.setUTCDate(next.getUTCDate() + dayOffset);
 
   if (next <= now) {
@@ -2591,34 +2993,82 @@ const getNextWeeklyReportDateUtc = (fromDate = new Date()) => {
   return next;
 };
 
+const getNextMonthlyRunDateUtc = (fromDate = new Date(), scheduleInput = null) => {
+  const schedule = {
+    monthDayUtc: 1,
+    hourUtc: 9,
+    minuteUtc: 0,
+    ...(scheduleInput || {}),
+  };
+  const now = new Date(fromDate);
+  const next = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, schedule.hourUtc, schedule.minuteUtc, 0, 0)
+  );
+  const day = Math.min(
+    Math.max(schedule.monthDayUtc, 1),
+    getDaysInUtcMonth(next.getUTCFullYear(), next.getUTCMonth())
+  );
+  next.setUTCDate(day);
+  if (next <= now) {
+    next.setUTCMonth(next.getUTCMonth() + 1);
+    const nextMonthDay = Math.min(
+      Math.max(schedule.monthDayUtc, 1),
+      getDaysInUtcMonth(next.getUTCFullYear(), next.getUTCMonth())
+    );
+    next.setUTCDate(nextMonthDay);
+  }
+  return next;
+};
+
 const scheduleWeeklyReportEmail = () => {
-  if (!WEEKLY_REPORT_EMAIL_ENABLED) return;
   if (!resend) {
+    weeklyReportState.lastScheduledFor = null;
     console.warn("Weekly KPI report scheduler skipped: RESEND_API_KEY is not configured.");
-    return;
+    return Promise.resolve();
   }
   if (!weeklyReportRecipients.length) {
+    weeklyReportState.lastScheduledFor = null;
     console.warn("Weekly KPI report scheduler skipped: no recipients configured.");
-    return;
+    return Promise.resolve();
   }
 
-  const scheduleNext = () => {
-    const nextRun = getNextWeeklyReportDateUtc();
+  if (weeklyReportState.timeoutId) {
+    clearTimeout(weeklyReportState.timeoutId);
+    weeklyReportState.timeoutId = null;
+  }
+
+  const scheduleNext = async () => {
+    const isEnabled = await getResolvedReportEnabled(REPORT_KEYS.WEEKLY_KPI);
+    if (!isEnabled) {
+      weeklyReportState.lastScheduledFor = null;
+      return;
+    }
+    const schedule = await getResolvedReportSchedule(REPORT_KEYS.WEEKLY_KPI);
+    const scheduleType = await getResolvedReportScheduleType(REPORT_KEYS.WEEKLY_KPI);
+    const nextRun =
+      scheduleType === REPORT_SCHEDULE_TYPES.DAILY
+        ? getNextDailyRunDateUtc(new Date(), schedule)
+        : scheduleType === REPORT_SCHEDULE_TYPES.MONTHLY
+          ? getNextMonthlyRunDateUtc(new Date(), schedule)
+          : getNextWeeklyReportDateUtc(new Date(), schedule);
     const delay = Math.max(nextRun.getTime() - Date.now(), 0);
     weeklyReportState.lastScheduledFor = nextRun.toISOString();
 
-    setTimeout(async () => {
+    weeklyReportState.timeoutId = setTimeout(async () => {
+      weeklyReportState.timeoutId = null;
       await runWeeklyReportEmail();
-      scheduleNext();
+      scheduleNext().catch((error) => {
+        console.error("Weekly KPI report scheduler run failed", error);
+      });
     }, delay);
   };
 
   console.info(
-    `Weekly KPI report scheduler active: ${weeklyReportScheduleLabel} -> ${weeklyReportRecipients.join(
-      ", "
-    )}`
+    `Weekly KPI report scheduler active -> ${weeklyReportRecipients.join(", ")}`
   );
-  scheduleNext();
+  return scheduleNext().catch((error) => {
+    console.error("Weekly KPI report scheduler setup failed", error);
+  });
 };
 
 const rentMonthlyUpdateState = {
@@ -2627,6 +3077,593 @@ const rentMonthlyUpdateState = {
   lastMonthLabel: null,
   lastSentCount: 0,
   lastRecipientCount: 0,
+  timeoutId: null,
+};
+const accountingReminderState = {
+  lastRunAt: null,
+  lastScheduledFor: null,
+  lastDueDate: null,
+  lastSentCount: 0,
+  lastEntryCount: 0,
+  lastRecipientCount: 0,
+  timeoutId: null,
+};
+const reportConfigFallbackStore = new Map();
+
+const REPORT_KEYS = {
+  WEEKLY_KPI: "weekly_kpi",
+  RENT_MONTHLY_SUMMARY: "rent_monthly_summary",
+  ACCOUNTING_SCHEDULED_REMINDER: "accounting_scheduled_reminder",
+};
+
+const REPORT_TEMPLATE_TEXT_LIMIT = 800;
+const REPORT_TEMPLATE_SUBJECT_LIMIT = 160;
+const REPORT_TEMPLATE_HEADING_LIMIT = 160;
+const REPORT_SCHEDULE_DAY_LIMIT = 28;
+
+const WEEKLY_REPORT_CONTENT_OPTION_DEFINITIONS = [
+  { key: "organizations", label: "Organization totals and hierarchy" },
+  { key: "appointments", label: "Appointment counts" },
+  { key: "accounting", label: "Accounting balances and revenue" },
+  { key: "siteHealth", label: "Site health status" },
+];
+
+const RENT_MONTHLY_CONTENT_OPTION_DEFINITIONS = [
+  { key: "tenantEmail", label: "Tenant email" },
+  { key: "landlord", label: "Landlord details" },
+  { key: "monthlyRent", label: "Monthly rent amount" },
+  { key: "paidThisMonth", label: "Paid this month" },
+  { key: "expectedThisMonth", label: "Expected this month" },
+  { key: "outstandingThisMonth", label: "Outstanding this month" },
+  { key: "outstandingTotal", label: "Total outstanding balance" },
+  { key: "periodsMissed", label: "Periods missed" },
+  { key: "leaseDates", label: "Lease dates" },
+];
+
+const ACCOUNTING_REMINDER_CONTENT_OPTION_DEFINITIONS = [
+  { key: "dueDate", label: "Due date" },
+  { key: "reminderWindow", label: "Reminder window" },
+  { key: "recurrence", label: "Recurrence column" },
+  { key: "notes", label: "Notes column" },
+];
+
+const normalizeReportTemplateValue = (value, { maxLength } = {}) => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!Number.isFinite(maxLength) || maxLength <= 0) return normalized;
+  return normalized.slice(0, maxLength);
+};
+
+const normalizeReportTemplatePayload = (input = {}) => ({
+  subjectPrefix: normalizeReportTemplateValue(input.subjectPrefix, {
+    maxLength: REPORT_TEMPLATE_SUBJECT_LIMIT,
+  }),
+  heading: normalizeReportTemplateValue(input.heading, {
+    maxLength: REPORT_TEMPLATE_HEADING_LIMIT,
+  }),
+  introText: normalizeReportTemplateValue(input.introText, {
+    maxLength: REPORT_TEMPLATE_TEXT_LIMIT,
+  }),
+  footerText: normalizeReportTemplateValue(input.footerText, {
+    maxLength: REPORT_TEMPLATE_TEXT_LIMIT,
+  }),
+});
+
+const normalizeReportEnabledPayload = (input = {}, definition) =>
+  coerceBoolean(input.enabled, definition?.enabled);
+
+const getReportScheduleOptionValues = (definition) => {
+  if (Array.isArray(definition?.scheduleOptions) && definition.scheduleOptions.length) {
+    return definition.scheduleOptions
+      .map((option) => String(option?.value || "").trim())
+      .filter(Boolean);
+  }
+  return definition?.scheduleType ? [definition.scheduleType] : [];
+};
+
+const normalizeReportScheduleType = (value, definition) => {
+  const validOptions = getReportScheduleOptionValues(definition);
+  const normalized = String(value || "").trim();
+  if (normalized && validOptions.includes(normalized)) {
+    return normalized;
+  }
+  return definition?.scheduleType || validOptions[0] || null;
+};
+
+const getDefaultReportContentOptions = (definition) =>
+  Object.fromEntries(
+    (Array.isArray(definition?.contentOptionDefinitions)
+      ? definition.contentOptionDefinitions
+      : []
+    ).map((option) => [option.key, option.defaultChecked !== false])
+  );
+
+const normalizeReportContentOptionsPayload = (input = {}, definition) => {
+  const defaults = getDefaultReportContentOptions(definition);
+  const nextInput =
+    input && typeof input.contentOptions === "object" && input.contentOptions
+      ? input.contentOptions
+      : {};
+  return Object.fromEntries(
+    Object.keys(defaults).map((key) => [key, coerceBoolean(nextInput[key], defaults[key])])
+  );
+};
+
+const normalizeReportScheduleInt = (value, fallback, { min, max } = {}) =>
+  parsePositiveInt(value, fallback, { min, max });
+
+const getReportDefaultSchedule = (key) => {
+  if (key === REPORT_KEYS.WEEKLY_KPI) {
+    return {
+      weekdayUtc: WEEKLY_REPORT_DAY_UTC,
+      monthDayUtc: 1,
+      hourUtc: WEEKLY_REPORT_HOUR_UTC,
+      minuteUtc: WEEKLY_REPORT_MINUTE_UTC,
+      daysBeforeDue: null,
+    };
+  }
+
+  if (key === REPORT_KEYS.RENT_MONTHLY_SUMMARY) {
+    return {
+      weekdayUtc: null,
+      monthDayUtc: RENT_MONTHLY_EMAIL_DAY_UTC,
+      hourUtc: RENT_MONTHLY_EMAIL_HOUR_UTC,
+      minuteUtc: RENT_MONTHLY_EMAIL_MINUTE_UTC,
+      daysBeforeDue: null,
+    };
+  }
+
+  if (key === REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER) {
+    return {
+      weekdayUtc: null,
+      monthDayUtc: null,
+      hourUtc: ACCOUNTING_REMINDER_EMAIL_HOUR_UTC,
+      minuteUtc: ACCOUNTING_REMINDER_EMAIL_MINUTE_UTC,
+      daysBeforeDue: ACCOUNTING_REMINDER_DAYS_BEFORE_DUE,
+    };
+  }
+
+  return {
+    weekdayUtc: null,
+    monthDayUtc: null,
+    hourUtc: 0,
+    minuteUtc: 0,
+    daysBeforeDue: null,
+  };
+};
+
+const normalizeReportSchedulePayload = (input = {}, definition) => {
+  const defaults = getReportDefaultSchedule(definition?.key);
+  const scheduleType = normalizeReportScheduleType(input.scheduleFrequency, definition);
+  if (scheduleType === REPORT_SCHEDULE_TYPES.DAILY) {
+    return {
+      scheduleFrequency: scheduleType,
+      scheduleWeekdayUtc: null,
+      scheduleMonthDayUtc: null,
+      scheduleHourUtc: normalizeReportScheduleInt(input.hourUtc, defaults.hourUtc, {
+        min: 0,
+        max: 23,
+      }),
+      scheduleMinuteUtc: normalizeReportScheduleInt(input.minuteUtc, defaults.minuteUtc, {
+        min: 0,
+        max: 59,
+      }),
+      scheduleDaysBeforeDue: null,
+    };
+  }
+
+  if (scheduleType === REPORT_SCHEDULE_TYPES.WEEKLY) {
+    return {
+      scheduleFrequency: scheduleType,
+      scheduleWeekdayUtc: normalizeReportScheduleInt(input.weekdayUtc, defaults.weekdayUtc, {
+        min: 0,
+        max: 6,
+      }),
+      scheduleMonthDayUtc: null,
+      scheduleHourUtc: normalizeReportScheduleInt(input.hourUtc, defaults.hourUtc, {
+        min: 0,
+        max: 23,
+      }),
+      scheduleMinuteUtc: normalizeReportScheduleInt(input.minuteUtc, defaults.minuteUtc, {
+        min: 0,
+        max: 59,
+      }),
+      scheduleDaysBeforeDue: null,
+    };
+  }
+
+  if (scheduleType === REPORT_SCHEDULE_TYPES.MONTHLY) {
+    return {
+      scheduleFrequency: scheduleType,
+      scheduleWeekdayUtc: null,
+      scheduleMonthDayUtc: normalizeReportScheduleInt(input.monthDayUtc, defaults.monthDayUtc, {
+        min: 1,
+        max: REPORT_SCHEDULE_DAY_LIMIT,
+      }),
+      scheduleHourUtc: normalizeReportScheduleInt(input.hourUtc, defaults.hourUtc, {
+        min: 0,
+        max: 23,
+      }),
+      scheduleMinuteUtc: normalizeReportScheduleInt(input.minuteUtc, defaults.minuteUtc, {
+        min: 0,
+        max: 59,
+      }),
+      scheduleDaysBeforeDue: null,
+    };
+  }
+
+  if (scheduleType === REPORT_SCHEDULE_TYPES.REMINDER) {
+    return {
+      scheduleFrequency: scheduleType,
+      scheduleWeekdayUtc: null,
+      scheduleMonthDayUtc: null,
+      scheduleHourUtc: normalizeReportScheduleInt(input.hourUtc, defaults.hourUtc, {
+        min: 0,
+        max: 23,
+      }),
+      scheduleMinuteUtc: normalizeReportScheduleInt(input.minuteUtc, defaults.minuteUtc, {
+        min: 0,
+        max: 59,
+      }),
+      scheduleDaysBeforeDue: normalizeReportScheduleInt(
+        input.daysBeforeDue,
+        defaults.daysBeforeDue,
+        {
+          min: 1,
+          max: 30,
+        }
+      ),
+    };
+  }
+
+  return {
+    scheduleFrequency: normalizeReportScheduleType(null, definition),
+    scheduleWeekdayUtc: null,
+    scheduleMonthDayUtc: null,
+    scheduleHourUtc: null,
+    scheduleMinuteUtc: null,
+    scheduleDaysBeforeDue: null,
+  };
+};
+
+const isMissingReportConfigTableError = (error) => {
+  const message = String(error?.message || "");
+  return error?.code === "P2021" || error?.code === "P2022" || message.includes('"ReportConfig"');
+};
+
+const isReportConfigFallbackPersistenceError = (error) =>
+  isMissingReportConfigTableError(error) ||
+  isPrismaErrorInstance(error, "PrismaClientValidationError");
+
+const getFallbackReportConfig = (key) => {
+  if (!reportConfigFallbackStore.has(key)) return null;
+  return reportConfigFallbackStore.get(key);
+};
+
+const getWeeklyReportLastResultLabel = () => {
+  if (!weeklyReportState.lastSentAt) return "No report sent yet.";
+  return `Last sent to ${weeklyReportRecipients.length} recipient${
+    weeklyReportRecipients.length === 1 ? "" : "s"
+  }.`;
+};
+
+const getRentMonthlyLastResultLabel = () => {
+  if (!rentMonthlyUpdateState.lastRunAt) return "No summary sent yet.";
+  const sentLabel =
+    rentMonthlyUpdateState.lastSentCount === 1
+      ? "1 tenant summary"
+      : `${rentMonthlyUpdateState.lastSentCount} tenant summaries`;
+  const recipientLabel = `${rentMonthlyUpdateState.lastRecipientCount} recipient${
+    rentMonthlyUpdateState.lastRecipientCount === 1 ? "" : "s"
+  }`;
+  return rentMonthlyUpdateState.lastMonthLabel
+    ? `${sentLabel} sent to ${recipientLabel} for ${rentMonthlyUpdateState.lastMonthLabel}.`
+    : `${sentLabel} sent to ${recipientLabel}.`;
+};
+
+const getAccountingReminderLastResultLabel = () => {
+  if (!accountingReminderState.lastRunAt) return "No reminder sent yet.";
+  const mailLabel = `${accountingReminderState.lastSentCount} reminder email${
+    accountingReminderState.lastSentCount === 1 ? "" : "s"
+  }`;
+  const entryLabel =
+    accountingReminderState.lastEntryCount === 1
+      ? "1 entry"
+      : `${accountingReminderState.lastEntryCount} entries`;
+  return `${mailLabel} covering ${entryLabel} to ${accountingReminderState.lastRecipientCount} recipient${
+    accountingReminderState.lastRecipientCount === 1 ? "" : "s"
+  }.`;
+};
+
+const getReportDefinitions = () => [
+  {
+    key: REPORT_KEYS.WEEKLY_KPI,
+    scheduleType: REPORT_SCHEDULE_TYPES.WEEKLY,
+    scheduleOptions: [
+      { value: REPORT_SCHEDULE_TYPES.DAILY, label: "Daily" },
+      { value: REPORT_SCHEDULE_TYPES.WEEKLY, label: "Weekly" },
+      { value: REPORT_SCHEDULE_TYPES.MONTHLY, label: "Monthly" },
+    ],
+    title: "Weekly KPI rollup",
+    description: "Cross-module KPI summary covering organizations, appointments, accounting, and site health.",
+    contentOptionDefinitions: WEEKLY_REPORT_CONTENT_OPTION_DEFINITIONS,
+    enabled: WEEKLY_REPORT_EMAIL_ENABLED,
+    sender: weeklyReportFromEmail,
+    recipientLabel: weeklyReportRecipients.length
+      ? weeklyReportRecipients.join(", ")
+      : "No recipients configured",
+    deliveryLabel: "Configured report recipients",
+    lastRunAt: weeklyReportState.lastSentAt,
+    lastScheduledFor: weeklyReportState.lastScheduledFor,
+    lastResultLabel: getWeeklyReportLastResultLabel(),
+    defaults: {
+      subjectPrefix: "Weekly KPI rollup",
+      heading: "Dev KPI weekly report",
+      introText: "",
+      footerText: "",
+    },
+  },
+  {
+    key: REPORT_KEYS.RENT_MONTHLY_SUMMARY,
+    scheduleType: REPORT_SCHEDULE_TYPES.MONTHLY,
+    scheduleOptions: [{ value: REPORT_SCHEDULE_TYPES.MONTHLY, label: "Monthly" }],
+    title: "Rent monthly summaries",
+    description: "Monthly rent summaries for active tenants, delivered to the tenant and landlord email on record.",
+    contentOptionDefinitions: RENT_MONTHLY_CONTENT_OPTION_DEFINITIONS,
+    enabled: RENT_MONTHLY_EMAIL_ENABLED,
+    sender: rentMonthlyFromEmail,
+    recipientLabel: "Per active tenant: tenant email + landlord email",
+    deliveryLabel: "Tenant + landlord emails stored on each rent tenant",
+    lastRunAt: rentMonthlyUpdateState.lastRunAt,
+    lastScheduledFor: rentMonthlyUpdateState.lastScheduledFor,
+    lastResultLabel: getRentMonthlyLastResultLabel(),
+    defaults: {
+      subjectPrefix: "Rent monthly summary",
+      heading: "Rent monthly summary",
+      introText: "",
+      footerText: "Please review this summary and reply if anything looks incorrect.",
+    },
+  },
+  {
+    key: REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER,
+    scheduleType: REPORT_SCHEDULE_TYPES.REMINDER,
+    scheduleOptions: [{ value: REPORT_SCHEDULE_TYPES.REMINDER, label: "Daily reminder" }],
+    title: "Scheduled payment reminders",
+    description: "Upcoming scheduled payment reminders for due expense entries.",
+    contentOptionDefinitions: ACCOUNTING_REMINDER_CONTENT_OPTION_DEFINITIONS,
+    enabled: ACCOUNTING_REMINDER_EMAIL_ENABLED,
+    sender: accountingReminderFromEmail,
+    recipientLabel: "Active Admin users in each organization",
+    deliveryLabel: "Organization admins, with DEFAULT_ADMIN_EMAIL fallback",
+    lastRunAt: accountingReminderState.lastRunAt,
+    lastScheduledFor: accountingReminderState.lastScheduledFor,
+    lastResultLabel: getAccountingReminderLastResultLabel(),
+    defaults: {
+      subjectPrefix: "Upcoming scheduled payment reminder",
+      heading: "Upcoming scheduled payment reminder",
+      introText:
+        "The following scheduled accounting entries are due soon. Please review them before the due date.",
+      footerText: "Please review these scheduled payments before the due date.",
+    },
+  },
+];
+
+const getReportDefinitionByKey = (key) =>
+  getReportDefinitions().find((definition) => definition.key === key) || null;
+
+const mergeReportTemplate = (definition, storedConfig = null) => {
+  const defaults = definition?.defaults ?? {};
+  return {
+    subjectPrefix: storedConfig?.subjectPrefix ?? defaults.subjectPrefix ?? "",
+    heading: storedConfig?.heading ?? defaults.heading ?? "",
+    introText: storedConfig?.introText ?? defaults.introText ?? "",
+    footerText: storedConfig?.footerText ?? defaults.footerText ?? "",
+  };
+};
+
+const mergeReportContentOptions = (definition, storedConfig = null) => {
+  const defaults = getDefaultReportContentOptions(definition);
+  const storedOptions =
+    storedConfig?.contentOptions && typeof storedConfig.contentOptions === "object"
+      ? storedConfig.contentOptions
+      : {};
+  return Object.fromEntries(
+    Object.keys(defaults).map((key) => [key, coerceBoolean(storedOptions[key], defaults[key])])
+  );
+};
+
+const mergeReportSchedule = (definition, storedConfig = null) => {
+  const defaults = getReportDefaultSchedule(definition?.key);
+  return {
+    frequency: normalizeReportScheduleType(storedConfig?.scheduleFrequency, definition),
+    weekdayUtc: storedConfig?.scheduleWeekdayUtc ?? defaults.weekdayUtc,
+    monthDayUtc: storedConfig?.scheduleMonthDayUtc ?? defaults.monthDayUtc,
+    hourUtc: storedConfig?.scheduleHourUtc ?? defaults.hourUtc,
+    minuteUtc: storedConfig?.scheduleMinuteUtc ?? defaults.minuteUtc,
+    daysBeforeDue: storedConfig?.scheduleDaysBeforeDue ?? defaults.daysBeforeDue,
+  };
+};
+
+const mergeReportEnabled = (definition, storedConfig = null) =>
+  coerceBoolean(storedConfig?.isEnabled, definition?.enabled);
+
+const formatReportScheduleLabel = (scheduleType, schedule) => {
+  if (scheduleType === REPORT_SCHEDULE_TYPES.DAILY) {
+    return formatDailyScheduleLabel(schedule);
+  }
+  if (scheduleType === REPORT_SCHEDULE_TYPES.WEEKLY) {
+    return formatWeeklyScheduleLabel(schedule);
+  }
+  if (scheduleType === REPORT_SCHEDULE_TYPES.MONTHLY) {
+    return formatMonthlyScheduleLabel(schedule);
+  }
+  if (scheduleType === REPORT_SCHEDULE_TYPES.REMINDER) {
+    return formatReminderScheduleLabel(schedule);
+  }
+  return "Not scheduled";
+};
+
+const getStoredReportConfigMap = async () => {
+  const definitions = getReportDefinitions();
+  const keys = definitions.map((definition) => definition.key);
+  try {
+    const storedConfigs = await prisma.reportConfig.findMany({
+      where: { key: { in: keys } },
+    });
+    return new Map(storedConfigs.map((config) => [config.key, config]));
+  } catch (error) {
+    if (isMissingReportConfigTableError(error)) {
+      console.warn("Report config table missing. Falling back to default report templates.");
+      return new Map(
+        keys
+          .map((key) => [key, getFallbackReportConfig(key)])
+          .filter(([, value]) => Boolean(value))
+      );
+    }
+    throw error;
+  }
+};
+
+const getResolvedReportTemplate = async (key) => {
+  const definition = getReportDefinitionByKey(key);
+  if (!definition) return null;
+  try {
+    const storedConfig = await prisma.reportConfig.findUnique({
+      where: { key },
+    });
+    return mergeReportTemplate(definition, storedConfig);
+  } catch (error) {
+    if (isMissingReportConfigTableError(error)) {
+      console.warn("Report config table missing. Using default template values.");
+      return mergeReportTemplate(definition, getFallbackReportConfig(key));
+    }
+    throw error;
+  }
+};
+
+const getResolvedReportSchedule = async (key) => {
+  const definition = getReportDefinitionByKey(key);
+  if (!definition) return null;
+  try {
+    const storedConfig = await prisma.reportConfig.findUnique({
+      where: { key },
+    });
+    return mergeReportSchedule(definition, storedConfig);
+  } catch (error) {
+    if (isMissingReportConfigTableError(error)) {
+      console.warn("Report config table missing. Using default schedule values.");
+      return mergeReportSchedule(definition, getFallbackReportConfig(key));
+    }
+    throw error;
+  }
+};
+
+const getResolvedReportScheduleType = async (key) => {
+  const definition = getReportDefinitionByKey(key);
+  if (!definition) return null;
+  try {
+    const storedConfig = await prisma.reportConfig.findUnique({
+      where: { key },
+    });
+    return normalizeReportScheduleType(storedConfig?.scheduleFrequency, definition);
+  } catch (error) {
+    if (isMissingReportConfigTableError(error)) {
+      console.warn("Report config table missing. Using default frequency values.");
+      return normalizeReportScheduleType(getFallbackReportConfig(key)?.scheduleFrequency, definition);
+    }
+    throw error;
+  }
+};
+
+const getResolvedReportContentOptions = async (key) => {
+  const definition = getReportDefinitionByKey(key);
+  if (!definition) return null;
+  try {
+    const storedConfig = await prisma.reportConfig.findUnique({
+      where: { key },
+    });
+    return mergeReportContentOptions(definition, storedConfig);
+  } catch (error) {
+    if (isMissingReportConfigTableError(error)) {
+      console.warn("Report config table missing. Using default content options.");
+      return mergeReportContentOptions(definition, getFallbackReportConfig(key));
+    }
+    throw error;
+  }
+};
+
+const getResolvedReportEnabled = async (key) => {
+  const definition = getReportDefinitionByKey(key);
+  if (!definition) return false;
+  try {
+    const storedConfig = await prisma.reportConfig.findUnique({
+      where: { key },
+    });
+    return mergeReportEnabled(definition, storedConfig);
+  } catch (error) {
+    if (isMissingReportConfigTableError(error)) {
+      console.warn("Report config table missing. Using default enabled state.");
+      return mergeReportEnabled(definition, getFallbackReportConfig(key));
+    }
+    throw error;
+  }
+};
+
+const buildReportOverviewList = async () => {
+  const definitions = getReportDefinitions();
+  const storedConfigs = await getStoredReportConfigMap();
+  return definitions.map((definition) => {
+    const storedConfig = storedConfigs.get(definition.key);
+    const schedule = mergeReportSchedule(definition, storedConfig);
+    const scheduleType = normalizeReportScheduleType(storedConfig?.scheduleFrequency, definition);
+    return {
+      key: definition.key,
+      title: definition.title,
+      description: definition.description,
+      enabled: mergeReportEnabled(definition, storedConfig),
+      scheduleType,
+      scheduleOptions: Array.isArray(definition.scheduleOptions)
+        ? definition.scheduleOptions
+        : [],
+      scheduleLabel: formatReportScheduleLabel(scheduleType, schedule),
+      sender: definition.sender,
+      recipientLabel: definition.recipientLabel,
+      deliveryLabel: definition.deliveryLabel,
+      lastRunAt: definition.lastRunAt,
+      lastScheduledFor: definition.lastScheduledFor,
+      lastResultLabel: definition.lastResultLabel,
+      template: mergeReportTemplate(definition, storedConfig),
+      contentOptionDefinitions: definition.contentOptionDefinitions ?? [],
+      contentOptions: mergeReportContentOptions(definition, storedConfig),
+      schedule,
+    };
+  });
+};
+
+const runReportNowByKey = async (key, options = {}) => {
+  if (key === REPORT_KEYS.WEEKLY_KPI) {
+    return runWeeklyReportEmail(options);
+  }
+  if (key === REPORT_KEYS.RENT_MONTHLY_SUMMARY) {
+    return runRentMonthlyTenantUpdates(options);
+  }
+  if (key === REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER) {
+    return runAccountingScheduledPaymentReminders(options);
+  }
+  return null;
+};
+
+const rescheduleReportByKey = (key) => {
+  if (key === REPORT_KEYS.WEEKLY_KPI) {
+    return scheduleWeeklyReportEmail();
+  }
+  if (key === REPORT_KEYS.RENT_MONTHLY_SUMMARY) {
+    return scheduleRentMonthlyUpdates();
+  }
+  if (key === REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER) {
+    return scheduleAccountingReminderEmails();
+  }
+  return Promise.resolve();
 };
 
 const resolveRentMonthlySummaryRecipients = (tenant) => {
@@ -2643,8 +3680,207 @@ const resolveRentMonthlySummaryRecipients = (tenant) => {
   return recipients;
 };
 
-const runRentMonthlyTenantUpdates = async () => {
-  if (!RENT_MONTHLY_EMAIL_ENABLED) {
+const resolveAccountingReminderRecipientsByOrganization = async (organizationIds) => {
+  const normalizedOrganizationIds = Array.from(
+    new Set(
+      (Array.isArray(organizationIds) ? organizationIds : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  );
+  const fallbackRecipients = parseRecipients(DEFAULT_ADMIN_EMAIL);
+  const recipientsByOrganization = new Map(
+    normalizedOrganizationIds.map((organizationId) => [organizationId, []])
+  );
+
+  if (!normalizedOrganizationIds.length) {
+    return recipientsByOrganization;
+  }
+
+  const adminUsers = await prisma.user.findMany({
+    where: {
+      organizationId: { in: normalizedOrganizationIds },
+      status: "ACTIVE",
+      role: {
+        is: {
+          name: "Admin",
+        },
+      },
+    },
+    select: {
+      organizationId: true,
+      email: true,
+    },
+  });
+
+  const seenByOrganization = new Map(
+    normalizedOrganizationIds.map((organizationId) => [organizationId, new Set()])
+  );
+
+  adminUsers.forEach((user) => {
+    const email = normalizeEmailAddress(user.email);
+    if (!email) return;
+    const seen = seenByOrganization.get(user.organizationId);
+    if (!seen || seen.has(email)) return;
+    seen.add(email);
+    recipientsByOrganization.get(user.organizationId)?.push(email);
+  });
+
+  normalizedOrganizationIds.forEach((organizationId) => {
+    const recipients = recipientsByOrganization.get(organizationId) || [];
+    if (!recipients.length && fallbackRecipients.length) {
+      recipientsByOrganization.set(organizationId, [...fallbackRecipients]);
+    }
+  });
+
+  return recipientsByOrganization;
+};
+
+const getAccountingReminderDueRangeUtc = (
+  referenceDate = new Date(),
+  daysBeforeDue = ACCOUNTING_REMINDER_DAYS_BEFORE_DUE
+) => {
+  const dueDate = toUtcStartOfDay(referenceDate);
+  dueDate.setUTCDate(dueDate.getUTCDate() + daysBeforeDue);
+  return {
+    dueDate,
+    start: dueDate,
+    end: toUtcEndOfDay(dueDate),
+  };
+};
+
+const runAccountingScheduledPaymentReminders = async ({ ignoreEnabled = false } = {}) => {
+  const isEnabled = await getResolvedReportEnabled(REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER);
+  if (!ignoreEnabled && !isEnabled) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "Accounting scheduled payment reminders are disabled.",
+    };
+  }
+  if (!resend) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "RESEND_API_KEY is not configured.",
+    };
+  }
+  if (!EMAIL_PATTERN.test(accountingReminderFromEmail)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "Invalid accounting reminder from email configuration.",
+    };
+  }
+
+  const reminderSchedule = await getResolvedReportSchedule(REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER);
+  const reminderContentOptions = await getResolvedReportContentOptions(
+    REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER
+  );
+  const dueRange = getAccountingReminderDueRangeUtc(new Date(), reminderSchedule.daysBeforeDue);
+  const templateOptions = await getResolvedReportTemplate(REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER);
+  const entries = await prisma.accountingEntry.findMany({
+    where: {
+      type: "EXPENSE",
+      status: "SCHEDULED",
+      archivedAt: null,
+      dueAt: {
+        gte: dueRange.start,
+        lte: dueRange.end,
+      },
+    },
+    include: {
+      organization: {
+        select: { id: true, name: true, slug: true },
+      },
+    },
+    orderBy: [{ organizationId: "asc" }, { dueAt: "asc" }, { createdAt: "asc" }],
+  });
+
+  const entriesByOrganization = new Map();
+  entries.forEach((entry) => {
+    const organizationId = Number(entry.organizationId);
+    if (!Number.isInteger(organizationId) || organizationId <= 0) return;
+    const bucket = entriesByOrganization.get(organizationId) || [];
+    bucket.push(entry);
+    entriesByOrganization.set(organizationId, bucket);
+  });
+
+  const recipientsByOrganization = await resolveAccountingReminderRecipientsByOrganization(
+    Array.from(entriesByOrganization.keys())
+  );
+
+  let sentCount = 0;
+  let recipientCount = 0;
+  let entryCount = 0;
+  const errors = [];
+
+  for (const [organizationId, organizationEntries] of entriesByOrganization.entries()) {
+    const recipients = recipientsByOrganization.get(organizationId) || [];
+    if (!recipients.length) continue;
+
+    const organizationName = organizationEntries[0]?.organization?.name || "";
+    const { subject, text, html } = buildAccountingScheduledReminderEmailContent({
+      entries: organizationEntries.map((entry) => ({
+        serviceName: entry.serviceName,
+        amount: resolveDecimalAmount(entry.amount),
+        currency: entry.currency,
+        recurringInterval: entry.recurringInterval,
+        detail: entry.detail,
+      })),
+      dueDate: dueRange.dueDate,
+      organizationName,
+      daysUntilDue: reminderSchedule.daysBeforeDue,
+      templateOptions,
+      contentOptions: reminderContentOptions,
+    });
+
+    try {
+      await sendEmail({
+        fromEmail: accountingReminderFromEmail,
+        fromName: organizationName || DEFAULT_EMAIL_SENDER_NAME,
+        recipients,
+        subject,
+        text,
+        html,
+      });
+      sentCount += 1;
+      recipientCount += recipients.length;
+      entryCount += organizationEntries.length;
+    } catch (error) {
+      errors.push({
+        organizationId,
+        recipients,
+        message: error?.message || "Unknown email failure",
+      });
+    }
+  }
+
+  accountingReminderState.lastRunAt = new Date().toISOString();
+  accountingReminderState.lastDueDate = dueRange.dueDate.toISOString();
+  accountingReminderState.lastSentCount = sentCount;
+  accountingReminderState.lastEntryCount = entryCount;
+  accountingReminderState.lastRecipientCount = recipientCount;
+
+  if (errors.length) {
+    console.error("Accounting scheduled reminder failures", errors);
+  }
+
+  return {
+    ok: true,
+    dueDate: dueRange.dueDate.toISOString(),
+    dueEntryCount: entries.length,
+    sentCount,
+    entryCount,
+    recipientCount,
+    failedCount: errors.length,
+    errors,
+  };
+};
+
+const runRentMonthlyTenantUpdates = async ({ ignoreEnabled = false } = {}) => {
+  const isEnabled = await getResolvedReportEnabled(REPORT_KEYS.RENT_MONTHLY_SUMMARY);
+  if (!ignoreEnabled && !isEnabled) {
     return {
       ok: true,
       skipped: true,
@@ -2668,6 +3904,10 @@ const runRentMonthlyTenantUpdates = async () => {
 
   const monthRange = getLastCompletedMonthRangeUtc();
   const monthLabel = formatMonthLabel(monthRange);
+  const templateOptions = await getResolvedReportTemplate(REPORT_KEYS.RENT_MONTHLY_SUMMARY);
+  const reportContentOptions = await getResolvedReportContentOptions(
+    REPORT_KEYS.RENT_MONTHLY_SUMMARY
+  );
   const tenants = await prisma.rentTenant.findMany({
     where: {
       status: "ACTIVE",
@@ -2710,6 +3950,8 @@ const runRentMonthlyTenantUpdates = async () => {
       summary,
       monthLabel,
       organizationName: tenant.organization?.name,
+      templateOptions,
+      contentOptions: reportContentOptions,
     });
 
     try {
@@ -2756,44 +3998,107 @@ const runRentMonthlyTenantUpdates = async () => {
   };
 };
 
-const getNextRentMonthlyRunDateUtc = (fromDate = new Date()) => {
-  const now = new Date(fromDate);
-  const next = new Date(now);
-  next.setUTCHours(RENT_MONTHLY_EMAIL_HOUR_UTC, RENT_MONTHLY_EMAIL_MINUTE_UTC, 0, 0);
-  if (next <= now) {
-    next.setUTCDate(next.getUTCDate() + 1);
-  }
-  return next;
-};
+const getDaysInUtcMonth = (year, monthIndex) => new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
 
 const scheduleRentMonthlyUpdates = () => {
-  if (!RENT_MONTHLY_EMAIL_ENABLED) return;
   if (!resend) {
+    rentMonthlyUpdateState.lastScheduledFor = null;
     console.warn("Rent monthly scheduler skipped: RESEND_API_KEY is not configured.");
-    return;
+    return Promise.resolve();
   }
   if (!EMAIL_PATTERN.test(rentMonthlyFromEmail)) {
+    rentMonthlyUpdateState.lastScheduledFor = null;
     console.warn("Rent monthly scheduler skipped: invalid from email configuration.");
-    return;
+    return Promise.resolve();
   }
 
-  const scheduleNext = () => {
-    const nextRun = getNextRentMonthlyRunDateUtc();
+  if (rentMonthlyUpdateState.timeoutId) {
+    clearTimeout(rentMonthlyUpdateState.timeoutId);
+    rentMonthlyUpdateState.timeoutId = null;
+  }
+
+  const scheduleNext = async () => {
+    const isEnabled = await getResolvedReportEnabled(REPORT_KEYS.RENT_MONTHLY_SUMMARY);
+    if (!isEnabled) {
+      rentMonthlyUpdateState.lastScheduledFor = null;
+      return;
+    }
+    const schedule = await getResolvedReportSchedule(REPORT_KEYS.RENT_MONTHLY_SUMMARY);
+    const nextRun = getNextMonthlyRunDateUtc(new Date(), schedule);
     const delay = Math.max(nextRun.getTime() - Date.now(), 0);
     rentMonthlyUpdateState.lastScheduledFor = nextRun.toISOString();
 
-    setTimeout(async () => {
+    rentMonthlyUpdateState.timeoutId = setTimeout(async () => {
+      rentMonthlyUpdateState.timeoutId = null;
       try {
         await runRentMonthlyTenantUpdates();
       } catch (error) {
         console.error("Monthly rent update scheduler run failed", error);
       }
-      scheduleNext();
+      scheduleNext().catch((error) => {
+        console.error("Monthly rent update scheduler setup failed", error);
+      });
     }, delay);
   };
 
-  console.info(`Rent monthly scheduler active: ${rentMonthlyScheduleLabel}`);
-  scheduleNext();
+  console.info("Rent monthly scheduler active.");
+  return scheduleNext().catch((error) => {
+    console.error("Rent monthly scheduler setup failed", error);
+  });
+};
+
+const getNextAccountingReminderRunDateUtc = (fromDate = new Date(), scheduleInput = null) => {
+  return getNextDailyRunDateUtc(fromDate, {
+    ...getReportDefaultSchedule(REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER),
+    ...(scheduleInput || {}),
+  });
+};
+
+const scheduleAccountingReminderEmails = () => {
+  if (!resend) {
+    accountingReminderState.lastScheduledFor = null;
+    console.warn("Accounting reminder scheduler skipped: RESEND_API_KEY is not configured.");
+    return Promise.resolve();
+  }
+  if (!EMAIL_PATTERN.test(accountingReminderFromEmail)) {
+    accountingReminderState.lastScheduledFor = null;
+    console.warn("Accounting reminder scheduler skipped: invalid from email configuration.");
+    return Promise.resolve();
+  }
+
+  if (accountingReminderState.timeoutId) {
+    clearTimeout(accountingReminderState.timeoutId);
+    accountingReminderState.timeoutId = null;
+  }
+
+  const scheduleNext = async () => {
+    const isEnabled = await getResolvedReportEnabled(REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER);
+    if (!isEnabled) {
+      accountingReminderState.lastScheduledFor = null;
+      return;
+    }
+    const schedule = await getResolvedReportSchedule(REPORT_KEYS.ACCOUNTING_SCHEDULED_REMINDER);
+    const nextRun = getNextAccountingReminderRunDateUtc(new Date(), schedule);
+    const delay = Math.max(nextRun.getTime() - Date.now(), 0);
+    accountingReminderState.lastScheduledFor = nextRun.toISOString();
+
+    accountingReminderState.timeoutId = setTimeout(async () => {
+      accountingReminderState.timeoutId = null;
+      try {
+        await runAccountingScheduledPaymentReminders();
+      } catch (error) {
+        console.error("Accounting reminder scheduler run failed", error);
+      }
+      scheduleNext().catch((error) => {
+        console.error("Accounting reminder scheduler setup failed", error);
+      });
+    }, delay);
+  };
+
+  console.info("Accounting reminder scheduler active.");
+  return scheduleNext().catch((error) => {
+    console.error("Accounting reminder scheduler setup failed", error);
+  });
 };
 
 const createRateLimitMiddleware = ({
@@ -3810,20 +5115,33 @@ app.delete("/api/access/users/:id", authMiddleware, requireAdmin, async (req, re
   });
 });
 
-app.get("/api/alerts/preferences", authMiddleware, requireAdmin, (req, res) => {
-  res.json(serializeAlertPreferences(alertPreferences, alertState.lastEmailSentAt));
+app.get("/api/alerts/preferences", authMiddleware, requireAdmin, async (_req, res) => {
+  await loadPersistedAlertPreferences();
+  res.json(
+    serializeAlertPreferences(
+      alertPreferences,
+      alertState.lastEmailSentAt,
+      alertState.lastSmsSentAt
+    )
+  );
 });
 
-app.post("/api/alerts/preferences", authMiddleware, requireAdmin, (req, res) => {
-  alertPreferences = normalizeAlertPreferences(req.body, alertPreferences);
-  res.json(serializeAlertPreferences(alertPreferences, alertState.lastEmailSentAt));
+app.post("/api/alerts/preferences", authMiddleware, requireAdmin, async (req, res) => {
+  await savePersistedAlertPreferences(req.body);
+  res.json(
+    serializeAlertPreferences(
+      alertPreferences,
+      alertState.lastEmailSentAt,
+      alertState.lastSmsSentAt
+    )
+  );
 });
 
 app.post("/api/alerts/test-email", authMiddleware, requireAdmin, async (req, res) => {
   try {
-    const recipients = parseRecipients(
-      req.body?.emailRecipients ?? alertPreferences.emailRecipients
-    );
+    await loadPersistedAlertPreferences();
+    const requestedRecipients = String(req.body?.emailRecipients ?? "").trim();
+    const recipients = parseRecipients(requestedRecipients || alertPreferences.emailRecipients);
     if (!alertPreferences.emailEnabled) {
       return res.status(400).json({ error: "Email alerts are disabled" });
     }
@@ -3839,6 +5157,112 @@ app.post("/api/alerts/test-email", authMiddleware, requireAdmin, async (req, res
     console.error("Unable to send test email", error);
     res.status(500).json({ error: error.message || "Unable to send test email" });
   }
+});
+
+app.post("/api/alerts/test-sms", authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    await loadPersistedAlertPreferences();
+    if (!SMS_NOTIFICATIONS_AVAILABLE) {
+      return res.status(400).json({ error: "SMS notifications are disabled for now" });
+    }
+    const recipients = parseSmsRecipients(
+      req.body?.smsRecipients ?? alertPreferences.smsRecipients
+    );
+    if (!alertPreferences.smsEnabled) {
+      return res.status(400).json({ error: "SMS alerts are disabled" });
+    }
+    if (!recipients.length) {
+      return res.status(400).json({ error: "No SMS recipients configured" });
+    }
+    const body = `Dev KPI test alert ${new Date().toISOString()}`;
+    const result = await sendAlertSms({ body, recipients });
+    res.json({
+      ok: true,
+      sentAt: alertState.lastSmsSentAt,
+      simulated: result.wasSimulated,
+    });
+  } catch (error) {
+    console.error("Unable to send test SMS", error);
+    res.status(500).json({ error: error.message || "Unable to send test SMS" });
+  }
+});
+
+app.get("/api/reports", authMiddleware, requireAdmin, async (_req, res) => {
+  const reports = await buildReportOverviewList();
+  res.json({ reports });
+});
+
+app.patch("/api/reports/:key", authMiddleware, requireAdmin, async (req, res) => {
+  const key = String(req.params.key || "").trim();
+  const definition = getReportDefinitionByKey(key);
+  if (!definition) {
+    return res.status(404).json({ error: "Report not found." });
+  }
+
+  const normalizedTemplate = normalizeReportTemplatePayload(req.body);
+  const normalizedContentOptions = normalizeReportContentOptionsPayload(req.body, definition);
+  const normalizedSchedule = normalizeReportSchedulePayload(req.body, definition);
+  const normalizedEnabled = normalizeReportEnabledPayload(req.body, definition);
+  try {
+    await prisma.reportConfig.upsert({
+      where: { key },
+      update: {
+        isEnabled: normalizedEnabled,
+        ...normalizedTemplate,
+        contentOptions: normalizedContentOptions,
+        ...normalizedSchedule,
+      },
+      create: {
+        key,
+        isEnabled: normalizedEnabled,
+        ...normalizedTemplate,
+        contentOptions: normalizedContentOptions,
+        ...normalizedSchedule,
+      },
+    });
+  } catch (error) {
+    if (isReportConfigFallbackPersistenceError(error)) {
+      console.warn(
+        `Falling back to in-memory report config storage for ${key}.`,
+        error?.message || error
+      );
+      reportConfigFallbackStore.set(key, {
+        key,
+        isEnabled: normalizedEnabled,
+        ...normalizedTemplate,
+        contentOptions: normalizedContentOptions,
+        ...normalizedSchedule,
+      });
+    } else {
+      throw error;
+    }
+  }
+
+  await rescheduleReportByKey(key);
+
+  const reports = await buildReportOverviewList();
+  const report = reports.find((item) => item.key === key) || null;
+  return res.json({
+    ok: true,
+    report,
+  });
+});
+
+app.post("/api/reports/:key/send", authMiddleware, requireAdmin, async (req, res) => {
+  const key = String(req.params.key || "").trim();
+  const definition = getReportDefinitionByKey(key);
+  if (!definition) {
+    return res.status(404).json({ error: "Report not found." });
+  }
+
+  const result = await runReportNowByKey(key, { ignoreEnabled: true });
+  const reports = await buildReportOverviewList();
+  const report = reports.find((item) => item.key === key) || null;
+  return res.json({
+    ok: true,
+    result,
+    report,
+  });
 });
 
 app.get("/api/dashboard", authMiddleware, async (req, res) => {
@@ -4796,21 +6220,26 @@ app.post("/api/accounting/entries", authMiddleware, requireAdmin, async (req, re
     dueAt = new Date();
   }
 
-  const entry = await prisma.accountingEntry.create({
-    data: {
-      organizationId,
-      type,
-      status,
-      currency,
-      amount: new prismaPkg.Prisma.Decimal(amountValue),
-      serviceName,
-      detail,
-      paidAt,
-      dueAt,
-      source: "MANUAL",
-      recurringInterval,
-    },
-    include: { organization: { select: { id: true, name: true, slug: true } } },
+  const entry = await prisma.$transaction(async (tx) => {
+    const createdEntry = await tx.accountingEntry.create({
+      data: {
+        organizationId,
+        type,
+        status,
+        currency,
+        amount: new prismaPkg.Prisma.Decimal(amountValue),
+        serviceName,
+        detail,
+        paidAt,
+        dueAt,
+        source: "MANUAL",
+        recurringInterval,
+      },
+      include: { organization: { select: { id: true, name: true, slug: true } } },
+    });
+
+    await ensureNextRecurringAccountingEntry(tx, createdEntry);
+    return createdEntry;
   });
 
   res.status(201).json(serializeAccountingEntry(entry));
@@ -4947,10 +6376,22 @@ app.patch("/api/accounting/entries/:id", authMiddleware, requireAdmin, async (re
     updateData.dueAt = updateData.dueAt ?? new Date();
   }
 
-  const updatedEntry = await prisma.accountingEntry.update({
-    where: { id: entry.id },
-    data: updateData,
-    include: { organization: { select: { id: true, name: true, slug: true } } },
+  const willTransitionToPaid = entry.status !== "PAID" && (updateData.status ?? entry.status) === "PAID";
+
+  const updatedEntry = await prisma.$transaction(async (tx) => {
+    const nextEntry = await tx.accountingEntry.update({
+      where: { id: entry.id },
+      data: updateData,
+      include: { organization: { select: { id: true, name: true, slug: true } } },
+    });
+
+    if (willTransitionToPaid) {
+      await ensureNextRecurringAccountingEntry(tx, nextEntry, {
+        baseDate: entry.dueAt || nextEntry.dueAt || nextEntry.paidAt || nextEntry.createdAt,
+      });
+    }
+
+    return nextEntry;
   });
 
   res.json(serializeAccountingEntry(updatedEntry));
@@ -4964,10 +6405,20 @@ app.post("/api/accounting/entries/:id/mark-paid", authMiddleware, requireAdmin, 
   if (entry.source !== "MANUAL") {
     return res.status(400).json({ error: "Only manual entries can be updated." });
   }
-  const updatedEntry = await prisma.accountingEntry.update({
-    where: { id: entry.id },
-    data: { status: "PAID", paidAt: new Date(), dueAt: null },
-    include: { organization: { select: { id: true, name: true, slug: true } } },
+  const updatedEntry = await prisma.$transaction(async (tx) => {
+    const nextEntry = await tx.accountingEntry.update({
+      where: { id: entry.id },
+      data: { status: "PAID", paidAt: new Date(), dueAt: null },
+      include: { organization: { select: { id: true, name: true, slug: true } } },
+    });
+
+    if (entry.status !== "PAID") {
+      await ensureNextRecurringAccountingEntry(tx, nextEntry, {
+        baseDate: entry.dueAt || entry.paidAt || entry.createdAt,
+      });
+    }
+
+    return nextEntry;
   });
   res.json(serializeAccountingEntry(updatedEntry));
 });
@@ -6131,6 +7582,101 @@ const normalizeAccountingInterval = (value) => {
   if (!value) return null;
   const normalized = String(value).trim().toUpperCase();
   return ACCOUNTING_INTERVAL_VALUES.has(normalized) ? normalized : null;
+};
+
+const getAccountingIntervalMonthSpan = (interval) => {
+  switch (interval) {
+    case "MONTHLY":
+      return 1;
+    case "QUARTERLY":
+      return 3;
+    case "YEARLY":
+      return 12;
+    default:
+      return null;
+  }
+};
+
+const shiftUtcDateByMonths = (value, monthSpan) => {
+  const baseDate = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(baseDate.getTime()) || !Number.isInteger(monthSpan) || monthSpan <= 0) {
+    return null;
+  }
+
+  const normalizedBase = toUtcStartOfDay(baseDate);
+  const day = normalizedBase.getUTCDate();
+  const startOfTargetMonth = new Date(
+    Date.UTC(normalizedBase.getUTCFullYear(), normalizedBase.getUTCMonth() + monthSpan, 1, 0, 0, 0, 0)
+  );
+  const endOfTargetMonth = new Date(
+    Date.UTC(
+      startOfTargetMonth.getUTCFullYear(),
+      startOfTargetMonth.getUTCMonth() + 1,
+      0,
+      0,
+      0,
+      0,
+      0
+    )
+  );
+  const safeDay = Math.min(day, endOfTargetMonth.getUTCDate());
+  return new Date(
+    Date.UTC(startOfTargetMonth.getUTCFullYear(), startOfTargetMonth.getUTCMonth(), safeDay, 0, 0, 0, 0)
+  );
+};
+
+const buildNextRecurringAccountingDueAt = (entry, baseDateOverride = null) => {
+  const monthSpan = getAccountingIntervalMonthSpan(entry?.recurringInterval);
+  if (!monthSpan) return null;
+  const anchorDate = baseDateOverride || entry?.dueAt || entry?.paidAt || entry?.createdAt;
+  if (!anchorDate) return null;
+  return shiftUtcDateByMonths(anchorDate, monthSpan);
+};
+
+const ensureNextRecurringAccountingEntry = async (client, entry, { baseDate } = {}) => {
+  if (!entry || entry.source !== "MANUAL" || entry.status !== "PAID" || !entry.recurringInterval) {
+    return null;
+  }
+
+  const nextDueAt = buildNextRecurringAccountingDueAt(entry, baseDate);
+  if (!nextDueAt) return null;
+
+  const existingEntry = await client.accountingEntry.findFirst({
+    where: {
+      organizationId: entry.organizationId,
+      type: entry.type,
+      status: "SCHEDULED",
+      source: entry.source,
+      recurringInterval: entry.recurringInterval,
+      archivedAt: null,
+      currency: entry.currency,
+      amount: entry.amount,
+      serviceName: entry.serviceName,
+      detail: entry.detail ?? null,
+      dueAt: nextDueAt,
+    },
+  });
+
+  if (existingEntry) {
+    return existingEntry;
+  }
+
+  return client.accountingEntry.create({
+    data: {
+      organizationId: entry.organizationId,
+      type: entry.type,
+      status: "SCHEDULED",
+      source: entry.source,
+      sourceRef: entry.sourceRef ?? null,
+      recurringInterval: entry.recurringInterval,
+      currency: entry.currency,
+      amount: entry.amount,
+      serviceName: entry.serviceName,
+      detail: entry.detail ?? null,
+      dueAt: nextDueAt,
+      paidAt: null,
+    },
+  });
 };
 
 const buildAccountingRange = (range) => {
@@ -7390,6 +8936,35 @@ const buildRentMissedMonths = ({
   return missedMonths;
 };
 
+const getRentYearEndProjectionRange = ({
+  leaseStartDate,
+  leaseEndDate = null,
+  asOfDate,
+}) => {
+  if (!(leaseStartDate instanceof Date) || !(asOfDate instanceof Date)) {
+    return null;
+  }
+
+  const leaseStart = toUtcStartOfDay(leaseStartDate);
+  const yearEnd = new Date(Date.UTC(asOfDate.getUTCFullYear(), 11, 31, 23, 59, 59, 999));
+  const end = new Date(
+    Math.min(
+      yearEnd.getTime(),
+      leaseEndDate ? toUtcEndOfDay(leaseEndDate).getTime() : Number.POSITIVE_INFINITY
+    )
+  );
+
+  if (leaseStart.getTime() > end.getTime()) {
+    return null;
+  }
+
+  return {
+    start: leaseStart,
+    end,
+    label: `${asOfDate.getUTCFullYear()} year end`,
+  };
+};
+
 const getRentLastSummarySentAt = (tenant) => tenant?.lastQuarterlySummaryAt ?? null;
 
 const buildRentLastSummarySentAtUpdate = (sentAt = new Date()) => ({
@@ -7400,8 +8975,16 @@ const buildRentTenantSummary = (tenant, { monthRange, asOfDate }) => {
   const monthlyRent = resolveDecimalAmount(tenant.monthlyRent);
   const openingBalance = resolveDecimalAmount(tenant.openingBalance);
   const payments = Array.isArray(tenant.payments) ? tenant.payments : [];
+  const yearEndProjectionRange = getRentYearEndProjectionRange({
+    leaseStartDate: tenant.leaseStartDate,
+    leaseEndDate: tenant.leaseEndDate,
+    asOfDate,
+  });
   const paidThisMonth = sumRentPaymentsInWindow(payments, monthRange.start, monthRange.end);
   const paidToDate = sumRentPaymentsToDate(payments, asOfDate);
+  const paidToYearEnd = yearEndProjectionRange
+    ? sumRentPaymentsInWindow(payments, yearEndProjectionRange.start, yearEndProjectionRange.end)
+    : 0;
   const expectedThisMonth = roundCurrencyAmount(
     monthlyRent *
       countBillableMonthsInRange({
@@ -7411,6 +8994,17 @@ const buildRentTenantSummary = (tenant, { monthRange, asOfDate }) => {
         periodEnd: monthRange.end,
       })
   );
+  const expectedToYearEnd = yearEndProjectionRange
+    ? roundCurrencyAmount(
+        monthlyRent *
+          countBillableMonthsInRange({
+            leaseStartDate: tenant.leaseStartDate,
+            leaseEndDate: tenant.leaseEndDate,
+            periodStart: yearEndProjectionRange.start,
+            periodEnd: yearEndProjectionRange.end,
+          })
+      )
+    : 0;
   const expectedToDate = roundCurrencyAmount(
     monthlyRent *
       countBillableMonthsInRange({
@@ -7421,7 +9015,9 @@ const buildRentTenantSummary = (tenant, { monthRange, asOfDate }) => {
       })
   );
   const monthNet = expectedThisMonth - paidThisMonth;
+  const yearEndNet = openingBalance + expectedToYearEnd - paidToYearEnd;
   const totalNet = openingBalance + expectedToDate - paidToDate;
+  const outstandingYear = roundCurrencyAmount(Math.max(yearEndNet, 0));
   const outstandingTotal = roundCurrencyAmount(Math.max(totalNet, 0));
   const missedMonths = buildRentMissedMonths({
     leaseStartDate: tenant.leaseStartDate,
@@ -7454,11 +9050,17 @@ const buildRentTenantSummary = (tenant, { monthRange, asOfDate }) => {
     outstandingThisMonth: roundCurrencyAmount(Math.max(monthNet, 0)),
     creditThisMonth: roundCurrencyAmount(Math.max(-monthNet, 0)),
     paidToDate,
+    paidToYearEnd,
     expectedToDate,
+    expectedToYearEnd,
     outstandingTotal,
+    outstandingYear,
     creditTotal: roundCurrencyAmount(Math.max(-totalNet, 0)),
     periodsMissed: missedMonths.length,
     missedMonths,
+    yearEndProjectionStart: yearEndProjectionRange?.start?.toISOString() ?? null,
+    yearEndProjectionEnd: yearEndProjectionRange?.end?.toISOString() ?? null,
+    yearEndProjectionLabel: yearEndProjectionRange?.label ?? null,
     lastPaymentAt: lastPayment?.paidAt ? new Date(lastPayment.paidAt).toISOString() : null,
     lastMonthlySummaryAt: getRentLastSummarySentAt(tenant)?.toISOString() ?? null,
     createdAt: tenant.createdAt ? tenant.createdAt.toISOString() : null,
@@ -7493,6 +9095,7 @@ const buildRentDashboardPayload = (tenants, { monthRange, generatedAt }) => {
         paidThisMonth: 0,
         expectedThisMonth: 0,
         outstandingThisMonth: 0,
+        outstandingYear: 0,
         outstandingTotal: 0,
       };
     }
@@ -7507,6 +9110,9 @@ const buildRentDashboardPayload = (tenants, { monthRange, generatedAt }) => {
     );
     currencyTotals[currency].outstandingThisMonth = roundCurrencyAmount(
       currencyTotals[currency].outstandingThisMonth + Number(entry.outstandingThisMonth || 0)
+    );
+    currencyTotals[currency].outstandingYear = roundCurrencyAmount(
+      currencyTotals[currency].outstandingYear + Number(entry.outstandingYear || 0)
     );
     currencyTotals[currency].outstandingTotal = roundCurrencyAmount(
       currencyTotals[currency].outstandingTotal + Number(entry.outstandingTotal || 0)
@@ -8624,9 +10230,11 @@ const initializeBackgroundServices = async () => {
   }
 
   if (databaseReady) {
+    await loadPersistedAlertPreferences();
     scheduleNightlyGoogleSync();
     scheduleWeeklyReportEmail();
     scheduleRentMonthlyUpdates();
+    scheduleAccountingReminderEmails();
   } else {
     console.warn("Background jobs are disabled until database connectivity is restored.");
   }

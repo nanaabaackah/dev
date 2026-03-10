@@ -1,0 +1,2 @@
+ALTER TABLE "ReportConfig"
+ADD COLUMN IF NOT EXISTS "isEnabled" BOOLEAN;

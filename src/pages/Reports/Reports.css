@@ -1,0 +1,165 @@
+.reports-page {
+  gap: 1.5rem;
+}
+
+.reports-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.reports-kpi-value {
+  font-size: 1.1rem;
+  line-height: 1.3;
+}
+
+.report-card {
+  gap: 1rem;
+  align-content: start;
+}
+
+.report-card.is-collapsed {
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.report-card.is-collapsed:hover,
+.report-card.is-collapsed:focus-visible {
+  transform: translateY(-1px);
+  border-color: color-mix(in oklab, var(--accent), var(--border) 50%);
+  box-shadow: 0 14px 28px rgba(59, 47, 47, 0.16);
+  outline: none;
+}
+
+.report-card__meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.report-card__meta-item {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: color-mix(in oklab, var(--surface), var(--card) 24%);
+  min-width: 0;
+}
+
+.report-card__meta-item span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.report-card__meta-item strong {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.report-card__runtime {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.report-card__runtime .list-row {
+  gap: 0.3rem;
+}
+
+.report-card__actions {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.report-card__toggle.is-disabled {
+  border-color: color-mix(in oklab, var(--accent), var(--border) 56%);
+  color: var(--accent);
+}
+
+.report-editor {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: color-mix(in oklab, var(--surface), var(--card) 18%);
+}
+
+.report-editor__schedule {
+  display: grid;
+  gap: 0.85rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-editor__schedule h4 {
+  margin: 0;
+}
+
+.report-editor__content {
+  display: grid;
+  gap: 0.85rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.report-editor textarea.input {
+  min-height: 7.5rem;
+  resize: vertical;
+}
+
+.report-editor__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.report-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.report-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--surface), var(--card) 22%);
+  min-width: 0;
+}
+
+.report-checkbox input {
+  margin: 0;
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.report-checkbox span {
+  line-height: 1.35;
+}
+
+@media (max-width: 900px) {
+  .reports-page {
+    gap: 1rem;
+  }
+
+  .report-card__meta,
+  .report-editor__grid {
+    grid-template-columns: 1fr;
+  }
+}

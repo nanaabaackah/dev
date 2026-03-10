@@ -55,6 +55,19 @@ const normalizeQuantityUnit = (value) => {
   return normalized || DEFAULT_QUANTITY_UNIT;
 };
 
+const buildPdfNoteLines = (doc, notes, maxWidth) => {
+  const normalizedNotes = String(notes || "").trim();
+  if (!normalizedNotes) return [];
+
+  return normalizedNotes.split(/\r?\n/).flatMap((rawLine, index, allLines) => {
+    const trimmedLine = rawLine.trim();
+    if (!trimmedLine) {
+      return index === allLines.length - 1 ? [] : [""];
+    }
+    return doc.splitTextToSize(trimmedLine, maxWidth);
+  });
+};
+
 const formatQuantityUnit = (quantity, unit) => {
   const normalizedUnit = normalizeQuantityUnit(unit);
   const normalizedQuantity = Number(quantity);
@@ -509,7 +522,7 @@ export const downloadInvoicePdf = async ({
   y += summaryHeight + 20;
 
   if (notes.trim()) {
-    const noteLines = doc.splitTextToSize(notes.trim(), contentWidth - 32);
+    const noteLines = buildPdfNoteLines(doc, notes, contentWidth - 32);
     const noteHeight = Math.max(74, 42 + noteLines.length * 14);
     ensureSpace(noteHeight, "Notes");
     drawPanel(margin, y, contentWidth, noteHeight, PDF_COLORS.note, PDF_COLORS.noteBorder, 14);
@@ -517,7 +530,7 @@ export const downloadInvoicePdf = async ({
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
     doc.setTextColor(...PDF_COLORS.muted);
-    doc.text("NOTES", margin + 16, y + 20);
+    doc.text("NOTES & PAYMENT TERMS", margin + 16, y + 20);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);

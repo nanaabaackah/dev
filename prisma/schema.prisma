@@ -99,6 +99,39 @@ model BookingSettings {
   updatedAt      DateTime      @updatedAt
 }
 
+model ReportConfig {
+  id            Int      @id @default(autoincrement())
+  key           String   @unique
+  isEnabled     Boolean?
+  subjectPrefix String?
+  heading       String?
+  introText     String?
+  footerText    String?
+  contentOptions Json?
+  scheduleFrequency String?
+  scheduleWeekdayUtc Int?
+  scheduleMonthDayUtc Int?
+  scheduleHourUtc Int?
+  scheduleMinuteUtc Int?
+  scheduleDaysBeforeDue Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model AlertPreference {
+  id             Int      @id @default(autoincrement())
+  key            String   @unique
+  emailEnabled   Boolean  @default(false)
+  smsEnabled     Boolean  @default(false)
+  notifyOffline  Boolean  @default(true)
+  notifyDegraded Boolean  @default(true)
+  emailRecipients String?
+  smsRecipients   String?
+  fromEmail      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
 model CalendarIntegration {
   id               Int              @id @default(autoincrement())
   organizationId   Int
